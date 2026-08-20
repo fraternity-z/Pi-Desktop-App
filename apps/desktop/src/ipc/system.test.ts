@@ -16,7 +16,7 @@ describe("getArchitectureStatus", () => {
     const status = {
       renderer: "ready",
       core: "ready",
-      bridge: "not-started",
+      bridge: "ready",
       protocolVersion: 1,
     };
     vi.mocked(invoke).mockResolvedValue(status);
@@ -32,4 +32,3 @@ describe("getArchitectureStatus", () => {
     await expect(getArchitectureStatus()).rejects.toEqual(error);
   });
 });
-

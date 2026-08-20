@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "tauri dev",
     "dev:desktop": "pnpm --dir apps/desktop dev",
+    "dev:tauri": "pnpm --dir agent-bridge build && pnpm --dir apps/desktop dev",
     "build": "pnpm run build:packages && cargo build --manifest-path src-tauri/Cargo.toml",
     "build:packages": "pnpm --dir agent-bridge build && pnpm --dir apps/desktop build",
     "test": "pnpm --recursive --if-present run test && cargo test --manifest-path src-tauri/Cargo.toml",

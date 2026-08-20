@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "app.pi.desktop",
   "build": {
-    "beforeDevCommand": "pnpm run dev:desktop",
+    "beforeDevCommand": "pnpm run dev:tauri",
     "beforeBuildCommand": "pnpm run build:packages",
     "devUrl": "http://localhost:1420",
     "frontendDist": "../apps/desktop/dist"
@@ -31,4 +31,3 @@
     "resources": ["resources/pi-bridge/"]
   }
 }
-

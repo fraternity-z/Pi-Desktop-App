@@ -17,14 +17,14 @@ describe("ArchitectureView", () => {
     vi.mocked(getArchitectureStatus).mockResolvedValue({
       renderer: "ready",
       core: "ready",
-      bridge: "not-started",
+      bridge: "ready",
       protocolVersion: 1,
     });
 
     const { unmount } = render(<ArchitectureView />);
 
     expect(screen.getByText("正在连接 Rust Core...")).toBeInTheDocument();
-    expect(await screen.findByText("not-started")).toBeInTheDocument();
+    expect(await screen.findAllByText("ready")).toHaveLength(3);
     expect(screen.getByText("v1")).toBeInTheDocument();
     unmount();
   });
@@ -63,11 +63,11 @@ describe("ArchitectureView", () => {
     resolveStatus?.({
       renderer: "ready",
       core: "ready",
-      bridge: "not-started",
+      bridge: "ready",
       protocolVersion: 1,
     });
 
     await Promise.resolve();
-    expect(screen.queryByText("not-started")).not.toBeInTheDocument();
+    expect(screen.queryByText("ready")).not.toBeInTheDocument();
   });
 });

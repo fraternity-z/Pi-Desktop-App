@@ -35,8 +35,10 @@ Renderer 禁止：
 负责 Tauri command/event、输入校验、运行时发现、Bridge 生命周期、配置、存储、日志和更新。
 
 - `src/commands/`：薄 command 层；校验输入、调用内部服务、映射稳定响应/错误。
-- `src/discovery/`：Node、Pi 命令与 SDK 路径发现；不扫描未经用户选择的项目目录。
-- `src/bridge/`：Bridge 协议、进程监管、超时、取消、序号和重启策略。
+- `src/discovery/`：Node、Pi 命令与 SDK 路径发现、规范化和官方包身份校验；不扫描未经用户选择的项目目录。
+- `src/bridge/protocol.rs`：Rust 侧 JSONL DTO、帧限制和版本兼容校验。
+- `src/bridge/supervisor.rs`：固定参数启动、stdio、超时、事件序号和进程关闭。
+- `src/bridge/runtime.rs`：发现与 supervisor 的应用级装配、Tauri 状态快照和退出清理。
 - `src/storage/`：应用配置、迁移与索引；Pi 原生会话仍以 `~/.pi/agent` 为事实来源。
 - `src/error.rs`：跨 command 暴露的稳定错误码和可定位消息。
 

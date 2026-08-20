@@ -40,7 +40,7 @@ pub struct BridgeResponse {
     pub error: Option<BridgeErrorPayload>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeEvent {
     pub v: u16,
@@ -49,6 +49,13 @@ pub struct BridgeEvent {
     pub session_id: String,
     pub name: String,
     pub data: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedSession {
+    pub session_id: String,
+    pub model_fallback_message: Option<String>,
 }
 
 pub fn validate_hello(hello: &BridgeHello) -> Result<(), AppError> {

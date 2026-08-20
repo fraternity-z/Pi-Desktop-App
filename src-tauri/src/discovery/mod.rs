@@ -142,19 +142,39 @@ fn discover_from_pi_command(
         .parent()
         .ok_or_else(|| AppError::new("PI_COMMAND_INVALID", "无法从 Pi 命令推导安装目录"))?;
 
-    let node_path = executable_names("node")
-        .iter()
-        .map(|name| install_root.join(name))
-        .find(|path| environment.is_file(path))
-        .ok_or_else(|| {
-            AppError::new("NODE_NOT_FOUND", "Pi 安装目录中缺少配套 Node.js 可执行文件")
-        })?;
+    let node_path = find_node_executable(install_root, environment).ok_or_else(|| {
+        AppError::new(
+            "NODE_NOT_FOUND",
+            "未在 Pi 安装目录或 PATH 中找到 Node.js 可执行文件",
+        )
+    })?;
     let sdk_root = install_root
         .join("node_modules")
         .join("@earendil-works")
         .join("pi-coding-agent");
 
     validate_runtime_paths(&node_path, &sdk_root, Some(pi_command), source, environment)
+}
+
+fn find_node_executable(
+    install_root: &Path,
+    environment: &dyn DiscoveryEnvironment,
+) -> Option<PathBuf> {
+    executable_names("node")
+        .iter()
+        .map(|name| install_root.join(name))
+        .chain(
+            environment
+                .path_entries()
+                .into_iter()
+                .filter(|directory| directory.is_absolute())
+                .flat_map(|directory| {
+                    executable_names("node")
+                        .into_iter()
+                        .map(move |name| directory.join(name))
+                }),
+        )
+        .find(|path| environment.is_file(path))
 }
 
 fn validate_runtime_paths(
@@ -414,6 +434,28 @@ mod tests {
 
         assert_eq!(result.pi_command, Some(pi_command));
         assert_eq!(result.source, RuntimeSource::ExplicitPiCommand);
+    }
+
+    #[test]
+    fn derives_runtime_when_node_is_elsewhere_on_path() {
+        let pi_root = absolute(&["npm"]);
+        let node_root = absolute(&["nodejs"]);
+        let pi_command = pi_root.join(pi_command_names()[1]);
+        let local_node = pi_root.join(&executable_names("node")[0]);
+        let path_node = node_root.join(&executable_names("node")[0]);
+        let mut environment = valid_environment(&pi_root);
+        environment.files.remove(&local_node);
+        environment.files.extend([pi_command.clone(), path_node.clone()]);
+        environment.path_entries = vec![node_root];
+        let options = RuntimeDiscoveryOptions {
+            pi_command: Some(pi_command),
+            ..Default::default()
+        };
+
+        let result = discover_runtime_with(&options, &environment)
+            .expect("Pi 与 Node 位于不同 PATH 目录时也应成功发现运行时");
+
+        assert_eq!(result.node_path, path_node);
     }
 
     #[test]

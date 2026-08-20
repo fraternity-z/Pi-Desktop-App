@@ -1,6 +1,5 @@
-import { ArchitectureView } from "./views/ArchitectureView";
+import { ChatWorkbenchView } from "./views/ChatWorkbenchView";
 
 export function App() {
-  return <ArchitectureView />;
+  return <ChatWorkbenchView />;
 }
-

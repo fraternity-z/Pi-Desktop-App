@@ -1,9 +1,14 @@
 use std::{
+    collections::HashMap,
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
-    sync::mpsc::{self, Receiver, RecvTimeoutError},
-    thread,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+        mpsc::{self, Receiver, RecvTimeoutError, Sender},
+    },
+    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
@@ -11,15 +16,19 @@ use serde_json::{Value, json};
 
 use crate::{
     bridge::protocol::{
-        BridgeEvent, BridgeHello, BridgeResponse, PROTOCOL_VERSION, parse_hello_frame,
-        validate_frame_size,
+        BridgeEvent, BridgeHello, BridgeResponse, CreatedSession, PROTOCOL_VERSION,
+        parse_hello_frame, validate_frame_size,
     },
     error::AppError,
 };
 
 const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_PROMPT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+pub type BridgeEventSink = Arc<dyn Fn(BridgeEvent) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone)]
 pub struct BridgeLaunchConfig {
@@ -80,17 +89,23 @@ impl BridgeLaunchConfig {
 }
 
 pub struct BridgeSupervisor {
-    transport: Box<dyn BridgeTransport>,
     hello: BridgeHello,
+    commands: Sender<WorkerCommand>,
     response_timeout: Duration,
-    shutdown_timeout: Duration,
-    next_request_id: u64,
-    last_event_sequence: u64,
-    closed: bool,
+    next_request_id: AtomicU64,
+    closed: Mutex<bool>,
+    worker: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl BridgeSupervisor {
     pub fn start(config: BridgeLaunchConfig) -> Result<Self, AppError> {
+        Self::start_with_event_sink(config, Arc::new(|_| {}))
+    }
+
+    pub fn start_with_event_sink(
+        config: BridgeLaunchConfig,
+        event_sink: BridgeEventSink,
+    ) -> Result<Self, AppError> {
         let config = config.canonicalize()?;
         let handshake_timeout = config.handshake_timeout;
         let response_timeout = config.response_timeout;
@@ -101,6 +116,7 @@ impl BridgeSupervisor {
             handshake_timeout,
             response_timeout,
             shutdown_timeout,
+            event_sink,
         )
     }
 
@@ -108,8 +124,8 @@ impl BridgeSupervisor {
         &self.hello
     }
 
-    pub fn ping(&mut self) -> Result<(), AppError> {
-        let data = self.request("ping")?;
+    pub fn ping(&self) -> Result<(), AppError> {
+        let data = self.request("ping", json!({}), self.response_timeout)?;
         if data.as_ref().and_then(|value| value.get("pong")) != Some(&Value::Bool(true)) {
             return Err(AppError::new(
                 "BRIDGE_PING_INVALID",
@@ -119,8 +135,8 @@ impl BridgeSupervisor {
         Ok(())
     }
 
-    pub fn health(&mut self) -> Result<(), AppError> {
-        let data = self.request("health")?;
+    pub fn health(&self) -> Result<(), AppError> {
+        let data = self.request("health", json!({}), self.response_timeout)?;
         if data
             .as_ref()
             .and_then(|value| value.get("status"))
@@ -135,14 +151,56 @@ impl BridgeSupervisor {
         Ok(())
     }
 
-    pub fn shutdown(&mut self) -> Result<(), AppError> {
-        if self.closed {
+    pub fn create_session(&self, cwd: &Path) -> Result<CreatedSession, AppError> {
+        let data = self
+            .request("session.create", json!({"cwd": cwd}), self.response_timeout)?
+            .ok_or_else(|| {
+                AppError::new(
+                    "BRIDGE_SESSION_INVALID",
+                    "Bridge session.create 响应缺少会话数据",
+                )
+            })?;
+        serde_json::from_value(data).map_err(|_| {
+            AppError::new(
+                "BRIDGE_SESSION_INVALID",
+                "Bridge session.create 响应字段无效",
+            )
+        })
+    }
+
+    pub fn prompt(&self, session_id: &str, text: &str) -> Result<(), AppError> {
+        self.request(
+            "prompt",
+            json!({"sessionId": session_id, "text": text}),
+            DEFAULT_PROMPT_TIMEOUT,
+        )
+        .map(|_| ())
+    }
+
+    pub fn abort(&self, session_id: &str) -> Result<(), AppError> {
+        self.request(
+            "abort",
+            json!({"sessionId": session_id}),
+            self.response_timeout,
+        )
+        .map(|_| ())
+    }
+
+    pub fn shutdown(&self) -> Result<(), AppError> {
+        let mut closed = self
+            .closed
+            .lock()
+            .map_err(|_| AppError::new("BRIDGE_STATE_POISONED", "Bridge 状态锁不可用"))?;
+        if *closed {
             return Ok(());
         }
+        *closed = true;
+        drop(closed);
 
-        let response = self.request("shutdown").map(|_| ());
-        let stopped = self.transport.stop(self.shutdown_timeout);
-        self.closed = true;
+        let response = self
+            .request_inner("shutdown", json!({}), self.response_timeout)
+            .map(|_| ());
+        let stopped = self.stop_worker();
         response.and(stopped)
     }
 
@@ -151,129 +209,331 @@ impl BridgeSupervisor {
         handshake_timeout: Duration,
         response_timeout: Duration,
         shutdown_timeout: Duration,
+        event_sink: BridgeEventSink,
     ) -> Result<Self, AppError> {
         let hello_line = transport.read_frame(handshake_timeout)?;
         let hello = parse_hello_frame(&hello_line)?;
+        let (commands, receiver) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            run_worker(transport, receiver, event_sink, shutdown_timeout);
+        });
         Ok(Self {
-            transport,
             hello,
+            commands,
             response_timeout,
-            shutdown_timeout,
-            next_request_id: 1,
-            last_event_sequence: 0,
-            closed: false,
+            next_request_id: AtomicU64::new(1),
+            closed: Mutex::new(false),
+            worker: Mutex::new(Some(worker)),
         })
     }
 
-    fn request(&mut self, operation: &'static str) -> Result<Option<Value>, AppError> {
-        if self.closed {
+    fn request(
+        &self,
+        operation: &'static str,
+        fields: Value,
+        timeout: Duration,
+    ) -> Result<Option<Value>, AppError> {
+        if *self
+            .closed
+            .lock()
+            .map_err(|_| AppError::new("BRIDGE_STATE_POISONED", "Bridge 状态锁不可用"))?
+        {
             return Err(AppError::new("BRIDGE_CLOSED", "Bridge supervisor 已关闭"));
         }
+        self.request_inner(operation, fields, timeout)
+    }
 
-        let request_id = format!("rust-{}", self.next_request_id);
-        self.next_request_id += 1;
-        let frame = json!({
-            "v": PROTOCOL_VERSION,
-            "id": request_id,
-            "op": operation,
-        })
-        .to_string();
-        self.transport.write_frame(&frame)?;
+    fn request_inner(
+        &self,
+        operation: &'static str,
+        fields: Value,
+        timeout: Duration,
+    ) -> Result<Option<Value>, AppError> {
+        let request_id = format!(
+            "rust-{}",
+            self.next_request_id.fetch_add(1, Ordering::Relaxed)
+        );
+        let mut frame = serde_json::Map::from_iter([
+            ("v".to_owned(), json!(PROTOCOL_VERSION)),
+            ("id".to_owned(), json!(request_id)),
+            ("op".to_owned(), json!(operation)),
+        ]);
+        let fields = fields
+            .as_object()
+            .ok_or_else(|| AppError::new("BRIDGE_REQUEST_INVALID", "Bridge 请求字段必须是对象"))?;
+        frame.extend(fields.clone());
 
-        let started = Instant::now();
-        loop {
-            let remaining = self
-                .response_timeout
-                .checked_sub(started.elapsed())
-                .ok_or_else(|| request_timeout(operation))?;
-            let line = self.transport.read_frame(remaining)?;
-            validate_frame_size(&line)?;
-            let value: Value = serde_json::from_str(&line)
-                .map_err(|_| AppError::new("BRIDGE_INVALID_JSON", "Bridge 返回了无效 JSON"))?;
+        let (reply, receiver) = mpsc::channel();
+        self.commands
+            .send(WorkerCommand::Request {
+                id: request_id,
+                operation,
+                frame: Value::Object(frame).to_string(),
+                deadline: Instant::now() + timeout,
+                reply,
+            })
+            .map_err(|_| AppError::new("BRIDGE_CLOSED", "Bridge supervisor 已关闭"))?;
 
-            match value.get("kind").and_then(Value::as_str) {
-                Some("event") => {
-                    let event: BridgeEvent = serde_json::from_value(value).map_err(|_| {
-                        AppError::new("BRIDGE_EVENT_INVALID", "Bridge event 字段无效")
-                    })?;
-                    self.accept_event(&event)?;
-                }
-                Some("response") => {
-                    let response: BridgeResponse = serde_json::from_value(value).map_err(|_| {
-                        AppError::new("BRIDGE_RESPONSE_INVALID", "Bridge response 字段无效")
-                    })?;
-                    return self.accept_response(operation, &request_id, response);
-                }
-                _ => {
-                    return Err(AppError::new(
-                        "BRIDGE_FRAME_INVALID",
-                        "Bridge 返回了未知协议帧",
-                    ));
-                }
+        match receiver.recv_timeout(timeout + WORKER_POLL_INTERVAL * 2) {
+            Ok(result) => result,
+            Err(RecvTimeoutError::Timeout) => Err(request_timeout(operation)),
+            Err(RecvTimeoutError::Disconnected) => {
+                Err(AppError::new("BRIDGE_EXITED", "Bridge 请求通道已断开"))
             }
         }
     }
 
-    fn accept_event(&mut self, event: &BridgeEvent) -> Result<(), AppError> {
-        if event.v != PROTOCOL_VERSION || event.kind != "event" {
-            return Err(AppError::new(
-                "BRIDGE_EVENT_INVALID",
-                "Bridge event 协议版本或类型无效",
-            ));
-        }
-        if event.seq <= self.last_event_sequence {
-            return Err(AppError::new(
-                "BRIDGE_EVENT_SEQUENCE_INVALID",
-                format!(
-                    "Bridge event 序号 {} 未大于上一序号 {}",
-                    event.seq, self.last_event_sequence
-                ),
-            ));
-        }
-        self.last_event_sequence = event.seq;
-        Ok(())
-    }
-
-    fn accept_response(
-        &self,
-        operation: &str,
-        request_id: &str,
-        response: BridgeResponse,
-    ) -> Result<Option<Value>, AppError> {
-        if response.v != PROTOCOL_VERSION
-            || response.kind != "response"
-            || response.id != request_id
-        {
-            return Err(AppError::new(
-                "BRIDGE_RESPONSE_INVALID",
-                "Bridge response 协议版本、类型或请求 id 无效",
-            ));
-        }
-        if response.ok {
-            return Ok(response.data);
-        }
-
-        let (remote_code, remote_message) = response
-            .error
-            .map(|error| (error.code, error.message))
-            .unwrap_or_else(|| ("UNKNOWN".to_owned(), "Bridge 请求失败".to_owned()));
-        Err(AppError::new(
-            "BRIDGE_REQUEST_FAILED",
-            format!(
-                "Bridge 操作 {operation} 失败（{}）：{}",
-                non_empty(&remote_code, "UNKNOWN"),
-                non_empty(&remote_message, "Bridge 请求失败")
-            ),
-        ))
+    fn stop_worker(&self) -> Result<(), AppError> {
+        let mut worker = self
+            .worker
+            .lock()
+            .map_err(|_| AppError::new("BRIDGE_STATE_POISONED", "Bridge worker 锁不可用"))?;
+        let Some(handle) = worker.take() else {
+            return Ok(());
+        };
+        let (reply, receiver) = mpsc::channel();
+        let sent = self.commands.send(WorkerCommand::Stop { reply }).is_ok();
+        let stopped = if sent {
+            receiver.recv().unwrap_or_else(|_| {
+                Err(AppError::new(
+                    "BRIDGE_EXITED",
+                    "Bridge worker 在停止前已退出",
+                ))
+            })
+        } else {
+            Ok(())
+        };
+        let _ = handle.join();
+        stopped
     }
 }
 
 impl Drop for BridgeSupervisor {
     fn drop(&mut self) {
-        if !self.closed {
-            let _ = self.transport.stop(Duration::from_millis(100));
-            self.closed = true;
+        if let Ok(mut closed) = self.closed.lock() {
+            *closed = true;
         }
+        let _ = self.stop_worker();
+    }
+}
+
+struct PendingRequest {
+    operation: &'static str,
+    deadline: Instant,
+    reply: Sender<Result<Option<Value>, AppError>>,
+}
+
+enum WorkerCommand {
+    Request {
+        id: String,
+        operation: &'static str,
+        frame: String,
+        deadline: Instant,
+        reply: Sender<Result<Option<Value>, AppError>>,
+    },
+    Stop {
+        reply: Sender<Result<(), AppError>>,
+    },
+}
+
+fn run_worker(
+    mut transport: Box<dyn BridgeTransport>,
+    commands: Receiver<WorkerCommand>,
+    event_sink: BridgeEventSink,
+    shutdown_timeout: Duration,
+) {
+    let mut pending = HashMap::<String, PendingRequest>::new();
+    let mut last_event_sequence = 0;
+
+    loop {
+        if pending.is_empty() {
+            match commands.recv() {
+                Ok(command) => {
+                    if handle_worker_command(
+                        command,
+                        &mut *transport,
+                        &mut pending,
+                        shutdown_timeout,
+                    ) {
+                        return;
+                    }
+                }
+                Err(_) => {
+                    let _ = transport.stop(Duration::from_millis(100));
+                    return;
+                }
+            }
+        }
+
+        while let Ok(command) = commands.try_recv() {
+            if handle_worker_command(command, &mut *transport, &mut pending, shutdown_timeout) {
+                return;
+            }
+        }
+
+        match transport.read_frame(WORKER_POLL_INTERVAL) {
+            Ok(line) => {
+                if let Err(error) =
+                    handle_inbound_frame(&line, &mut pending, &mut last_event_sequence, &event_sink)
+                {
+                    fail_pending(&mut pending, error);
+                    let _ = transport.stop(Duration::from_millis(100));
+                    return;
+                }
+            }
+            Err(error) if error.code == "BRIDGE_TIMEOUT" => {}
+            Err(error) => {
+                fail_pending(&mut pending, error);
+                let _ = transport.stop(Duration::from_millis(100));
+                return;
+            }
+        }
+        expire_requests(&mut pending);
+    }
+}
+
+fn handle_worker_command(
+    command: WorkerCommand,
+    transport: &mut dyn BridgeTransport,
+    pending: &mut HashMap<String, PendingRequest>,
+    shutdown_timeout: Duration,
+) -> bool {
+    match command {
+        WorkerCommand::Request {
+            id,
+            operation,
+            frame,
+            deadline,
+            reply,
+        } => match transport.write_frame(&frame) {
+            Ok(()) => {
+                pending.insert(
+                    id,
+                    PendingRequest {
+                        operation,
+                        deadline,
+                        reply,
+                    },
+                );
+                false
+            }
+            Err(error) => {
+                let _ = reply.send(Err(error));
+                false
+            }
+        },
+        WorkerCommand::Stop { reply } => {
+            fail_pending(
+                pending,
+                AppError::new("BRIDGE_CLOSED", "Bridge supervisor 已关闭"),
+            );
+            let result = transport.stop(shutdown_timeout);
+            let _ = reply.send(result);
+            true
+        }
+    }
+}
+
+fn handle_inbound_frame(
+    line: &str,
+    pending: &mut HashMap<String, PendingRequest>,
+    last_event_sequence: &mut u64,
+    event_sink: &BridgeEventSink,
+) -> Result<(), AppError> {
+    validate_frame_size(line)?;
+    let value: Value = serde_json::from_str(line)
+        .map_err(|_| AppError::new("BRIDGE_INVALID_JSON", "Bridge 返回了无效 JSON"))?;
+
+    match value.get("kind").and_then(Value::as_str) {
+        Some("event") => {
+            let event: BridgeEvent = serde_json::from_value(value)
+                .map_err(|_| AppError::new("BRIDGE_EVENT_INVALID", "Bridge event 字段无效"))?;
+            accept_event(&event, last_event_sequence)?;
+            event_sink(event);
+            Ok(())
+        }
+        Some("response") => {
+            let response: BridgeResponse = serde_json::from_value(value).map_err(|_| {
+                AppError::new("BRIDGE_RESPONSE_INVALID", "Bridge response 字段无效")
+            })?;
+            if response.v != PROTOCOL_VERSION || response.kind != "response" {
+                return Err(AppError::new(
+                    "BRIDGE_RESPONSE_INVALID",
+                    "Bridge response 协议版本或类型无效",
+                ));
+            }
+            let Some(request) = pending.remove(&response.id) else {
+                return Err(AppError::new(
+                    "BRIDGE_RESPONSE_INVALID",
+                    "Bridge response 请求 id 未知",
+                ));
+            };
+            let result = accept_response(request.operation, response);
+            let _ = request.reply.send(result);
+            Ok(())
+        }
+        _ => Err(AppError::new(
+            "BRIDGE_FRAME_INVALID",
+            "Bridge 返回了未知协议帧",
+        )),
+    }
+}
+
+fn accept_event(event: &BridgeEvent, last_event_sequence: &mut u64) -> Result<(), AppError> {
+    if event.v != PROTOCOL_VERSION || event.kind != "event" {
+        return Err(AppError::new(
+            "BRIDGE_EVENT_INVALID",
+            "Bridge event 协议版本或类型无效",
+        ));
+    }
+    if event.seq <= *last_event_sequence {
+        return Err(AppError::new(
+            "BRIDGE_EVENT_SEQUENCE_INVALID",
+            format!(
+                "Bridge event 序号 {} 未大于上一序号 {}",
+                event.seq, *last_event_sequence
+            ),
+        ));
+    }
+    *last_event_sequence = event.seq;
+    Ok(())
+}
+
+fn accept_response(operation: &str, response: BridgeResponse) -> Result<Option<Value>, AppError> {
+    if response.ok {
+        return Ok(response.data);
+    }
+    let (remote_code, remote_message) = response
+        .error
+        .map(|error| (error.code, error.message))
+        .unwrap_or_else(|| ("UNKNOWN".to_owned(), "Bridge 请求失败".to_owned()));
+    Err(AppError::new(
+        "BRIDGE_REQUEST_FAILED",
+        format!(
+            "Bridge 操作 {operation} 失败（{}）：{}",
+            non_empty(&remote_code, "UNKNOWN"),
+            non_empty(&remote_message, "Bridge 请求失败")
+        ),
+    ))
+}
+
+fn expire_requests(pending: &mut HashMap<String, PendingRequest>) {
+    let now = Instant::now();
+    let expired: Vec<String> = pending
+        .iter()
+        .filter(|(_, request)| request.deadline <= now)
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in expired {
+        if let Some(request) = pending.remove(&id) {
+            let _ = request.reply.send(Err(request_timeout(request.operation)));
+        }
+    }
+}
+
+fn fail_pending(pending: &mut HashMap<String, PendingRequest>, error: AppError) {
+    for (_, request) in pending.drain() {
+        let _ = request.reply.send(Err(error.clone()));
     }
 }
 
@@ -528,7 +788,7 @@ mod tests {
     const HELLO: &str = r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions"]}"#;
 
     struct MockTransport {
-        reads: VecDeque<Result<String, AppError>>,
+        reads: Arc<Mutex<VecDeque<Result<String, AppError>>>>,
         writes: Arc<Mutex<Vec<String>>>,
         stop_calls: Arc<Mutex<usize>>,
     }
@@ -536,10 +796,12 @@ mod tests {
     impl MockTransport {
         fn new(reads: impl IntoIterator<Item = Result<&'static str, AppError>>) -> Self {
             Self {
-                reads: reads
-                    .into_iter()
-                    .map(|result| result.map(str::to_owned))
-                    .collect(),
+                reads: Arc::new(Mutex::new(
+                    reads
+                        .into_iter()
+                        .map(|result| result.map(str::to_owned))
+                        .collect(),
+                )),
                 writes: Arc::new(Mutex::new(Vec::new())),
                 stop_calls: Arc::new(Mutex::new(0)),
             }
@@ -553,7 +815,7 @@ mod tests {
         }
 
         fn read_frame(&mut self, _timeout: Duration) -> Result<String, AppError> {
-            self.reads.pop_front().unwrap_or_else(|| {
+            self.reads.lock().unwrap().pop_front().unwrap_or_else(|| {
                 Err(AppError::new("BRIDGE_TIMEOUT", "测试 transport 没有更多帧"))
             })
         }
@@ -570,6 +832,7 @@ mod tests {
             Duration::from_secs(1),
             Duration::from_secs(1),
             Duration::from_secs(1),
+            Arc::new(|_| {}),
         )
         .expect("有效 hello 应连接成功")
     }
@@ -583,7 +846,7 @@ mod tests {
             ),
         ]);
         let writes = transport.writes.clone();
-        let mut supervisor = connect(transport);
+        let supervisor = connect(transport);
 
         supervisor.health().expect("健康检查应成功");
 
@@ -603,11 +866,23 @@ mod tests {
             ),
             Ok(r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":{"pong":true}}"#),
         ]);
-        let mut supervisor = connect(transport);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let received_events = events.clone();
+        let supervisor = BridgeSupervisor::connect(
+            Box::new(transport),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Arc::new(move |event| received_events.lock().unwrap().push(event)),
+        )
+        .expect("有效 hello 应连接成功");
 
         supervisor.ping().expect("单调事件后应继续等待响应");
 
-        assert_eq!(supervisor.last_event_sequence, 1);
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].seq, 1);
+        assert_eq!(events[0].name, "message.delta");
     }
 
     #[test]
@@ -617,7 +892,7 @@ mod tests {
             Ok(r#"{"v":1,"kind":"event","seq":1,"sessionId":"s-1","name":"agent.started"}"#),
             Ok(r#"{"v":1,"kind":"event","seq":1,"sessionId":"s-1","name":"agent.settled"}"#),
         ]);
-        let mut supervisor = connect(transport);
+        let supervisor = connect(transport);
 
         let error = supervisor.ping().expect_err("重复事件序号必须失败");
 
@@ -632,7 +907,7 @@ mod tests {
                 r#"{"v":1,"kind":"response","id":"rust-1","ok":false,"error":{"code":"SESSION_NOT_FOUND","message":"找不到会话"}}"#,
             ),
         ]);
-        let mut supervisor = connect(transport);
+        let supervisor = connect(transport);
 
         let error = supervisor.health().expect_err("远端错误必须映射");
 
@@ -652,6 +927,7 @@ mod tests {
             Duration::from_secs(1),
             Duration::from_secs(1),
             Duration::from_secs(1),
+            Arc::new(|_| {}),
         );
         let error = result.err().expect("握手超时必须失败");
 
@@ -665,13 +941,85 @@ mod tests {
             Ok(r#"{"v":1,"kind":"response","id":"rust-1","ok":true}"#),
         ]);
         let stop_calls = transport.stop_calls.clone();
-        let mut supervisor = connect(transport);
+        let supervisor = connect(transport);
 
         supervisor.shutdown().expect("shutdown 应成功");
         supervisor.shutdown().expect("重复 shutdown 应幂等");
         drop(supervisor);
 
         assert_eq!(*stop_calls.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn sends_typed_session_create_payload() {
+        let transport = MockTransport::new([
+            Ok(HELLO),
+            Ok(
+                r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":{"sessionId":"s-1","modelFallbackMessage":"使用默认模型"}}"#,
+            ),
+        ]);
+        let writes = transport.writes.clone();
+        let supervisor = connect(transport);
+
+        let session = supervisor
+            .create_session(Path::new(r"C:\work"))
+            .expect("session.create 应返回类型化会话");
+
+        assert_eq!(session.session_id, "s-1");
+        assert_eq!(
+            session.model_fallback_message.as_deref(),
+            Some("使用默认模型")
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&writes.lock().unwrap()[0]).unwrap(),
+            json!({"v": 1, "id": "rust-1", "op": "session.create", "cwd": r"C:\work"})
+        );
+    }
+
+    #[test]
+    fn routes_abort_while_prompt_is_pending() {
+        let transport = MockTransport::new([Ok(HELLO)]);
+        let reads = transport.reads.clone();
+        let writes = transport.writes.clone();
+        let supervisor = Arc::new(connect(transport));
+
+        let prompt_supervisor = supervisor.clone();
+        let prompt = thread::spawn(move || prompt_supervisor.prompt("s-1", "slow task"));
+        wait_for_writes(&writes, 1);
+
+        let abort_supervisor = supervisor.clone();
+        let abort = thread::spawn(move || abort_supervisor.abort("s-1"));
+        wait_for_writes(&writes, 2);
+
+        let frames: Vec<Value> = writes
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|frame| serde_json::from_str(frame).unwrap())
+            .collect();
+        let prompt_id = frames.iter().find(|frame| frame["op"] == "prompt").unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let abort_id = frames.iter().find(|frame| frame["op"] == "abort").unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        reads.lock().unwrap().extend([
+            Ok(json!({"v": 1, "kind": "response", "id": abort_id, "ok": true}).to_string()),
+            Ok(json!({"v": 1, "kind": "response", "id": prompt_id, "ok": true}).to_string()),
+        ]);
+
+        assert_eq!(abort.join().unwrap(), Ok(()));
+        assert_eq!(prompt.join().unwrap(), Ok(()));
+    }
+
+    fn wait_for_writes(writes: &Arc<Mutex<Vec<String>>>, count: usize) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while writes.lock().unwrap().len() < count {
+            assert!(Instant::now() < deadline, "等待测试请求写入超时");
+            thread::yield_now();
+        }
     }
 
     #[test]

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Pi Desktop">
+  <rect width="512" height="512" rx="96" fill="#172033" />
+  <path
+    fill="#62c5a5"
+    d="M122 145h268v54H122zm38 0h64v222c0 22-7 42-21 59s-33 29-57 36l-18-50c12-4 20-10 25-18s7-17 7-28zm148 0h64v181c0 17 3 29 8 36s15 10 29 10v56c-35 0-61-8-77-25s-24-42-24-76z"
+  />
+  <circle cx="338" cy="101" r="31" fill="#f3c969" />
+</svg>

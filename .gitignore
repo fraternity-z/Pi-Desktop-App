@@ -1,0 +1,9 @@
+node_modules/
+dist/
+target/
+coverage/
+*.log
+.DS_Store
+
+src-tauri/resources/pi-bridge/pi-bridge.mjs
+

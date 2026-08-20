@@ -23,5 +23,5 @@ pnpm dev
 `pnpm run dev:desktop`。
 
 当前骨架提供 Renderer 到 Rust 的诊断调用，以及 Bridge 的
-`hello`、`ping`、`health`、`shutdown` 协议。官方 Pi SDK 的 Session 接入将在后续迭代完成。
-
+`hello`、`ping`、`health`、`session.create`、`prompt`、`abort`、`shutdown`
+协议。Bridge 会从绝对 `sdkRoot` 动态加载用户安装的官方 Pi SDK，并将文本增量事件转换为 JSONL。

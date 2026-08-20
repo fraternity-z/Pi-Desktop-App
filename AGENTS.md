@@ -52,7 +52,10 @@ Rust 禁止：
 负责动态加载用户安装的官方 Pi SDK，将桌面协议转换为 Pi SDK 调用，并把 Pi 事件转换为 JSONL。
 
 - `src/index.ts`：stdio 入口和进程生命周期。
+- `src/cli.ts`：固定启动参数、协议版本和绝对路径校验。
 - `src/protocol.ts`：协议类型、解析、帧大小和错误码。
+- `src/sdk-loader.ts`：官方 Pi 包身份、布局和动态入口校验。
+- `src/server.ts`：请求路由、响应、事件序号和并发取消。
 - `src/session-runtime.ts`：Session 创建、恢复、prompt、abort 的适配边界。
 - `src/extension-adapter.ts`：扩展能力与桌面 UI 请求适配边界。
 
@@ -68,7 +71,7 @@ Bridge 约束：
 - Renderer 与 Rust 使用 Tauri `invoke`/event；所有调用集中在 `apps/desktop/src/ipc/`。
 - Rust 与 Bridge 使用长期运行的 stdin/stdout JSONL，协议版本当前为 `1`。
 - 请求必须包含 `v`、`id`、`op`；事件必须包含单调递增的 `seq`。
-- 必须支持并测试 `ping`、`health`、`shutdown`，领域接入后再增加 `prompt`、`abort` 和 Session 操作。
+- 必须支持并测试 `ping`、`health`、`session.create`、`prompt`、`abort` 和 `shutdown`。
 - 所有外部输入都要校验版本、类型、长度和允许值；默认最大帧为 1 MiB。
 - 协议新增或破坏性修改必须同步更新 TypeScript/Rust 类型、测试和兼容说明。
 - 大文件和图片传受限绝对路径或资源句柄，不传无限制 Base64。
@@ -118,4 +121,3 @@ Bridge 约束：
 4. 只修改当前任务需要的模块，并同步更新边界测试。
 5. 不使用 `git add .`；提交时只暂存当前任务文件并检查 staged diff。
 6. 不提交密钥、Token、用户目录数据、构建产物或本地日志。
-

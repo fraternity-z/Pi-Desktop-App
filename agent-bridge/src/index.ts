@@ -1,69 +1,61 @@
 import { createInterface } from "node:readline";
 
-import {
-  PROTOCOL_VERSION,
-  ProtocolError,
-  createHello,
-  parseRequest,
-  serializeFrame,
-  type BridgeResponse,
-} from "./protocol.js";
+import { CliError, parseBridgeOptions } from "./cli.js";
+import { createHello, serializeFrame, type BridgeStartupError } from "./protocol.js";
+import { loadPiSdk, SdkLoadError } from "./sdk-loader.js";
+import { BridgeServer } from "./server.js";
+import { PiSessionRuntime } from "./session-runtime.js";
 
-function writeFrame(frame: Parameters<typeof serializeFrame>[0]): void {
-  process.stdout.write(serializeFrame(frame));
-}
-
-function failureResponse(id: string, error: unknown): BridgeResponse {
-  if (error instanceof ProtocolError) {
+function startupFailure(error: unknown): BridgeStartupError {
+  if (error instanceof CliError || error instanceof SdkLoadError) {
     return {
-      v: PROTOCOL_VERSION,
-      kind: "response",
-      id,
-      ok: false,
+      type: "startup.error",
       error: { code: error.code, message: error.message },
     };
   }
-
   return {
-    v: PROTOCOL_VERSION,
-    kind: "response",
-    id,
-    ok: false,
-    error: { code: "INTERNAL_ERROR", message: "Bridge 处理请求失败" },
+    type: "startup.error",
+    error: { code: "STARTUP_FAILED", message: "Bridge 启动失败" },
   };
 }
 
-writeFrame(createHello());
+async function run(): Promise<void> {
+  const options = parseBridgeOptions(process.argv.slice(2));
+  const loadedSdk = await loadPiSdk(options.sdkRoot);
+  const runtime = new PiSessionRuntime(loadedSdk.sdk, options.agentDir);
+  const server = new BridgeServer(
+    runtime,
+    createHello(loadedSdk.version),
+    (frame) => process.stdout.write(serializeFrame(frame)),
+  );
+  server.start();
 
-const lines = createInterface({ input: process.stdin, crlfDelay: Number.POSITIVE_INFINITY });
+  const lines = createInterface({ input: process.stdin, crlfDelay: Number.POSITIVE_INFINITY });
+  const pending = new Set<Promise<void>>();
 
-lines.on("line", (line) => {
-  let requestId = "unknown";
-
-  try {
-    const request = parseRequest(line);
-    requestId = request.id;
-
-    const data =
-      request.op === "health"
-        ? { status: "ok", protocolVersion: PROTOCOL_VERSION }
-        : request.op === "ping"
-          ? { pong: true }
-          : undefined;
-
-    writeFrame({
-      v: PROTOCOL_VERSION,
-      kind: "response",
-      id: request.id,
-      ok: true,
-      ...(data === undefined ? {} : { data }),
+  await new Promise<void>((resolve) => {
+    lines.on("line", (line) => {
+      let task: Promise<void>;
+      task = server
+        .handleLine(line)
+        .then((keepRunning) => {
+          if (!keepRunning) {
+            lines.close();
+          }
+        })
+        .finally(() => pending.delete(task));
+      pending.add(task);
     });
+    lines.once("close", resolve);
+  });
 
-    if (request.op === "shutdown") {
-      lines.close();
-    }
-  } catch (error) {
-    writeFrame(failureResponse(requestId, error));
-  }
+  await server.close();
+  await Promise.allSettled([...pending]);
+}
+
+run().catch((error: unknown) => {
+  const failure = startupFailure(error);
+  process.stdout.write(serializeFrame(failure));
+  process.stderr.write(`Pi Bridge 启动失败：${failure.error.code}\n`);
+  process.exitCode = 1;
 });
-

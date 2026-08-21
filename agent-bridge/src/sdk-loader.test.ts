@@ -13,7 +13,11 @@ function dependencies(overrides: Partial<SdkLoaderDependencies> = {}): SdkLoader
     readFile: vi.fn(async () =>
       JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "0.84.2" }),
     ),
-    importModule: vi.fn(async () => ({ createAgentSession: vi.fn() })),
+    importModule: vi.fn(async () => ({
+      createAgentSession: vi.fn(),
+      ModelRuntime: { create: vi.fn() },
+      SessionManager: { create: vi.fn(), open: vi.fn(), listAll: vi.fn() },
+    })),
     ...overrides,
   };
 }
@@ -26,6 +30,28 @@ describe("loadPiSdk", () => {
     expect(loaded.version).toBe("0.84.2");
     expect(loaded.root).toBe(root);
     expect(deps.importModule).toHaveBeenCalledWith(pathToFileURL(entry).href);
+  });
+
+  it("兼容官方 SDK 使用 class 暴露静态运行时 API", async () => {
+    class ModelRuntime {
+      static create = vi.fn();
+    }
+    class SessionManager {
+      static create = vi.fn();
+      static open = vi.fn();
+      static listAll = vi.fn();
+    }
+    const deps = dependencies({
+      importModule: vi.fn(async () => ({
+        createAgentSession: vi.fn(),
+        ModelRuntime,
+        SessionManager,
+      })),
+    });
+
+    await expect(loadPiSdk(root, deps)).resolves.toEqual(
+      expect.objectContaining({ version: "0.84.2" }),
+    );
   });
 
   it.each([
@@ -67,6 +93,11 @@ describe("loadPiSdk", () => {
       dependencies({ importModule: vi.fn(async () => Promise.reject(new Error("bad module"))) }),
     ],
     ["SDK_EXPORT_MISSING", root, dependencies({ importModule: vi.fn(async () => ({})) })],
+    [
+      "SDK_EXPORT_MISSING",
+      root,
+      dependencies({ importModule: vi.fn(async () => ({ createAgentSession: vi.fn() })) }),
+    ],
   ])("加载异常时返回稳定错误码 %s", async (code, sdkRoot, deps) => {
     await expect(loadPiSdk(sdkRoot, deps)).rejects.toEqual(
       expect.objectContaining<Partial<SdkLoadError>>({ code }),

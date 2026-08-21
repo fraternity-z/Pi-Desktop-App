@@ -53,9 +53,64 @@ pub struct BridgeEvent {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentModel {
+    pub provider: String,
+    pub id: String,
+    pub name: String,
+    pub reasoning: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelSelection {
+    pub provider: String,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionConfigurationUpdate {
+    pub model: Option<ModelSelection>,
+    pub thinking_level: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentMessageSummary {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionConfiguration {
+    pub model: Option<AgentModel>,
+    pub thinking_level: String,
+    pub available_thinking_levels: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct CreatedSession {
     pub session_id: String,
+    pub cwd: String,
+    pub session_path: Option<String>,
     pub model_fallback_message: Option<String>,
+    pub configuration: SessionConfiguration,
+    pub messages: Vec<AgentMessageSummary>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSessionSummary {
+    pub id: String,
+    pub path: String,
+    pub cwd: String,
+    pub name: Option<String>,
+    pub created: String,
+    pub modified: String,
+    pub message_count: u64,
+    pub first_message: String,
 }
 
 pub fn validate_hello(hello: &BridgeHello) -> Result<(), AppError> {
@@ -86,7 +141,16 @@ pub fn validate_hello(hello: &BridgeHello) -> Result<(), AppError> {
     validate_node_version(&hello.node_version)?;
     validate_pi_version(&hello.pi_version)?;
 
-    for capability in ["sessions", "streaming", "abort", "extensions"] {
+    for capability in [
+        "sessions",
+        "streaming",
+        "abort",
+        "extensions",
+        "models",
+        "session-history",
+        "session-configuration",
+        "tool-status",
+    ] {
         if !hello.capabilities.iter().any(|item| item == capability) {
             return Err(AppError::new(
                 "BRIDGE_CAPABILITY_MISSING",
@@ -142,6 +206,123 @@ pub fn validate_frame_size(line: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+pub fn validate_event(event: &BridgeEvent) -> Result<(), AppError> {
+    if event.session_id.trim().is_empty() || event.session_id.len() > 128 {
+        return Err(AppError::new(
+            "BRIDGE_EVENT_INVALID",
+            "Bridge event 会话 id 必须为 1-128 个字符",
+        ));
+    }
+    match event.name.as_str() {
+        "agent.started" | "agent.settled" => {
+            if event.data.is_some() {
+                return Err(invalid_event_data(&event.name));
+            }
+        }
+        "message.delta" => {
+            let data = event
+                .data
+                .as_ref()
+                .and_then(serde_json::Value::as_object)
+                .filter(|data| data.len() == 1 && data.contains_key("delta"));
+            let delta = data
+                .and_then(|data| data.get("delta"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|delta| delta.len() <= MAX_FRAME_BYTES);
+            if delta.is_none() {
+                return Err(invalid_event_data(&event.name));
+            }
+        }
+        "tool.started" | "tool.completed" | "tool.failed" => {
+            let data = event
+                .data
+                .as_ref()
+                .and_then(serde_json::Value::as_object)
+                .ok_or_else(|| invalid_event_data(&event.name))?;
+            if data.len() != 2
+                || !valid_bounded_text(data.get("toolCallId"), 256)
+                || !valid_bounded_text(data.get("toolName"), 128)
+            {
+                return Err(invalid_event_data(&event.name));
+            }
+        }
+        "session.configurationChanged" => {
+            let data = event
+                .data
+                .as_ref()
+                .and_then(serde_json::Value::as_object)
+                .filter(|data| {
+                    data.len() == 3
+                        && data.contains_key("model")
+                        && data.contains_key("thinkingLevel")
+                        && data.contains_key("availableThinkingLevels")
+                        && valid_model_value(data.get("model"))
+                });
+            let configuration = event
+                .data
+                .clone()
+                .filter(|_| data.is_some())
+                .and_then(|data| serde_json::from_value::<SessionConfiguration>(data).ok())
+                .filter(valid_session_configuration);
+            if configuration.is_none() {
+                return Err(invalid_event_data(&event.name));
+            }
+        }
+        _ => {
+            return Err(AppError::new(
+                "BRIDGE_EVENT_INVALID",
+                "Bridge event 名称不受支持",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn valid_model_value(value: Option<&serde_json::Value>) -> bool {
+    value.is_some_and(|value| {
+        value.is_null()
+            || value.as_object().is_some_and(|model| {
+                model.len() == 4
+                    && model.contains_key("provider")
+                    && model.contains_key("id")
+                    && model.contains_key("name")
+                    && model.contains_key("reasoning")
+            })
+    })
+}
+
+fn valid_session_configuration(configuration: &SessionConfiguration) -> bool {
+    const THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+    let model_valid = configuration.model.as_ref().is_none_or(|model| {
+        !model.provider.trim().is_empty()
+            && model.provider.len() <= 128
+            && !model.id.trim().is_empty()
+            && model.id.len() <= 256
+            && !model.name.trim().is_empty()
+            && model.name.len() <= 256
+    });
+    model_valid
+        && THINKING_LEVELS.contains(&configuration.thinking_level.as_str())
+        && !configuration.available_thinking_levels.is_empty()
+        && configuration
+            .available_thinking_levels
+            .iter()
+            .all(|level| THINKING_LEVELS.contains(&level.as_str()))
+}
+
+fn valid_bounded_text(value: Option<&serde_json::Value>, maximum_length: usize) -> bool {
+    value
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty() && value.len() <= maximum_length)
+}
+
+fn invalid_event_data(name: &str) -> AppError {
+    AppError::new(
+        "BRIDGE_EVENT_INVALID",
+        format!("Bridge event {name} 数据无效"),
+    )
+}
+
 fn validate_node_version(version: &str) -> Result<(), AppError> {
     let (major, minor, _) = parse_version(version, "Node.js")?;
     if major < 22 || (major == 22 && minor < 19) {
@@ -194,6 +375,17 @@ fn sanitize_remote_field<'a>(value: &'a str, fallback: &'a str) -> &'a str {
 mod tests {
     use super::*;
 
+    const ALL_CAPABILITIES: &[&str] = &[
+        "sessions",
+        "streaming",
+        "abort",
+        "extensions",
+        "models",
+        "session-history",
+        "session-configuration",
+        "tool-status",
+    ];
+
     fn hello(protocol_version: u16, capabilities: &[&str]) -> BridgeHello {
         BridgeHello {
             message_type: "hello".to_owned(),
@@ -206,7 +398,7 @@ mod tests {
 
     #[test]
     fn accepts_compatible_hello() {
-        let result = validate_hello(&hello(1, &["sessions", "streaming", "abort", "extensions"]));
+        let result = validate_hello(&hello(1, ALL_CAPABILITIES));
 
         assert_eq!(result, Ok(()));
     }
@@ -214,7 +406,7 @@ mod tests {
     #[test]
     fn deserializes_bridge_json_shape() {
         let value: BridgeHello = serde_json::from_str(
-            r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions"]}"#,
+            r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions","models","session-history","session-configuration","tool-status"]}"#,
         )
         .expect("Bridge hello JSON 必须可反序列化");
 
@@ -224,8 +416,8 @@ mod tests {
 
     #[test]
     fn rejects_incompatible_protocol() {
-        let error = validate_hello(&hello(2, &["sessions", "streaming", "abort", "extensions"]))
-            .expect_err("协议版本不兼容时必须失败");
+        let error =
+            validate_hello(&hello(2, ALL_CAPABILITIES)).expect_err("协议版本不兼容时必须失败");
 
         assert_eq!(error.code, "BRIDGE_PROTOCOL_INCOMPATIBLE");
     }
@@ -240,7 +432,7 @@ mod tests {
 
     #[test]
     fn rejects_non_hello_frame() {
-        let mut value = hello(1, &["sessions", "streaming", "abort", "extensions"]);
+        let mut value = hello(1, ALL_CAPABILITIES);
         value.message_type = "event".to_owned();
 
         let error = validate_hello(&value).expect_err("首帧类型错误时必须失败");
@@ -250,7 +442,7 @@ mod tests {
 
     #[test]
     fn rejects_missing_runtime_version() {
-        let mut value = hello(1, &["sessions", "streaming", "abort", "extensions"]);
+        let mut value = hello(1, ALL_CAPABILITIES);
         value.pi_version.clear();
 
         let error = validate_hello(&value).expect_err("运行时版本缺失时必须失败");
@@ -260,7 +452,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_node_version() {
-        let mut value = hello(1, &["sessions", "streaming", "abort", "extensions"]);
+        let mut value = hello(1, ALL_CAPABILITIES);
         value.node_version = "22.18.0".to_owned();
 
         let error = validate_hello(&value).expect_err("旧 Node.js 版本必须被拒绝");
@@ -270,7 +462,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_pi_version() {
-        let mut value = hello(1, &["sessions", "streaming", "abort", "extensions"]);
+        let mut value = hello(1, ALL_CAPABILITIES);
         value.pi_version = "0.86.0".to_owned();
 
         let error = validate_hello(&value).expect_err("超出范围的 Pi SDK 必须被拒绝");
@@ -280,7 +472,7 @@ mod tests {
 
     #[test]
     fn rejects_malformed_runtime_version() {
-        let mut value = hello(1, &["sessions", "streaming", "abort", "extensions"]);
+        let mut value = hello(1, ALL_CAPABILITIES);
         value.node_version = "current".to_owned();
 
         let error = validate_hello(&value).expect_err("非法版本格式必须被拒绝");
@@ -305,5 +497,48 @@ mod tests {
             validate_frame_size(&"x".repeat(MAX_FRAME_BYTES + 1)).expect_err("超大帧必须被拒绝");
 
         assert_eq!(error.code, "BRIDGE_FRAME_TOO_LARGE");
+    }
+
+    #[test]
+    fn validates_tool_event_contract() {
+        let event: BridgeEvent = serde_json::from_str(
+            r#"{"v":1,"kind":"event","seq":1,"sessionId":"s-1","name":"tool.started","data":{"toolCallId":"tool-1","toolName":"read"}}"#,
+        )
+        .unwrap();
+        assert_eq!(validate_event(&event), Ok(()));
+
+        let invalid: BridgeEvent = serde_json::from_str(
+            r#"{"v":1,"kind":"event","seq":1,"sessionId":"s-1","name":"tool.started","data":{"toolCallId":"tool-1","toolName":"read","args":{"path":"secret"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            validate_event(&invalid)
+                .expect_err("额外工具参数必须失败")
+                .code,
+            "BRIDGE_EVENT_INVALID"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_event_name_and_invalid_configuration() {
+        let unknown: BridgeEvent = serde_json::from_str(
+            r#"{"v":1,"kind":"event","seq":1,"sessionId":"s-1","name":"extension.ui"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            validate_event(&unknown).expect_err("未知事件必须失败").code,
+            "BRIDGE_EVENT_INVALID"
+        );
+
+        let invalid_configuration: BridgeEvent = serde_json::from_str(
+            r#"{"v":1,"kind":"event","seq":1,"sessionId":"s-1","name":"session.configurationChanged","data":{"model":null,"thinkingLevel":"ultra","availableThinkingLevels":[]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            validate_event(&invalid_configuration)
+                .expect_err("无效会话配置事件必须失败")
+                .code,
+            "BRIDGE_EVENT_INVALID"
+        );
     }
 }

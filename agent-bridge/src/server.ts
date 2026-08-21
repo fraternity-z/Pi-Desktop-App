@@ -49,11 +49,29 @@ export class BridgeServer {
         case "health":
           data = { status: "ok", protocolVersion: PROTOCOL_VERSION };
           break;
+        case "model.list":
+          data = await this.runtime.listModels();
+          break;
         case "session.create":
           data = await this.runtime.createSession(request.cwd);
           break;
+        case "session.list":
+          data = await this.runtime.listSessions();
+          break;
+        case "session.open":
+          data = await this.runtime.openSession(request.sessionPath);
+          break;
+        case "session.configure":
+          data = await this.runtime.configureSession(request.sessionId, {
+            ...(request.model === undefined ? {} : { model: request.model }),
+            ...(request.thinkingLevel === undefined
+              ? {}
+              : { thinkingLevel: request.thinkingLevel }),
+          });
+          break;
         case "prompt":
           await this.runtime.prompt(request.sessionId, request.text);
+          data = { finalSeq: this.sequence };
           break;
         case "abort":
           await this.runtime.abort(request.sessionId);

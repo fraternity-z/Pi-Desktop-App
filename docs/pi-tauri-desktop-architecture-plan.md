@@ -300,12 +300,17 @@ Renderer 不应获得启动任意进程的权限。
 
 事件：
 
-    {"v":1,"kind":"event","seq":101,"sessionId":"s1","name":"message.delta","data":{"text":"正在分析"}}
-    {"v":1,"kind":"event","seq":102,"sessionId":"s1","name":"tool.started","data":{"name":"read_file"}}
+    {"v":1,"kind":"event","seq":101,"sessionId":"s1","name":"message.delta","data":{"delta":"正在分析"}}
+    {"v":1,"kind":"event","seq":102,"sessionId":"s1","name":"tool.started","data":{"toolCallId":"tool-1","toolName":"read_file"}}
 
 响应：
 
-    {"v":1,"kind":"response","id":"r-001","ok":true}
+    {"v":1,"kind":"response","id":"r-001","ok":true,"data":{"finalSeq":102}}
+
+兼容说明：M1 的 hello 必须声明 `tool-status` 能力。`prompt` 成功响应中的
+`finalSeq` 表示该请求完成前 Bridge 已发出的最后事件序号；Renderer 消费到该
+序号后才能结束流式状态。工具事件只传 `toolCallId`、`toolName` 和事件名表达的
+状态，不传工具参数或执行结果。
 
 协议必须定义：
 
@@ -613,4 +618,3 @@ Pi 版本由用户的 npm/pnpm/其他官方包管理器管理。App 可以显示
 - [Tauri Node.js sidecar](https://tauri.app/learn/sidecar-nodejs/)
 - [Tauri capabilities](https://tauri.app/security/capabilities/)
 - [Tauri updater](https://tauri.app/plugin/updater/)
-

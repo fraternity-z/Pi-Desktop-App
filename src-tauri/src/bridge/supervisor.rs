@@ -16,8 +16,9 @@ use serde_json::{Value, json};
 
 use crate::{
     bridge::protocol::{
-        BridgeEvent, BridgeHello, BridgeResponse, CreatedSession, PROTOCOL_VERSION,
-        parse_hello_frame, validate_frame_size,
+        AgentModel, AgentSessionSummary, BridgeEvent, BridgeHello, BridgeResponse, CreatedSession,
+        PROTOCOL_VERSION, SessionConfiguration, parse_hello_frame, validate_event,
+        validate_frame_size,
     },
     error::AppError,
 };
@@ -168,13 +169,110 @@ impl BridgeSupervisor {
         })
     }
 
-    pub fn prompt(&self, session_id: &str, text: &str) -> Result<(), AppError> {
+    pub fn list_sessions(&self) -> Result<Vec<AgentSessionSummary>, AppError> {
+        let data = self
+            .request("session.list", json!({}), self.response_timeout)?
+            .ok_or_else(|| {
+                AppError::new(
+                    "BRIDGE_SESSION_LIST_INVALID",
+                    "Bridge session.list 响应缺少会话数据",
+                )
+            })?;
+        serde_json::from_value(data).map_err(|_| {
+            AppError::new(
+                "BRIDGE_SESSION_LIST_INVALID",
+                "Bridge session.list 响应字段无效",
+            )
+        })
+    }
+
+    pub fn open_session(&self, session_path: &Path) -> Result<CreatedSession, AppError> {
+        let data = self
+            .request(
+                "session.open",
+                json!({"sessionPath": session_path}),
+                self.response_timeout,
+            )?
+            .ok_or_else(|| {
+                AppError::new(
+                    "BRIDGE_SESSION_INVALID",
+                    "Bridge session.open 响应缺少会话数据",
+                )
+            })?;
+        serde_json::from_value(data).map_err(|_| {
+            AppError::new("BRIDGE_SESSION_INVALID", "Bridge session.open 响应字段无效")
+        })
+    }
+
+    pub fn list_models(&self) -> Result<Vec<AgentModel>, AppError> {
+        let data = self
+            .request("model.list", json!({}), self.response_timeout)?
+            .ok_or_else(|| {
+                AppError::new(
+                    "BRIDGE_MODEL_LIST_INVALID",
+                    "Bridge model.list 响应缺少模型数据",
+                )
+            })?;
+        serde_json::from_value(data).map_err(|_| {
+            AppError::new(
+                "BRIDGE_MODEL_LIST_INVALID",
+                "Bridge model.list 响应字段无效",
+            )
+        })
+    }
+
+    pub fn configure_session(
+        &self,
+        session_id: &str,
+        model: Option<(&str, &str)>,
+        thinking_level: Option<&str>,
+    ) -> Result<SessionConfiguration, AppError> {
+        let mut fields = serde_json::Map::from_iter([(
+            "sessionId".to_owned(),
+            Value::String(session_id.to_owned()),
+        )]);
+        if let Some((provider, id)) = model {
+            fields.insert("model".to_owned(), json!({"provider": provider, "id": id}));
+        }
+        if let Some(thinking_level) = thinking_level {
+            fields.insert(
+                "thinkingLevel".to_owned(),
+                Value::String(thinking_level.to_owned()),
+            );
+        }
+        let data = self
+            .request(
+                "session.configure",
+                Value::Object(fields),
+                self.response_timeout,
+            )?
+            .ok_or_else(|| {
+                AppError::new(
+                    "BRIDGE_SESSION_CONFIG_INVALID",
+                    "Bridge session.configure 响应缺少配置数据",
+                )
+            })?;
+        serde_json::from_value(data).map_err(|_| {
+            AppError::new(
+                "BRIDGE_SESSION_CONFIG_INVALID",
+                "Bridge session.configure 响应字段无效",
+            )
+        })
+    }
+
+    pub fn prompt(&self, session_id: &str, text: &str) -> Result<u64, AppError> {
         self.request(
             "prompt",
             json!({"sessionId": session_id, "text": text}),
             DEFAULT_PROMPT_TIMEOUT,
-        )
-        .map(|_| ())
+        )?
+        .and_then(|data| data.get("finalSeq").and_then(Value::as_u64))
+        .ok_or_else(|| {
+            AppError::new(
+                "BRIDGE_PROMPT_RESPONSE_INVALID",
+                "Bridge prompt 响应缺少 finalSeq",
+            )
+        })
     }
 
     pub fn abort(&self, session_id: &str) -> Result<(), AppError> {
@@ -486,12 +584,14 @@ fn accept_event(event: &BridgeEvent, last_event_sequence: &mut u64) -> Result<()
             "Bridge event 协议版本或类型无效",
         ));
     }
-    if event.seq <= *last_event_sequence {
+    validate_event(event)?;
+    let expected = last_event_sequence.saturating_add(1);
+    if event.seq != expected {
         return Err(AppError::new(
             "BRIDGE_EVENT_SEQUENCE_INVALID",
             format!(
-                "Bridge event 序号 {} 未大于上一序号 {}",
-                event.seq, *last_event_sequence
+                "Bridge event 序号 {} 不连续，期望序号 {}",
+                event.seq, expected
             ),
         ));
     }
@@ -507,14 +607,40 @@ fn accept_response(operation: &str, response: BridgeResponse) -> Result<Option<V
         .error
         .map(|error| (error.code, error.message))
         .unwrap_or_else(|| ("UNKNOWN".to_owned(), "Bridge 请求失败".to_owned()));
+    if let Some(code) = public_remote_error_code(&remote_code) {
+        return Err(AppError::new(
+            code,
+            non_empty(&remote_message, "Bridge 请求失败"),
+        ));
+    }
     Err(AppError::new(
         "BRIDGE_REQUEST_FAILED",
-        format!(
-            "Bridge 操作 {operation} 失败（{}）：{}",
-            non_empty(&remote_code, "UNKNOWN"),
-            non_empty(&remote_message, "Bridge 请求失败")
-        ),
+        format!("Bridge 操作 {operation} 失败"),
     ))
+}
+
+fn public_remote_error_code(code: &str) -> Option<&'static str> {
+    Some(match code.trim() {
+        "INVALID_REQUEST" => "INVALID_REQUEST",
+        "UNSUPPORTED_PROTOCOL" => "UNSUPPORTED_PROTOCOL",
+        "UNSUPPORTED_OPERATION" => "UNSUPPORTED_OPERATION",
+        "FRAME_TOO_LARGE" => "FRAME_TOO_LARGE",
+        "SESSION_CREATE_FAILED" => "SESSION_CREATE_FAILED",
+        "SESSION_LIST_FAILED" => "SESSION_LIST_FAILED",
+        "SESSION_OPEN_FAILED" => "SESSION_OPEN_FAILED",
+        "SESSION_BUSY" => "SESSION_BUSY",
+        "SESSION_NOT_FOUND" => "SESSION_NOT_FOUND",
+        "INVALID_SESSION" => "INVALID_SESSION",
+        "SESSION_SUBSCRIBE_FAILED" => "SESSION_SUBSCRIBE_FAILED",
+        "MODEL_LIST_FAILED" => "MODEL_LIST_FAILED",
+        "MODEL_NOT_FOUND" => "MODEL_NOT_FOUND",
+        "MODEL_UPDATE_FAILED" => "MODEL_UPDATE_FAILED",
+        "THINKING_LEVEL_UPDATE_FAILED" => "THINKING_LEVEL_UPDATE_FAILED",
+        "PROMPT_FAILED" => "PROMPT_FAILED",
+        "ABORT_FAILED" => "ABORT_FAILED",
+        "RUNTIME_CLOSED" => "RUNTIME_CLOSED",
+        _ => return None,
+    })
 }
 
 fn expire_requests(pending: &mut HashMap<String, PendingRequest>) {
@@ -785,7 +911,7 @@ mod tests {
 
     use super::*;
 
-    const HELLO: &str = r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions"]}"#;
+    const HELLO: &str = r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions","models","session-history","session-configuration","tool-status"]}"#;
 
     struct MockTransport {
         reads: Arc<Mutex<VecDeque<Result<String, AppError>>>>,
@@ -900,6 +1026,20 @@ mod tests {
     }
 
     #[test]
+    fn rejects_event_sequence_gap() {
+        let transport = MockTransport::new([
+            Ok(HELLO),
+            Ok(r#"{"v":1,"kind":"event","seq":2,"sessionId":"s-1","name":"agent.started"}"#),
+        ]);
+        let supervisor = connect(transport);
+
+        let error = supervisor.ping().expect_err("跳号事件序号必须失败");
+
+        assert_eq!(error.code, "BRIDGE_EVENT_SEQUENCE_INVALID");
+        assert!(error.message.contains("期望序号 1"));
+    }
+
+    #[test]
     fn maps_remote_request_error() {
         let transport = MockTransport::new([
             Ok(HELLO),
@@ -911,8 +1051,25 @@ mod tests {
 
         let error = supervisor.health().expect_err("远端错误必须映射");
 
+        assert_eq!(error.code, "SESSION_NOT_FOUND");
+        assert_eq!(error.message, "找不到会话");
+    }
+
+    #[test]
+    fn hides_unknown_remote_error_details() {
+        let transport = MockTransport::new([
+            Ok(HELLO),
+            Ok(
+                r#"{"v":1,"kind":"response","id":"rust-1","ok":false,"error":{"code":"PRIVATE_FAILURE","message":"token=secret"}}"#,
+            ),
+        ]);
+        let supervisor = connect(transport);
+
+        let error = supervisor.health().expect_err("未知远端错误必须降级");
+
         assert_eq!(error.code, "BRIDGE_REQUEST_FAILED");
-        assert!(error.message.contains("SESSION_NOT_FOUND"));
+        assert!(!error.message.contains("secret"));
+        assert!(!error.message.contains("PRIVATE_FAILURE"));
     }
 
     #[test]
@@ -955,7 +1112,7 @@ mod tests {
         let transport = MockTransport::new([
             Ok(HELLO),
             Ok(
-                r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":{"sessionId":"s-1","modelFallbackMessage":"使用默认模型"}}"#,
+                r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":{"sessionId":"s-1","cwd":"C:\\work","sessionPath":"C:\\agent\\sessions\\s.jsonl","modelFallbackMessage":"使用默认模型","configuration":{"model":null,"thinkingLevel":"off","availableThinkingLevels":["off"]},"messages":[]}}"#,
             ),
         ]);
         let writes = transport.writes.clone();
@@ -973,6 +1130,103 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Value>(&writes.lock().unwrap()[0]).unwrap(),
             json!({"v": 1, "id": "rust-1", "op": "session.create", "cwd": r"C:\work"})
+        );
+    }
+
+    #[test]
+    fn rejects_prompt_response_without_final_sequence() {
+        let transport = MockTransport::new([
+            Ok(HELLO),
+            Ok(r#"{"v":1,"kind":"response","id":"rust-1","ok":true}"#),
+        ]);
+        let supervisor = connect(transport);
+
+        let error = supervisor
+            .prompt("s-1", "hello")
+            .expect_err("prompt 响应必须包含最终事件序号");
+
+        assert_eq!(error.code, "BRIDGE_PROMPT_RESPONSE_INVALID");
+    }
+
+    #[test]
+    fn sends_typed_catalog_and_session_configuration_requests() {
+        let transport = MockTransport::new([
+            Ok(HELLO),
+            Ok(
+                r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":[{"provider":"openai","id":"gpt","name":"GPT","reasoning":true}]}"#,
+            ),
+            Ok(
+                r#"{"v":1,"kind":"response","id":"rust-2","ok":true,"data":[{"id":"saved","path":"C:\\agent\\sessions\\saved.jsonl","cwd":"C:\\work","name":null,"created":"2026-08-20T08:00:00.000Z","modified":"2026-08-20T09:00:00.000Z","messageCount":2,"firstMessage":"hello"}]}"#,
+            ),
+            Ok(
+                r#"{"v":1,"kind":"response","id":"rust-3","ok":true,"data":{"model":{"provider":"openai","id":"gpt","name":"GPT","reasoning":true},"thinkingLevel":"high","availableThinkingLevels":["off","high"]}}"#,
+            ),
+        ]);
+        let writes = transport.writes.clone();
+        let supervisor = connect(transport);
+
+        assert_eq!(supervisor.list_models().unwrap()[0].id, "gpt");
+        assert_eq!(supervisor.list_sessions().unwrap()[0].id, "saved");
+        assert_eq!(
+            supervisor
+                .configure_session("s-1", Some(("openai", "gpt")), Some("high"))
+                .unwrap()
+                .thinking_level,
+            "high"
+        );
+
+        let frames: Vec<Value> = writes
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|frame| serde_json::from_str(frame).unwrap())
+            .collect();
+        assert_eq!(
+            frames[0],
+            json!({"v": 1, "id": "rust-1", "op": "model.list"})
+        );
+        assert_eq!(
+            frames[1],
+            json!({"v": 1, "id": "rust-2", "op": "session.list"})
+        );
+        assert_eq!(
+            frames[2],
+            json!({
+                "v": 1,
+                "id": "rust-3",
+                "op": "session.configure",
+                "sessionId": "s-1",
+                "model": {"provider": "openai", "id": "gpt"},
+                "thinkingLevel": "high"
+            })
+        );
+    }
+
+    #[test]
+    fn opens_a_typed_saved_session() {
+        let transport = MockTransport::new([
+            Ok(HELLO),
+            Ok(
+                r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":{"sessionId":"saved","cwd":"C:\\work","sessionPath":"C:\\agent\\sessions\\saved.jsonl","modelFallbackMessage":null,"configuration":{"model":null,"thinkingLevel":"off","availableThinkingLevels":["off"]},"messages":[{"role":"user","content":"hello"}]}}"#,
+            ),
+        ]);
+        let writes = transport.writes.clone();
+        let supervisor = connect(transport);
+
+        let opened = supervisor
+            .open_session(Path::new(r"C:\agent\sessions\saved.jsonl"))
+            .unwrap();
+
+        assert_eq!(opened.session_id, "saved");
+        assert_eq!(opened.messages[0].content, "hello");
+        assert_eq!(
+            serde_json::from_str::<Value>(&writes.lock().unwrap()[0]).unwrap(),
+            json!({
+                "v": 1,
+                "id": "rust-1",
+                "op": "session.open",
+                "sessionPath": r"C:\agent\sessions\saved.jsonl"
+            })
         );
     }
 
@@ -1007,11 +1261,11 @@ mod tests {
             .to_owned();
         reads.lock().unwrap().extend([
             Ok(json!({"v": 1, "kind": "response", "id": abort_id, "ok": true}).to_string()),
-            Ok(json!({"v": 1, "kind": "response", "id": prompt_id, "ok": true}).to_string()),
+            Ok(json!({"v": 1, "kind": "response", "id": prompt_id, "ok": true, "data": {"finalSeq": 0}}).to_string()),
         ]);
 
         assert_eq!(abort.join().unwrap(), Ok(()));
-        assert_eq!(prompt.join().unwrap(), Ok(()));
+        assert_eq!(prompt.join().unwrap(), Ok(0));
     }
 
     fn wait_for_writes(writes: &Arc<Mutex<Vec<String>>>, count: usize) {

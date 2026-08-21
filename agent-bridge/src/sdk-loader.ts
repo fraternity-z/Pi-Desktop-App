@@ -38,6 +38,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isStaticApi(value: unknown): value is Record<string, unknown> {
+  return (typeof value === "object" && value !== null) || typeof value === "function";
+}
+
 export async function loadPiSdk(
   sdkRoot: string,
   dependencies: SdkLoaderDependencies = defaultDependencies,
@@ -78,8 +82,20 @@ export async function loadPiSdk(
   } catch {
     throw new SdkLoadError("SDK_IMPORT_FAILED", "无法加载 Pi SDK 模块");
   }
-  if (!isRecord(imported) || typeof imported.createAgentSession !== "function") {
-    throw new SdkLoadError("SDK_EXPORT_MISSING", "Pi SDK 缺少 createAgentSession 导出");
+  if (
+    !isRecord(imported) ||
+    typeof imported.createAgentSession !== "function" ||
+    !isStaticApi(imported.ModelRuntime) ||
+    typeof imported.ModelRuntime.create !== "function" ||
+    !isStaticApi(imported.SessionManager) ||
+    typeof imported.SessionManager.create !== "function" ||
+    typeof imported.SessionManager.open !== "function" ||
+    typeof imported.SessionManager.listAll !== "function"
+  ) {
+    throw new SdkLoadError(
+      "SDK_EXPORT_MISSING",
+      "Pi SDK 缺少会话、模型或运行时管理导出",
+    );
   }
 
   return {

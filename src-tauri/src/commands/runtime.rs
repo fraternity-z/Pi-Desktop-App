@@ -2,7 +2,10 @@ use tauri::State;
 
 use crate::{
     bridge::{
-        protocol::CreatedSession,
+        protocol::{
+            AgentModel, AgentSessionSummary, CreatedSession, SessionConfiguration,
+            SessionConfigurationUpdate,
+        },
         runtime::{BridgeRuntime, RuntimeSnapshot},
     },
     error::AppError,
@@ -22,11 +25,42 @@ pub async fn agent_create_session(
 }
 
 #[tauri::command]
+pub async fn agent_list_sessions(
+    runtime: State<'_, BridgeRuntime>,
+) -> Result<Vec<AgentSessionSummary>, AppError> {
+    runtime.list_sessions()
+}
+
+#[tauri::command]
+pub async fn agent_open_session(
+    runtime: State<'_, BridgeRuntime>,
+    session_path: String,
+) -> Result<CreatedSession, AppError> {
+    runtime.open_session(session_path)
+}
+
+#[tauri::command]
+pub async fn agent_list_models(
+    runtime: State<'_, BridgeRuntime>,
+) -> Result<Vec<AgentModel>, AppError> {
+    runtime.list_models()
+}
+
+#[tauri::command]
+pub async fn agent_configure_session(
+    runtime: State<'_, BridgeRuntime>,
+    session_id: String,
+    update: SessionConfigurationUpdate,
+) -> Result<SessionConfiguration, AppError> {
+    runtime.configure_session(session_id, update)
+}
+
+#[tauri::command]
 pub async fn agent_prompt(
     runtime: State<'_, BridgeRuntime>,
     session_id: String,
     text: String,
-) -> Result<(), AppError> {
+) -> Result<u64, AppError> {
     runtime.prompt(session_id, text)
 }
 

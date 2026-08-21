@@ -25,6 +25,28 @@ describe("parseRequest", () => {
       '{"v":1,"id":"r-4","op":"abort","sessionId":"s-1"}',
       { v: 1, id: "r-4", op: "abort", sessionId: "s-1" },
     ],
+    ['{"v":1,"id":"r-5","op":"model.list"}', { v: 1, id: "r-5", op: "model.list" }],
+    ['{"v":1,"id":"r-6","op":"session.list"}', { v: 1, id: "r-6", op: "session.list" }],
+    [
+      '{"v":1,"id":"r-7","op":"session.open","sessionPath":"C:\\\\agent\\\\sessions\\\\s.jsonl"}',
+      {
+        v: 1,
+        id: "r-7",
+        op: "session.open",
+        sessionPath: "C:\\agent\\sessions\\s.jsonl",
+      },
+    ],
+    [
+      '{"v":1,"id":"r-8","op":"session.configure","sessionId":"s-1","model":{"provider":"openai","id":"gpt"},"thinkingLevel":"high"}',
+      {
+        v: 1,
+        id: "r-8",
+        op: "session.configure",
+        sessionId: "s-1",
+        model: { provider: "openai", id: "gpt" },
+        thinkingLevel: "high",
+      },
+    ],
   ])("解析受支持的请求 %s", (line, expected) => {
     expect(parseRequest(line)).toEqual(expected);
   });
@@ -37,6 +59,12 @@ describe("parseRequest", () => {
     ["UNSUPPORTED_OPERATION", '{"v":1,"id":"r-1","op":"unknown"}'],
     ["INVALID_REQUEST", '{"v":1,"id":"r-1","op":"session.create","cwd":"relative"}'],
     ["INVALID_REQUEST", '{"v":1,"id":"r-1","op":"prompt","sessionId":"s-1"}'],
+    ["INVALID_REQUEST", '{"v":1,"id":"r-1","op":"session.open","sessionPath":"relative"}'],
+    ["INVALID_REQUEST", '{"v":1,"id":"r-1","op":"session.configure","sessionId":"s-1"}'],
+    [
+      "INVALID_REQUEST",
+      '{"v":1,"id":"r-1","op":"session.configure","sessionId":"s-1","thinkingLevel":"ultra"}',
+    ],
   ])("对无效输入返回稳定错误码 %s", (code, line) => {
     expect(() => parseRequest(line)).toThrowError(
       expect.objectContaining<Partial<ProtocolError>>({ code }),
@@ -67,7 +95,16 @@ describe("outbound frames", () => {
       protocolVersion: PROTOCOL_VERSION,
       piVersion: "0.84.2",
       nodeVersion: "22.19.0",
-      capabilities: ["sessions", "streaming", "abort", "extensions"],
+      capabilities: [
+        "sessions",
+        "streaming",
+        "abort",
+        "extensions",
+        "models",
+        "session-history",
+        "session-configuration",
+        "tool-status",
+      ],
     });
   });
 

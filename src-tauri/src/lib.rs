@@ -38,6 +38,10 @@ pub fn run() {
             commands::diagnostics::get_architecture_status,
             commands::runtime::get_runtime_status,
             commands::runtime::agent_create_session,
+            commands::runtime::agent_list_sessions,
+            commands::runtime::agent_open_session,
+            commands::runtime::agent_list_models,
+            commands::runtime::agent_configure_session,
             commands::runtime::agent_prompt,
             commands::runtime::agent_abort
         ])

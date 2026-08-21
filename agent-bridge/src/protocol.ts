@@ -4,10 +4,24 @@ export const PROTOCOL_VERSION = 1 as const;
 export const MAX_FRAME_BYTES = 1024 * 1024;
 export const MAX_PROMPT_CHARS = 200_000;
 
+export const THINKING_LEVELS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+
 export const BRIDGE_OPERATIONS = [
   "ping",
   "health",
+  "model.list",
   "session.create",
+  "session.list",
+  "session.open",
+  "session.configure",
   "prompt",
   "abort",
   "shutdown",
@@ -18,10 +32,20 @@ export const BRIDGE_CAPABILITIES = [
   "streaming",
   "abort",
   "extensions",
+  "models",
+  "session-history",
+  "session-configuration",
+  "tool-status",
 ] as const;
 
 export type BridgeOperation = (typeof BRIDGE_OPERATIONS)[number];
 export type BridgeCapability = (typeof BRIDGE_CAPABILITIES)[number];
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+
+export interface ModelSelection {
+  provider: string;
+  id: string;
+}
 
 interface RequestBase {
   v: typeof PROTOCOL_VERSION;
@@ -29,8 +53,15 @@ interface RequestBase {
 }
 
 export type BridgeRequest =
-  | (RequestBase & { op: "ping" | "health" | "shutdown" })
+  | (RequestBase & { op: "ping" | "health" | "model.list" | "session.list" | "shutdown" })
   | (RequestBase & { op: "session.create"; cwd: string })
+  | (RequestBase & { op: "session.open"; sessionPath: string })
+  | (RequestBase & {
+      op: "session.configure";
+      sessionId: string;
+      model?: ModelSelection;
+      thinkingLevel?: ThinkingLevel;
+    })
   | (RequestBase & { op: "prompt"; sessionId: string; text: string })
   | (RequestBase & { op: "abort"; sessionId: string });
 
@@ -105,6 +136,32 @@ function requireString(
   return fieldValue;
 }
 
+function readModelSelection(value: Record<string, unknown>): ModelSelection | undefined {
+  if (value.model === undefined) {
+    return undefined;
+  }
+  if (!isRecord(value.model)) {
+    throw new ProtocolError("INVALID_REQUEST", "model 必须为对象");
+  }
+  return {
+    provider: requireString(value.model, "provider", 128),
+    id: requireString(value.model, "id", 256),
+  };
+}
+
+function readThinkingLevel(value: Record<string, unknown>): ThinkingLevel | undefined {
+  if (value.thinkingLevel === undefined) {
+    return undefined;
+  }
+  if (
+    typeof value.thinkingLevel !== "string" ||
+    !THINKING_LEVELS.includes(value.thinkingLevel as ThinkingLevel)
+  ) {
+    throw new ProtocolError("INVALID_REQUEST", "thinkingLevel 不是受支持的思考强度");
+  }
+  return value.thinkingLevel as ThinkingLevel;
+}
+
 export function parseRequest(line: string): BridgeRequest {
   if (Buffer.byteLength(line, "utf8") > MAX_FRAME_BYTES) {
     throw new ProtocolError("FRAME_TOO_LARGE", "协议帧超过 1 MiB 限制");
@@ -136,14 +193,42 @@ export function parseRequest(line: string): BridgeRequest {
   switch (value.op as BridgeOperation) {
     case "ping":
     case "health":
+    case "model.list":
+    case "session.list":
     case "shutdown":
-      return { v: PROTOCOL_VERSION, id, op: value.op as "ping" | "health" | "shutdown" };
+      return {
+        v: PROTOCOL_VERSION,
+        id,
+        op: value.op as "ping" | "health" | "model.list" | "session.list" | "shutdown",
+      };
     case "session.create": {
       const cwd = requireString(value, "cwd", 4096);
       if (!isAbsolute(cwd)) {
         throw new ProtocolError("INVALID_REQUEST", "cwd 必须为绝对路径");
       }
       return { v: PROTOCOL_VERSION, id, op: "session.create", cwd };
+    }
+    case "session.open": {
+      const sessionPath = requireString(value, "sessionPath", 4096);
+      if (!isAbsolute(sessionPath)) {
+        throw new ProtocolError("INVALID_REQUEST", "sessionPath 必须为绝对路径");
+      }
+      return { v: PROTOCOL_VERSION, id, op: "session.open", sessionPath };
+    }
+    case "session.configure": {
+      const model = readModelSelection(value);
+      const thinkingLevel = readThinkingLevel(value);
+      if (model === undefined && thinkingLevel === undefined) {
+        throw new ProtocolError("INVALID_REQUEST", "会话配置至少需要一个变更项");
+      }
+      return {
+        v: PROTOCOL_VERSION,
+        id,
+        op: "session.configure",
+        sessionId: requireString(value, "sessionId"),
+        ...(model === undefined ? {} : { model }),
+        ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+      };
     }
     case "prompt":
       return {

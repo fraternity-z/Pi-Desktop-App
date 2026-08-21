@@ -1,44 +1,82 @@
-import { AlertTriangle, FolderOpen, LoaderCircle, Menu, RefreshCw, TerminalSquare } from "lucide-react";
+import {
+  AlertTriangle,
+  Ban,
+  CheckCircle2,
+  CircleX,
+  FolderPlus,
+  LoaderCircle,
+  Menu,
+  MessageSquarePlus,
+  RefreshCw,
+  TerminalSquare,
+  X,
+} from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import { AppSidebar } from "../components/AppSidebar";
 import { ChatComposer } from "../components/ChatComposer";
 import { RuntimeStatusControl } from "../components/RuntimeStatusControl";
-import { useChatSession } from "../stores/useChatSession";
+import type { AgentSessionSummary } from "../ipc/agent";
+import { useChatSession, type ToolExecution } from "../stores/useChatSession";
 import { useRuntimeStatus } from "../stores/useRuntimeStatus";
 
 export function ChatWorkbenchView() {
   const runtime = useRuntimeStatus();
   const session = useChatSession();
-  const [workspace, setWorkspace] = useState("");
-  const [connectedWorkspace, setConnectedWorkspace] = useState("");
   const [draft, setDraft] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [projectDialogOpen, setProjectDialogOpen] = useState(false);
+  const [projectPath, setProjectPath] = useState("");
   const messagesEnd = useRef<HTMLDivElement>(null);
 
   const runtimeReady = runtime.phase === "ready" && runtime.status.status === "ready";
   const eventChannelReady = session.eventConnection === "ready";
   const hasSession = session.sessionId !== null;
-  const workspaceName = getWorkspaceName(connectedWorkspace || workspace);
+  const workspaceName = getWorkspaceName(session.cwd);
+  const activeSession = session.sessions.find((item) => item.path === session.sessionPath);
+  const conversationTitle = activeSession ? getSessionTitle(activeSession) : workspaceName;
   const canSend =
     hasSession &&
     session.phase === "ready" &&
     eventChannelReady &&
+    !session.configuring &&
     draft.trim().length > 0;
 
   useEffect(() => {
     messagesEnd.current?.scrollIntoView?.({ block: "end" });
   }, [session.messages]);
 
-  async function createSession(event: FormEvent) {
+  useEffect(() => {
+    if (runtimeReady && eventChannelReady && session.catalogPhase === "idle") {
+      void session.loadCatalogs();
+    }
+  }, [eventChannelReady, runtimeReady, session.catalogPhase, session.loadCatalogs]);
+
+  async function createProject(event: FormEvent) {
     event.preventDefault();
-    if (!runtimeReady || !eventChannelReady || session.phase !== "idle") {
+    if (!runtimeReady || !eventChannelReady || session.phase === "streaming") {
       return;
     }
-    const path = workspace.trim();
-    const created = await session.createSession(path);
-    if (created) {
-      setConnectedWorkspace(path);
+    if (await session.createSession(projectPath)) {
+      setProjectPath("");
+      setProjectDialogOpen(false);
+      setSidebarOpen(false);
+    }
+  }
+
+  async function createSession(cwd?: string) {
+    if (!cwd) {
+      setProjectDialogOpen(true);
+      return;
+    }
+    if (await session.createSession(cwd)) {
+      setSidebarOpen(false);
+    }
+  }
+
+  async function openSession(selected: AgentSessionSummary) {
+    if (await session.openSession(selected.path)) {
+      setSidebarOpen(false);
     }
   }
 
@@ -61,10 +99,16 @@ export function ChatWorkbenchView() {
     <div className="desktop-shell">
       <AppSidebar
         open={sidebarOpen}
-        workspacePath={connectedWorkspace}
-        workspaceName={workspaceName}
-        sessionId={session.sessionId}
+        activeCwd={session.cwd}
+        activeSessionPath={session.sessionPath}
+        sessions={session.sessions}
+        catalogPhase={session.catalogPhase}
+        phase={session.phase}
         runtime={runtime}
+        onAddProject={() => setProjectDialogOpen(true)}
+        onNewSession={(cwd) => void createSession(cwd)}
+        onSelectSession={(selected) => void openSession(selected)}
+        onRefresh={() => void session.loadCatalogs()}
         onClose={() => setSidebarOpen(false)}
       />
       {sidebarOpen && (
@@ -89,8 +133,8 @@ export function ChatWorkbenchView() {
               <Menu size={19} />
             </button>
             <div className="topbar-title">
-              <span>Pi Desktop</span>
-              <h1>{hasSession ? workspaceName : "会话工作台"}</h1>
+              <span>{hasSession ? workspaceName : "Pi Desktop"}</span>
+              <h1>{hasSession ? conversationTitle : "会话工作台"}</h1>
             </div>
           </div>
           <RuntimeStatusControl runtime={runtime} eventConnection={session.eventConnection} />
@@ -118,6 +162,16 @@ export function ChatWorkbenchView() {
                 </button>
               </div>
             )}
+            {session.catalogError && (
+              <div className="inline-alert inline-alert-secondary" role="alert">
+                <AlertTriangle size={17} />
+                <span>{session.catalogError}</span>
+                <button type="button" onClick={() => void session.loadCatalogs()}>
+                  <RefreshCw size={15} />
+                  重试同步
+                </button>
+              </div>
+            )}
             {session.modelFallbackMessage && (
               <p className="inline-notice">{session.modelFallbackMessage}</p>
             )}
@@ -130,19 +184,18 @@ export function ChatWorkbenchView() {
 
           <div className="conversation-scroll" aria-live="polite">
             {!hasSession ? (
-              <WorkspaceConnector
-                workspace={workspace}
-                runtimeReady={runtimeReady}
-                eventChannelReady={eventChannelReady}
-                creating={session.phase === "creating"}
-                onWorkspaceChange={setWorkspace}
-                onSubmit={createSession}
+              <EmptyWorkspace
+                loading={session.catalogPhase === "loading"}
+                hasSavedSessions={session.sessions.length > 0}
+                disabled={!runtimeReady || !eventChannelReady}
+                onAddProject={() => setProjectDialogOpen(true)}
+                onOpenSidebar={() => setSidebarOpen(true)}
               />
             ) : session.messages.length === 0 ? (
               <div className="empty-conversation">
-                <TerminalSquare size={42} strokeWidth={1.5} aria-hidden="true" />
-                <h2>准备好在 {workspaceName} 中开始</h2>
-                <p>输入任务后，Pi 的响应会在这里实时显示。</p>
+                <TerminalSquare size={42} strokeWidth={1.45} aria-hidden="true" />
+                <h2>在 {workspaceName} 中开始</h2>
+                <p>输入任务，Pi 会在当前项目上下文中执行并实时返回结果。</p>
               </div>
             ) : (
               <div className="message-stream">
@@ -156,10 +209,13 @@ export function ChatWorkbenchView() {
                             <LoaderCircle className="spin" size={15} />
                             正在响应
                           </span>
-                        ) : message.role === "assistant" ? (
+                        ) : message.role === "assistant" && (message.tools?.length ?? 0) === 0 ? (
                           <span className="message-empty">本次任务没有返回文本。</span>
                         ) : null)}
                     </div>
+                    {message.tools && message.tools.length > 0 && (
+                      <ToolExecutionList tools={message.tools} />
+                    )}
                   </article>
                 ))}
                 <div ref={messagesEnd} />
@@ -173,61 +229,185 @@ export function ChatWorkbenchView() {
               draft={draft}
               phase={session.phase}
               eventConnection={session.eventConnection}
+              models={session.models}
+              configuration={session.configuration}
+              configuring={session.configuring}
               canSend={canSend}
               onDraftChange={setDraft}
+              onModelChange={(provider, id) => void session.updateModel(provider, id)}
+              onThinkingLevelChange={(level) => void session.updateThinkingLevel(level)}
               onSend={sendPrompt}
               onAbort={() => void session.abort()}
             />
           )}
         </section>
       </main>
+
+      {projectDialogOpen && (
+        <ProjectDialog
+          path={projectPath}
+          creating={session.phase === "creating"}
+          disabled={!runtimeReady || !eventChannelReady}
+          onPathChange={setProjectPath}
+          onSubmit={createProject}
+          onClose={() => {
+            if (session.phase !== "creating") {
+              setProjectDialogOpen(false);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
 
-interface WorkspaceConnectorProps {
-  workspace: string;
-  runtimeReady: boolean;
-  eventChannelReady: boolean;
-  creating: boolean;
-  onWorkspaceChange: (value: string) => void;
-  onSubmit: (event: FormEvent) => void;
+function ToolExecutionList({ tools }: { tools: ToolExecution[] }) {
+  return (
+    <ul className="tool-execution-list" aria-label="工具执行状态">
+      {tools.map((tool) => (
+        <li className={`tool-execution tool-execution-${tool.status}`} key={tool.id}>
+          <ToolStatusIcon status={tool.status} />
+          <span>{tool.name}</span>
+          <small>{getToolStatusLabel(tool.status)}</small>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
-function WorkspaceConnector({
-  workspace,
-  runtimeReady,
-  eventChannelReady,
+function ToolStatusIcon({ status }: { status: ToolExecution["status"] }) {
+  if (status === "running") {
+    return <LoaderCircle className="spin" size={14} aria-hidden="true" />;
+  }
+  if (status === "completed") {
+    return <CheckCircle2 size={14} aria-hidden="true" />;
+  }
+  if (status === "failed") {
+    return <CircleX size={14} aria-hidden="true" />;
+  }
+  return <Ban size={14} aria-hidden="true" />;
+}
+
+function getToolStatusLabel(status: ToolExecution["status"]): string {
+  return {
+    running: "执行中",
+    completed: "已完成",
+    failed: "失败",
+    cancelled: "已停止",
+  }[status];
+}
+
+interface EmptyWorkspaceProps {
+  loading: boolean;
+  hasSavedSessions: boolean;
+  disabled: boolean;
+  onAddProject: () => void;
+  onOpenSidebar: () => void;
+}
+
+function EmptyWorkspace({
+  loading,
+  hasSavedSessions,
+  disabled,
+  onAddProject,
+  onOpenSidebar,
+}: EmptyWorkspaceProps) {
+  return (
+    <div className="empty-workspace">
+      {loading ? (
+        <LoaderCircle className="spin" size={36} strokeWidth={1.5} aria-hidden="true" />
+      ) : (
+        <TerminalSquare size={40} strokeWidth={1.45} aria-hidden="true" />
+      )}
+      <h2>{hasSavedSessions ? "选择一个 Pi 会话" : "添加项目并开始会话"}</h2>
+      <p>
+        {hasSavedSessions
+          ? "从侧边栏继续已有工作，或为项目创建新会话。"
+          : "项目会使用本机 Pi 配置，并保存在 Pi 的原生会话目录中。"}
+      </p>
+      <div className="empty-workspace-actions">
+        {hasSavedSessions && (
+          <button className="secondary-button" type="button" onClick={onOpenSidebar}>
+            <MessageSquarePlus size={16} />
+            查看会话
+          </button>
+        )}
+        <button className="primary-button" type="button" onClick={onAddProject} disabled={disabled}>
+          <FolderPlus size={16} />
+          添加项目
+        </button>
+      </div>
+    </div>
+  );
+}
+
+interface ProjectDialogProps {
+  path: string;
+  creating: boolean;
+  disabled: boolean;
+  onPathChange: (value: string) => void;
+  onSubmit: (event: FormEvent) => void;
+  onClose: () => void;
+}
+
+function ProjectDialog({
+  path,
   creating,
-  onWorkspaceChange,
+  disabled,
+  onPathChange,
   onSubmit,
-}: WorkspaceConnectorProps) {
-  const canConnect = runtimeReady && eventChannelReady && workspace.trim().length > 0 && !creating;
+  onClose,
+}: ProjectDialogProps) {
+  const canSubmit = !disabled && !creating && path.trim().length > 0;
 
   return (
-    <div className="workspace-connector">
-      <div className="workspace-connector-heading">
-        <FolderOpen size={38} strokeWidth={1.5} aria-hidden="true" />
-        <h2>连接一个工作区</h2>
-        <p>选择 Pi 执行任务时使用的绝对目录。</p>
-      </div>
-      <form className="workspace-form" onSubmit={onSubmit}>
-        <label htmlFor="workspace-path">工作区</label>
-        <div className="workspace-input-row">
+    <div className="dialog-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="project-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="project-dialog-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="project-dialog-header">
+          <div>
+            <h2 id="project-dialog-title">添加项目</h2>
+            <p>输入 Pi 可以访问的本机绝对目录。</p>
+          </div>
+          <button
+            className="icon-button"
+            type="button"
+            onClick={onClose}
+            disabled={creating}
+            aria-label="关闭"
+            title="关闭"
+          >
+            <X size={18} />
+          </button>
+        </div>
+        <form onSubmit={onSubmit}>
+          <label htmlFor="project-path">项目目录</label>
           <input
-            id="workspace-path"
-            value={workspace}
-            onChange={(event) => onWorkspaceChange(event.target.value)}
+            id="project-path"
+            value={path}
+            onChange={(event) => onPathChange(event.target.value)}
             placeholder="C:\\path\\to\\project"
             disabled={creating}
             spellCheck={false}
             autoComplete="off"
+            autoFocus
           />
-          <button className="primary-button" type="submit" disabled={!canConnect}>
-            {creating ? "正在连接" : "创建会话"}
-          </button>
-        </div>
-      </form>
+          <div className="project-dialog-actions">
+            <button className="secondary-button" type="button" onClick={onClose} disabled={creating}>
+              取消
+            </button>
+            <button className="primary-button" type="submit" disabled={!canSubmit}>
+              {creating ? <LoaderCircle className="spin" size={15} /> : <FolderPlus size={15} />}
+              {creating ? "正在添加" : "添加并创建会话"}
+            </button>
+          </div>
+        </form>
+      </section>
     </div>
   );
 }
@@ -235,9 +415,13 @@ function WorkspaceConnector({
 function getWorkspaceName(path: string): string {
   const normalized = path.trim().replace(/[\\/]+$/, "");
   if (!normalized) {
-    return "未连接工作区";
+    return "未选择项目";
   }
   return normalized.split(/[\\/]/).at(-1) || normalized;
+}
+
+function getSessionTitle(session: AgentSessionSummary): string {
+  return session.name || session.firstMessage || "未命名会话";
 }
 
 function getRuntimeMessage(runtime: ReturnType<typeof useRuntimeStatus>): string | null {

@@ -15,7 +15,9 @@ use crate::{
             AgentModel, AgentSessionSummary, CreatedSession, SessionConfiguration,
             SessionConfigurationUpdate,
         },
-        supervisor::{BridgeEventSink, BridgeLaunchConfig, BridgeSupervisor},
+        supervisor::{
+            BridgeEventSink, BridgeLaunchConfig, BridgeSupervisor, normalize_process_path,
+        },
     },
     discovery::{RuntimeDiscoveryOptions, RuntimeSource, discover_runtime},
     error::AppError,
@@ -310,7 +312,7 @@ fn canonical_workspace(path: &Path) -> Result<PathBuf, AppError> {
             "工作区路径必须是目录",
         ));
     }
-    Ok(path)
+    Ok(normalize_process_path(path))
 }
 
 fn canonical_session_path(path: &Path) -> Result<PathBuf, AppError> {
@@ -330,7 +332,7 @@ fn canonical_session_path(path: &Path) -> Result<PathBuf, AppError> {
             "会话文件不在授权的 Pi sessions 目录中",
         ));
     }
-    Ok(canonical)
+    Ok(normalize_process_path(canonical))
 }
 
 fn validate_session_configuration_update(
@@ -496,6 +498,16 @@ mod tests {
             canonical_workspace(Path::new("relative/path")).expect_err("相对工作区必须被拒绝");
 
         assert_eq!(error.code, "WORKSPACE_PATH_INVALID");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn canonical_workspace_returns_node_compatible_windows_path() {
+        let current_dir = std::env::current_dir().expect("测试工作目录应存在");
+
+        let workspace = canonical_workspace(&current_dir).expect("测试工作目录应可规范化");
+
+        assert!(!workspace.to_string_lossy().starts_with(r"\\?\"));
     }
 
     #[test]

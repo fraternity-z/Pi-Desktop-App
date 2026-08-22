@@ -1,0 +1,30 @@
+[
+  {
+    "id": "H1",
+    "hypothesis": "Rust 将 Windows verbatim 路径直接传给 Pi SDK，导致会话创建失败",
+    "evidence_for": ["普通 Windows 路径通过完整 Bridge 协议创建成功", "同一路径改为 \\\\?\\ 前缀后稳定返回 SESSION_CREATE_FAILED", "canonical_workspace 当前未复用已有 normalize_process_path"],
+    "evidence_against": [],
+    "status": "confirmed"
+  },
+  {
+    "id": "H2",
+    "hypothesis": "SDK 在加载项目级资源或扩展时失败",
+    "evidence_for": ["createAgentSession 会为 cwd 创建 DefaultResourceLoader 并执行 reload"],
+    "evidence_against": [],
+    "status": "rejected"
+  },
+  {
+    "id": "H3",
+    "hypothesis": "模型或认证配置导致 ModelRuntime 初始化失败",
+    "evidence_for": ["createSession 在创建会话前显式创建 ModelRuntime"],
+    "evidence_against": ["应用运行时健康检查正常，但健康检查不创建 ModelRuntime"],
+    "status": "rejected"
+  },
+  {
+    "id": "H4",
+    "hypothesis": "SessionManager 创建持久化会话目录失败",
+    "evidence_for": ["SessionManager.create(cwd) 会写入 Pi 原生会话目录"],
+    "evidence_against": [],
+    "status": "rejected"
+  }
+]

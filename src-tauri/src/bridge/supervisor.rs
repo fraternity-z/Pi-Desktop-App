@@ -859,7 +859,7 @@ fn canonical_dir(
 }
 
 #[cfg(windows)]
-fn normalize_process_path(path: PathBuf) -> PathBuf {
+pub(super) fn normalize_process_path(path: PathBuf) -> PathBuf {
     use std::path::{Component, Prefix};
 
     let mut components = path.components();
@@ -885,7 +885,7 @@ fn normalize_process_path(path: PathBuf) -> PathBuf {
 }
 
 #[cfg(not(windows))]
-fn normalize_process_path(path: PathBuf) -> PathBuf {
+pub(super) fn normalize_process_path(path: PathBuf) -> PathBuf {
     path
 }
 

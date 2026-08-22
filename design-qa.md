@@ -1,42 +1,41 @@
 # Design QA
 
-## Result
+## 比较目标
 
-**passed**
+- Source visual truth: `C:/Users/Administrator/AppData/Local/Temp/codex-clipboard-cd5f588b-cf1c-4383-8db0-337819324806.png`
+- Implementation screenshot: `E:/code/Pi Desktop App/output/playwright/matched-new-session.png`
+- Full-view comparison: `E:/code/Pi Desktop App/output/playwright/matched-comparison.png`
+- Responsive evidence: `E:/code/Pi Desktop App/output/playwright/narrow-session.png`, `E:/code/Pi Desktop App/output/playwright/compact-session.png`, `E:/code/Pi Desktop App/output/playwright/compact-sidebar.png`
+- Viewport: implementation `1440 x 844`; source content cropped from `(50, 50, 2560, 1500)` and normalized to `1440 x 844`
+- State: light theme, project/session sidebar populated, new empty session active, composer contains an unsent multiline draft, model and thinking controls enabled
 
-## Source and implementation
+## Full-View Comparison Evidence
 
-- Visual source: `C:\Users\Administrator\AppData\Local\Temp\codex-clipboard-b08696b9-2498-455c-bd3c-0360b47829c8.png`
-- Implementation: `apps/desktop/src/views/ChatWorkbenchView.tsx` and `apps/desktop/src/styles.css`
-- Desktop state: runtime ready, workspace `E:\code\Pi Desktop App`, active session, 1600 x 1000
-- Mobile state: runtime ready, active session, sidebar closed/open, 390 x 844
+The combined image places the normalized source on the left and the implementation on the right. Both use a quiet neutral shell, fixed project sidebar, centered new-session prompt, and a bottom-docked rounded composer with a distinct input area and control row. The implementation intentionally omits unrelated global navigation from the source and uses Pi-specific runtime status instead.
 
-## Evidence
-
-- Full desktop: `output/playwright/02-desktop-session-ready.png`
-- Full mobile: `output/playwright/03-mobile-session-ready.png`
-- Mobile drawer: `output/playwright/04-mobile-sidebar-open.png`
-- Full reference comparison: `output/playwright/05-design-comparison.png`
-- Focused sidebar comparison: `output/playwright/06-focused-sidebar-comparison.png`
-- Focused composer comparison: `output/playwright/07-focused-composer-comparison.png`
+No separate focused crop was required: each side of the combined image retains 1440 CSS-equivalent pixels, so sidebar rows, composer controls, typography, borders, and selection states are legible at 100% scale. The compact sidebar screenshot provides additional focused evidence for the drawer and scrim behavior.
 
 ## Findings
 
-- P0: none.
-- P1: none after fixes. Runtime discovery now accepts Node.js from an absolute PATH entry when it is not beside the Pi command. Agent event-listener failure now blocks session creation and offers retry; abort ignores late stream events.
-- P2: none after fixes. Desktop and mobile layouts have no visible overlap, clipping, accidental overflow, or unusable controls. Empty, loading, unavailable-runtime, event-disconnected, and empty-response states are explicit.
-- P3: the implementation sidebar is intentionally less dense than the reference. The current milestone exposes one active session and no persisted project/history list, so only real workspace/session data is rendered instead of fabricated rows. This is consistent with the architecture plan and the request not to hardcode business data.
+- No actionable P0, P1, or P2 findings remain.
+- Fonts and typography: system UI fallbacks, restrained weights, zero letter spacing, and compact sidebar/topbar type preserve the source hierarchy without copying its product text.
+- Spacing and layout rhythm: the 268px desktop sidebar, centered conversation column, bottom composer, scroll boundaries, and responsive drawer are stable at 1440px, 720px, and 390px widths. No overlap, clipping, or layout shift was observed.
+- Colors and visual tokens: off-white sidebar, white workspace, subtle gray borders, green ready state, and neutral hover/selection colors match the source's low-contrast work surface. No gradients or decorative effects were introduced.
+- Image and icon fidelity: the interface has no content imagery. Controls use the installed Lucide icon set; no handcrafted SVG, CSS illustration, emoji, or placeholder asset is present.
+- Copy and content: project, session, model, and thinking values are data-driven in production. Source project names, conversation names, and prompt text were not copied into the application.
+- Interaction evidence: project expansion, session restore, model selection, thinking selection, composer draft entry, disabled send state, and compact sidebar opening were exercised in Playwright. Consecutive model/thinking updates remained synchronized.
 
-## Patches applied
+## Patches Made During QA
 
-- Reorganized the screen into a persistent workspace sidebar, compact top bar, scrollable conversation area, and docked composer.
-- Added responsive drawer behavior and a scrim for narrow viewports.
-- Replaced ad hoc symbols with Lucide icons and added hover, focus, selected, disabled, loading, empty, and error states.
-- Preserved existing runtime/session IPC and store boundaries; sidebar labels come from live workspace and session state.
-- Added a clear fallback when a completed task returns no text.
+- Added an empty favicon declaration and aligned the document theme color, removing the only browser 404 without adding a static asset.
+- Added component coverage for project grouping, expand/collapse, empty projects, SDK configuration absence, IME composition, and send shortcuts.
+- Narrowed catalog-loading effect dependencies to avoid redundant invocations.
+- Used a temporary, non-production Playwright IPC harness to render visual states without changing production data flow; the harness was removed after capture.
 
-## Final verification
+## Follow-up Polish
 
-- Reference and implementation were viewed together at desktop scale, then checked with focused sidebar and composer comparisons.
-- The remaining differences are product-scope differences, not visual defects or broken interactions.
-- Final result: **passed**.
+- P3: the composer is slightly wider than the normalized reference at large desktop sizes. This is acceptable because the lower row must accommodate two dynamic selectors, status text, and the send control without truncation.
+
+## Final Result
+
+final result: passed

@@ -3,6 +3,7 @@ import {
   Ban,
   CheckCircle2,
   CircleX,
+  FolderOpen,
   FolderPlus,
   LoaderCircle,
   Menu,
@@ -17,6 +18,7 @@ import { AppSidebar } from "../components/AppSidebar";
 import { ChatComposer } from "../components/ChatComposer";
 import { RuntimeStatusControl } from "../components/RuntimeStatusControl";
 import type { AgentSessionSummary } from "../ipc/agent";
+import { selectProjectDirectory } from "../ipc/project";
 import { useChatSession, type ToolExecution } from "../stores/useChatSession";
 import { useRuntimeStatus } from "../stores/useRuntimeStatus";
 
@@ -27,6 +29,8 @@ export function ChatWorkbenchView() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [projectPath, setProjectPath] = useState("");
+  const [projectSelectionError, setProjectSelectionError] = useState<string | null>(null);
+  const [selectingProject, setSelectingProject] = useState(false);
   const messagesEnd = useRef<HTMLDivElement>(null);
 
   const runtimeReady = runtime.phase === "ready" && runtime.status.status === "ready";
@@ -59,14 +63,47 @@ export function ChatWorkbenchView() {
     }
     if (await session.createSession(projectPath)) {
       setProjectPath("");
+      setProjectSelectionError(null);
       setProjectDialogOpen(false);
       setSidebarOpen(false);
     }
   }
 
+  function openProjectDialog() {
+    setProjectSelectionError(null);
+    setProjectDialogOpen(true);
+  }
+
+  function closeProjectDialog() {
+    if (session.phase === "creating" || selectingProject) {
+      return;
+    }
+    setProjectPath("");
+    setProjectSelectionError(null);
+    setProjectDialogOpen(false);
+  }
+
+  async function chooseProjectDirectory() {
+    if (session.phase === "creating" || selectingProject) {
+      return;
+    }
+    setProjectSelectionError(null);
+    setSelectingProject(true);
+    try {
+      const selected = await selectProjectDirectory();
+      if (selected !== null) {
+        setProjectPath(selected);
+      }
+    } catch (selectionError) {
+      setProjectSelectionError(formatProjectSelectionError(selectionError));
+    } finally {
+      setSelectingProject(false);
+    }
+  }
+
   async function createSession(cwd?: string) {
     if (!cwd) {
-      setProjectDialogOpen(true);
+      openProjectDialog();
       return;
     }
     if (await session.createSession(cwd)) {
@@ -105,7 +142,7 @@ export function ChatWorkbenchView() {
         catalogPhase={session.catalogPhase}
         phase={session.phase}
         runtime={runtime}
-        onAddProject={() => setProjectDialogOpen(true)}
+        onAddProject={openProjectDialog}
         onNewSession={(cwd) => void createSession(cwd)}
         onSelectSession={(selected) => void openSession(selected)}
         onRefresh={() => void session.loadCatalogs()}
@@ -175,7 +212,7 @@ export function ChatWorkbenchView() {
             {session.modelFallbackMessage && (
               <p className="inline-notice">{session.modelFallbackMessage}</p>
             )}
-            {sessionError && (
+            {sessionError && !projectDialogOpen && (
               <p className="inline-alert inline-alert-text" role="alert">
                 {sessionError}
               </p>
@@ -188,7 +225,7 @@ export function ChatWorkbenchView() {
                 loading={session.catalogPhase === "loading"}
                 hasSavedSessions={session.sessions.length > 0}
                 disabled={!runtimeReady || !eventChannelReady}
-                onAddProject={() => setProjectDialogOpen(true)}
+                onAddProject={openProjectDialog}
                 onOpenSidebar={() => setSidebarOpen(true)}
               />
             ) : session.messages.length === 0 ? (
@@ -247,14 +284,12 @@ export function ChatWorkbenchView() {
         <ProjectDialog
           path={projectPath}
           creating={session.phase === "creating"}
+          selecting={selectingProject}
           disabled={!runtimeReady || !eventChannelReady}
-          onPathChange={setProjectPath}
+          error={projectSelectionError ?? sessionError}
+          onSelectPath={() => void chooseProjectDirectory()}
           onSubmit={createProject}
-          onClose={() => {
-            if (session.phase !== "creating") {
-              setProjectDialogOpen(false);
-            }
-          }}
+          onClose={closeProjectDialog}
         />
       )}
     </div>
@@ -344,8 +379,10 @@ function EmptyWorkspace({
 interface ProjectDialogProps {
   path: string;
   creating: boolean;
+  selecting: boolean;
   disabled: boolean;
-  onPathChange: (value: string) => void;
+  error: string | null;
+  onSelectPath: () => void;
   onSubmit: (event: FormEvent) => void;
   onClose: () => void;
 }
@@ -353,12 +390,14 @@ interface ProjectDialogProps {
 function ProjectDialog({
   path,
   creating,
+  selecting,
   disabled,
-  onPathChange,
+  error,
+  onSelectPath,
   onSubmit,
   onClose,
 }: ProjectDialogProps) {
-  const canSubmit = !disabled && !creating && path.trim().length > 0;
+  const canSubmit = !disabled && !creating && !selecting && path.trim().length > 0;
 
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={onClose}>
@@ -372,13 +411,13 @@ function ProjectDialog({
         <div className="project-dialog-header">
           <div>
             <h2 id="project-dialog-title">添加项目</h2>
-            <p>输入 Pi 可以访问的本机绝对目录。</p>
+            <p>从资源管理器选择 Pi 可以访问的本机项目文件夹。</p>
           </div>
           <button
             className="icon-button"
             type="button"
             onClick={onClose}
-            disabled={creating}
+            disabled={creating || selecting}
             aria-label="关闭"
             title="关闭"
           >
@@ -386,19 +425,48 @@ function ProjectDialog({
           </button>
         </div>
         <form onSubmit={onSubmit}>
-          <label htmlFor="project-path">项目目录</label>
-          <input
-            id="project-path"
-            value={path}
-            onChange={(event) => onPathChange(event.target.value)}
-            placeholder="C:\\path\\to\\project"
-            disabled={creating}
-            spellCheck={false}
-            autoComplete="off"
+          <span className="project-source-label">项目文件夹</span>
+          <button
+            className={`project-folder-picker${path ? " project-folder-picker-selected" : ""}`}
+            type="button"
+            onClick={onSelectPath}
+            disabled={disabled || creating || selecting}
+            aria-label={path ? "重新选择项目文件夹" : "选择项目文件夹"}
             autoFocus
-          />
+          >
+            {selecting ? (
+              <LoaderCircle className="spin" size={22} aria-hidden="true" />
+            ) : path ? (
+              <FolderOpen size={22} aria-hidden="true" />
+            ) : (
+              <FolderPlus size={22} aria-hidden="true" />
+            )}
+            <span className="project-folder-picker-copy">
+              <strong>
+                {selecting
+                  ? "正在打开资源管理器"
+                  : path
+                    ? getWorkspaceName(path)
+                    : "选择项目文件夹"}
+              </strong>
+              <small title={path || undefined}>
+                {path || "使用系统文件夹选择器选择项目"}
+              </small>
+            </span>
+          </button>
+          {error && (
+            <p className="project-dialog-error" role="alert">
+              <AlertTriangle size={15} aria-hidden="true" />
+              <span>{error}</span>
+            </p>
+          )}
           <div className="project-dialog-actions">
-            <button className="secondary-button" type="button" onClick={onClose} disabled={creating}>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={onClose}
+              disabled={creating || selecting}
+            >
               取消
             </button>
             <button className="primary-button" type="submit" disabled={!canSubmit}>
@@ -432,4 +500,18 @@ function getRuntimeMessage(runtime: ReturnType<typeof useRuntimeStatus>): string
     return `${runtime.status.error?.code ?? "RUNTIME_UNAVAILABLE"}: ${runtime.status.error?.message ?? "未找到可用 Pi 运行时"}`;
   }
   return null;
+}
+
+function formatProjectSelectionError(error: unknown): string {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    "message" in error &&
+    typeof error.code === "string" &&
+    typeof error.message === "string"
+  ) {
+    return `${error.code}: ${error.message}`;
+  }
+  return "PROJECT_DIRECTORY_SELECTION_FAILED: 无法打开资源管理器，请重试";
 }

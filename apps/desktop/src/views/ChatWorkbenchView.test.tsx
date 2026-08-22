@@ -13,6 +13,7 @@ import {
   type AgentEvent,
   type AgentSession,
 } from "../ipc/agent";
+import { selectProjectDirectory } from "../ipc/project";
 import { getRuntimeStatus } from "../ipc/system";
 import { ChatWorkbenchView } from "./ChatWorkbenchView";
 
@@ -26,6 +27,7 @@ vi.mock("../ipc/agent", () => ({
   openAgentSession: vi.fn(),
   promptAgent: vi.fn(),
 }));
+vi.mock("../ipc/project", () => ({ selectProjectDirectory: vi.fn() }));
 vi.mock("../ipc/system", () => ({ getRuntimeStatus: vi.fn() }));
 
 const readyRuntime = {
@@ -57,6 +59,7 @@ describe("ChatWorkbenchView", () => {
     emitAgentEvent = undefined;
     unlisten = vi.fn<() => void>();
     vi.mocked(getRuntimeStatus).mockReset().mockResolvedValue(readyRuntime);
+    vi.mocked(selectProjectDirectory).mockReset().mockResolvedValue("C:\\work");
     vi.mocked(createAgentSession).mockReset().mockResolvedValue(defaultSession);
     vi.mocked(openAgentSession).mockReset().mockResolvedValue({
       ...defaultSession,
@@ -82,7 +85,7 @@ describe("ChatWorkbenchView", () => {
 
   it("通过项目弹窗创建会话、发送提示并合并流式文本", async () => {
     render(<ChatWorkbenchView />);
-    expect(await screen.findByText("Pi 0.84.2 · Node 22.23.2")).toBeInTheDocument();
+    expect(await screen.findByRole("status", { name: "状态正常" })).toBeInTheDocument();
     await addProject("C:\\work");
 
     expect(await screen.findByLabelText("发送给 Pi 的消息")).toBeInTheDocument();
@@ -121,7 +124,7 @@ describe("ChatWorkbenchView", () => {
 
   it("流式响应期间可停止任务", async () => {
     render(<ChatWorkbenchView />);
-    await screen.findByText("Pi 0.84.2 · Node 22.23.2");
+    await screen.findByRole("status", { name: "状态正常" });
     await addProject("C:\\work");
     const composer = await screen.findByLabelText("发送给 Pi 的消息");
     fireEvent.change(composer, { target: { value: "长任务" } });
@@ -149,6 +152,7 @@ describe("ChatWorkbenchView", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "RUNTIME_NOT_FOUND: 未找到可用运行时",
     );
+    expect(screen.getByRole("status", { name: "状态异常" })).toBeInTheDocument();
     expect(
       screen
         .getAllByRole("button", { name: "添加项目" })
@@ -162,7 +166,7 @@ describe("ChatWorkbenchView", () => {
       message: "工作区不存在",
     });
     const { unmount } = render(<ChatWorkbenchView />);
-    await screen.findByText("Pi 0.84.2 · Node 22.23.2");
+    await screen.findByRole("status", { name: "状态正常" });
     await addProject("C:\\missing");
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
@@ -172,9 +176,40 @@ describe("ChatWorkbenchView", () => {
     expect(unlisten).toHaveBeenCalledOnce();
   });
 
+  it("取消资源管理器选择时保留弹窗且不创建会话", async () => {
+    vi.mocked(selectProjectDirectory).mockResolvedValueOnce(null);
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    await openAddProjectDialog();
+
+    fireEvent.click(screen.getByRole("button", { name: "选择项目文件夹" }));
+
+    await waitFor(() => expect(selectProjectDirectory).toHaveBeenCalledOnce());
+    expect(screen.getByRole("dialog", { name: "添加项目" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "添加并创建会话" })).toBeDisabled();
+    expect(createAgentSession).not.toHaveBeenCalled();
+  });
+
+  it("资源管理器选择失败时在弹窗内展示稳定错误", async () => {
+    vi.mocked(selectProjectDirectory).mockRejectedValueOnce({
+      code: "PROJECT_DIRECTORY_SELECTION_FAILED",
+      message: "无法打开资源管理器，请重试",
+    });
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    await openAddProjectDialog();
+
+    fireEvent.click(screen.getByRole("button", { name: "选择项目文件夹" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "PROJECT_DIRECTORY_SELECTION_FAILED: 无法打开资源管理器，请重试",
+    );
+    expect(createAgentSession).not.toHaveBeenCalled();
+  });
+
   it("Shift+Enter 保留草稿，不提前发送", async () => {
     render(<ChatWorkbenchView />);
-    await screen.findByText("Pi 0.84.2 · Node 22.23.2");
+    await screen.findByRole("status", { name: "状态正常" });
     await addProject("C:\\work");
     const composer = await screen.findByLabelText("发送给 Pi 的消息");
     fireEvent.change(composer, { target: { value: "第一行\n第二行" } });
@@ -198,8 +233,9 @@ describe("ChatWorkbenchView", () => {
     const availableAddButton = addButtons.find((button) => !button.hasAttribute("disabled"));
     expect(availableAddButton).toBeDefined();
     fireEvent.click(availableAddButton!);
-    fireEvent.change(screen.getByLabelText("项目目录"), { target: { value: "C:\\work" } });
+    expect(screen.getByRole("button", { name: "选择项目文件夹" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "添加并创建会话" })).toBeDisabled();
+    expect(selectProjectDirectory).not.toHaveBeenCalled();
     expect(createAgentSession).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "重新连接" }));
     await waitFor(() => expect(listenToAgentEvents).toHaveBeenCalledTimes(2));
@@ -250,24 +286,36 @@ describe("ChatWorkbenchView", () => {
   it("任务完成但没有文本时展示明确空结果", async () => {
     vi.mocked(promptAgent).mockResolvedValue(0);
     render(<ChatWorkbenchView />);
-    await screen.findByText("Pi 0.84.2 · Node 22.23.2");
+    await screen.findByRole("status", { name: "状态正常" });
     await addProject("C:\\work");
     fireEvent.change(await screen.findByLabelText("发送给 Pi 的消息"), {
       target: { value: "执行空结果任务" },
     });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(await screen.findByText("正在响应")).toBeInTheDocument();
+    act(() => {
+      emitAgentEvent?.(agentEvent("agent.settled", undefined, 1));
+    });
     expect(await screen.findByText("本次任务没有返回文本。")).toBeInTheDocument();
   });
 });
 
 async function addProject(path: string) {
+  vi.mocked(selectProjectDirectory).mockResolvedValueOnce(path);
+  await openAddProjectDialog();
+  fireEvent.click(screen.getByRole("button", { name: "选择项目文件夹" }));
+  expect(await screen.findByText(path)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "添加并创建会话" }));
+}
+
+async function openAddProjectDialog() {
   const addButtons = await screen.findAllByRole("button", { name: "添加项目" });
   const addButton = addButtons.at(-1);
   expect(addButton).toBeDefined();
   await waitFor(() => expect(addButton).toBeEnabled());
   fireEvent.click(addButton!);
-  fireEvent.change(screen.getByLabelText("项目目录"), { target: { value: path } });
-  fireEvent.click(screen.getByRole("button", { name: "添加并创建会话" }));
+  expect(screen.getByRole("dialog", { name: "添加项目" })).toBeInTheDocument();
 }
 
 function agentEvent(name: AgentEvent["name"], data: unknown, seq: number): AgentEvent {

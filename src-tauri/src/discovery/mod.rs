@@ -445,7 +445,9 @@ mod tests {
         let path_node = node_root.join(&executable_names("node")[0]);
         let mut environment = valid_environment(&pi_root);
         environment.files.remove(&local_node);
-        environment.files.extend([pi_command.clone(), path_node.clone()]);
+        environment
+            .files
+            .extend([pi_command.clone(), path_node.clone()]);
         environment.path_entries = vec![node_root];
         let options = RuntimeDiscoveryOptions {
             pi_command: Some(pi_command),

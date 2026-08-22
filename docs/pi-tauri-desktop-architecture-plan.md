@@ -308,9 +308,11 @@ Renderer 不应获得启动任意进程的权限。
     {"v":1,"kind":"response","id":"r-001","ok":true,"data":{"finalSeq":102}}
 
 兼容说明：M1 的 hello 必须声明 `tool-status` 能力。`prompt` 成功响应中的
-`finalSeq` 表示该请求完成前 Bridge 已发出的最后事件序号；Renderer 消费到该
-序号后才能结束流式状态。工具事件只传 `toolCallId`、`toolName` 和事件名表达的
-状态，不传工具参数或执行结果。
+`finalSeq` 仅表示 Bridge 写出响应时已经发出的事件高水位，用于协议兼容和诊断，
+不表示该 prompt 的事件已经全部到达。RPC 响应与事件流是两个独立通道；Renderer
+必须继续接收响应后到达的事件，并且只在收到 `agent.settled`、prompt 失败或成功
+中止后结束流式状态。工具事件只传 `toolCallId`、`toolName` 和事件名表达的状态，
+不传工具参数或执行结果。
 
 协议必须定义：
 

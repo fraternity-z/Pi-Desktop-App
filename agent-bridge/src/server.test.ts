@@ -142,6 +142,22 @@ describe("BridgeServer", () => {
     ]);
   });
 
+  it("prompt 响应与后续流事件保持独立", async () => {
+    const { server, frames, runtimeMock } = setup();
+
+    await server.handleLine(
+      '{"v":1,"id":"prompt","op":"prompt","sessionId":"s-1","text":"hello"}',
+    );
+    runtimeMock.emit({ sessionId: "s-1", name: "message.delta", data: { delta: "late" } });
+    runtimeMock.emit({ sessionId: "s-1", name: "agent.settled" });
+
+    expect(frames).toEqual([
+      expect.objectContaining({ id: "prompt", ok: true, data: { finalSeq: 0 } }),
+      expect.objectContaining({ kind: "event", seq: 1, name: "message.delta" }),
+      expect.objectContaining({ kind: "event", seq: 2, name: "agent.settled" }),
+    ]);
+  });
+
   it("允许在 prompt 尚未结束时并发处理中止", async () => {
     let finishPrompt: () => void = () => undefined;
     const promptPending = new Promise<void>((resolve) => {

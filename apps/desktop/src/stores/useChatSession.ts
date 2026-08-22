@@ -23,6 +23,7 @@ import {
   type SessionConfiguration,
   type ThinkingLevel,
 } from "../ipc/agent";
+import { appendMonotonicText } from "./chatStream";
 
 export interface ChatMessage {
   id: number;
@@ -85,7 +86,6 @@ export function useChatSession(): ChatSessionState {
   const sessionIdRef = useRef<string | null>(null);
   const nextMessageId = useRef(1);
   const acceptingEvents = useRef(false);
-  const promptFinalSequence = useRef<number | null>(null);
   const lastEventSequence = useRef(0);
   const promptRequestId = useRef(0);
   const catalogRequestId = useRef(0);
@@ -113,12 +113,8 @@ export function useChatSession(): ChatSessionState {
           return;
         }
         applyAgentEvent(event, setMessages, setPhase);
-        if (
-          event.name === "agent.settled" ||
-          (promptFinalSequence.current !== null && event.seq >= promptFinalSequence.current)
-        ) {
+        if (event.name === "agent.settled") {
           acceptingEvents.current = false;
-          promptFinalSequence.current = null;
           setPhase("ready");
         }
       }
@@ -175,7 +171,6 @@ export function useChatSession(): ChatSessionState {
     sessionIdRef.current = session.sessionId;
     promptRequestId.current += 1;
     acceptingEvents.current = false;
-    promptFinalSequence.current = null;
     lastEventSequence.current = 0;
     nextMessageId.current = 1;
     setMessages(
@@ -314,18 +309,11 @@ export function useChatSession(): ChatSessionState {
       setError(null);
       setPhase("streaming");
       acceptingEvents.current = true;
-      promptFinalSequence.current = null;
 
       try {
-        const finalSequence = await promptAgent(activeSessionId, userMessage.content);
+        await promptAgent(activeSessionId, userMessage.content);
         if (requestId !== promptRequestId.current) {
           return;
-        }
-        promptFinalSequence.current = finalSequence;
-        if (lastEventSequence.current >= finalSequence) {
-          acceptingEvents.current = false;
-          promptFinalSequence.current = null;
-          setPhase((current) => (current === "streaming" ? "ready" : current));
         }
         void loadCatalogs();
       } catch (promptError) {
@@ -333,7 +321,6 @@ export function useChatSession(): ChatSessionState {
           return;
         }
         acceptingEvents.current = false;
-        promptFinalSequence.current = null;
         setMessages((current) =>
           current
             .map((message) =>
@@ -361,9 +348,9 @@ export function useChatSession(): ChatSessionState {
       return;
     }
     setError(null);
+    const resumeEventsOnFailure = acceptingEvents.current;
     promptRequestId.current += 1;
     acceptingEvents.current = false;
-    promptFinalSequence.current = null;
     try {
       await abortAgent(activeSessionId);
       setMessages((current) => {
@@ -378,7 +365,7 @@ export function useChatSession(): ChatSessionState {
       });
       setPhase("ready");
     } catch (abortError) {
-      acceptingEvents.current = true;
+      acceptingEvents.current = resumeEventsOnFailure;
       setError(formatError(abortError));
     }
   }, []);
@@ -455,7 +442,7 @@ function applyAgentEvent(
   setMessages((current) =>
     updateLastAssistant(current, (message) => ({
       ...message,
-      content: `${message.content}${delta}`,
+      content: appendMonotonicText(message.content, delta),
     })),
   );
 }

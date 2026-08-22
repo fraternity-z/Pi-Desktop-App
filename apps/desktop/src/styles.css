@@ -380,49 +380,6 @@ p {
   padding-left: 9px;
 }
 
-.sidebar-footer {
-  padding: 8px 9px;
-  border-top: 1px solid var(--line);
-}
-
-.runtime-summary {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px;
-  min-height: 45px;
-  padding: 6px 8px;
-  color: var(--danger);
-}
-
-.runtime-summary-ready {
-  color: var(--success);
-}
-
-.runtime-summary span {
-  display: grid;
-  min-width: 0;
-  gap: 2px;
-}
-
-.runtime-summary strong,
-.runtime-summary small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.runtime-summary strong {
-  color: var(--text);
-  font-size: 0.75rem;
-  font-weight: 580;
-}
-
-.runtime-summary small {
-  color: var(--subtle);
-  font-size: 0.65rem;
-}
-
 .sidebar-scrim {
   display: none;
 }
@@ -480,44 +437,24 @@ p {
   white-space: nowrap;
 }
 
-.runtime-control {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 7px;
-  min-height: 32px;
-  padding: 0 3px 0 9px;
-  border: 1px solid #e0c8c5;
-  border-radius: 6px;
-  background: #fff8f7;
-  color: var(--danger);
-  font-size: 0.69rem;
-  font-weight: 560;
+.runtime-status-icon {
+  display: inline-grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
 }
 
-.runtime-control-ready {
-  border-color: #c9ded1;
-  background: #f5faf7;
+.runtime-status-icon-ready {
   color: var(--success);
 }
 
-.runtime-control-loading {
-  padding-right: 9px;
-  border-color: var(--line);
-  background: #f7f7f6;
+.runtime-status-icon-error {
+  color: var(--danger);
+}
+
+.runtime-status-icon-loading {
   color: var(--muted);
-}
-
-.runtime-control > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.runtime-refresh-button {
-  width: 27px;
-  height: 27px;
-  color: inherit;
 }
 
 .conversation-shell {
@@ -980,7 +917,7 @@ p {
   line-height: 1.5;
 }
 
-.project-dialog form label {
+.project-source-label {
   display: block;
   margin-bottom: 7px;
   color: #555653;
@@ -988,22 +925,85 @@ p {
   font-weight: 620;
 }
 
-.project-dialog form input {
+.project-folder-picker {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
   width: 100%;
-  height: 40px;
-  padding: 0 10px;
+  min-height: 112px;
+  align-items: center;
+  justify-content: center;
+  gap: 11px;
+  padding: 17px;
   border: 1px solid var(--line-strong);
   border-radius: 6px;
   outline: none;
-  background: #ffffff;
+  background: #fafaf9;
   color: var(--text);
-  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
-  font-size: 0.76rem;
+  cursor: pointer;
+  text-align: left;
 }
 
-.project-dialog form input:focus {
+.project-folder-picker:not(:disabled):hover {
+  border-color: #b8b8b4;
+  background: #f5f5f3;
+}
+
+.project-folder-picker:focus-visible {
   border-color: #7c9cc7;
   box-shadow: 0 0 0 3px rgb(52 120 212 / 12%);
+}
+
+.project-folder-picker:disabled {
+  cursor: default;
+  opacity: 0.56;
+}
+
+.project-folder-picker > svg {
+  justify-self: center;
+  color: #858682;
+}
+
+.project-folder-picker-copy {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.project-folder-picker-copy strong,
+.project-folder-picker-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-folder-picker-copy strong {
+  font-size: 0.8rem;
+  font-weight: 620;
+}
+
+.project-folder-picker-copy small {
+  color: var(--muted);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.68rem;
+}
+
+.project-dialog-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 10px 0 0;
+  color: var(--danger);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.project-dialog-error svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.project-dialog-error span {
+  overflow-wrap: anywhere;
 }
 
 .project-dialog-actions {
@@ -1114,14 +1114,6 @@ p {
     align-items: flex-start;
     gap: 8px;
     padding: 9px 10px;
-  }
-
-  .runtime-control {
-    max-width: 46%;
-  }
-
-  .runtime-control > span {
-    display: none;
   }
 
   .inline-alert {

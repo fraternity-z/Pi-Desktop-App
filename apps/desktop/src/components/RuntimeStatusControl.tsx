@@ -1,4 +1,4 @@
-import { CircleAlert, CircleCheck, LoaderCircle, RefreshCw } from "lucide-react";
+import { CircleCheck, CircleX, LoaderCircle } from "lucide-react";
 
 import type { AgentEventConnection } from "../stores/useChatSession";
 import type { RuntimeStatusController } from "../stores/useRuntimeStatus";
@@ -9,35 +9,38 @@ interface RuntimeStatusControlProps {
 }
 
 export function RuntimeStatusControl({ runtime, eventConnection }: RuntimeStatusControlProps) {
-  if (runtime.phase === "loading") {
+  if (runtime.phase === "loading" || eventConnection === "connecting") {
     return (
-      <div className="runtime-control runtime-control-loading" aria-live="polite">
-        <LoaderCircle className="spin" size={16} />
-        <span>正在检测运行时</span>
-      </div>
+      <span
+        className="runtime-status-icon runtime-status-icon-loading"
+        role="status"
+        aria-label="正在检测运行状态"
+        title="正在检测运行状态"
+      >
+        <LoaderCircle className="spin" size={18} aria-hidden="true" />
+      </span>
     );
   }
 
   const runtimeReady = runtime.phase === "ready" && runtime.status.status === "ready";
   const connectionReady = eventConnection === "ready";
+  const ready = runtimeReady && connectionReady;
+  const detail = ready
+    ? `状态正常：Pi ${runtime.status.piVersion ?? "ready"} · Node ${runtime.status.nodeVersion ?? "ready"}`
+    : "状态异常";
 
   return (
-    <div className={`runtime-control${runtimeReady && connectionReady ? " runtime-control-ready" : ""}`}>
-      {runtimeReady && connectionReady ? <CircleCheck size={16} /> : <CircleAlert size={16} />}
-      <span>
-        {runtimeReady
-          ? `Pi ${runtime.status.piVersion ?? "ready"} · Node ${runtime.status.nodeVersion ?? "ready"}`
-          : "运行时不可用"}
-      </span>
-      <button
-        className="icon-button runtime-refresh-button"
-        type="button"
-        onClick={() => void runtime.refresh()}
-        aria-label="重新检测运行时"
-        title="重新检测运行时"
-      >
-        <RefreshCw size={15} />
-      </button>
-    </div>
+    <span
+      className={`runtime-status-icon runtime-status-icon-${ready ? "ready" : "error"}`}
+      role="status"
+      aria-label={ready ? "状态正常" : "状态异常"}
+      title={detail}
+    >
+      {ready ? (
+        <CircleCheck size={18} aria-hidden="true" />
+      ) : (
+        <CircleX size={18} aria-hidden="true" />
+      )}
+    </span>
   );
 }

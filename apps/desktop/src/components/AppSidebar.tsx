@@ -1,14 +1,11 @@
 import {
   ChevronDown,
   ChevronRight,
-  CircleCheck,
-  CircleX,
   Folder,
   MessageSquare,
   PanelLeftClose,
   PenLine,
   Plus,
-  Radio,
   RefreshCw,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -222,22 +219,6 @@ export function AppSidebar({
         </section>
       </div>
 
-      <footer className="sidebar-footer">
-        <div className={`runtime-summary${runtimeReady ? " runtime-summary-ready" : ""}`}>
-          {runtimeReady ? <CircleCheck size={17} /> : <CircleX size={17} />}
-          <span>
-            <strong>{runtimeReady ? "Pi 运行时已就绪" : "Pi 运行时未就绪"}</strong>
-            <small>
-              {runtime.phase === "loading"
-                ? "正在检测"
-                : runtimeReady
-                  ? runtime.status.runtimeSource ?? "系统运行时"
-                  : "可在主区域重试"}
-            </small>
-          </span>
-          <Radio size={14} aria-hidden="true" />
-        </div>
-      </footer>
     </aside>
   );
 }

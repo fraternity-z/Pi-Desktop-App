@@ -99,6 +99,7 @@ export async function configureAgentSession(
   return invoke<SessionConfiguration>("agent_configure_session", { sessionId, update });
 }
 
+/** 返回响应时的事件高水位；流是否完成由 agent.settled 独立确认。 */
 export async function promptAgent(sessionId: string, text: string): Promise<number> {
   return invoke<number>("agent_prompt", { sessionId, text });
 }

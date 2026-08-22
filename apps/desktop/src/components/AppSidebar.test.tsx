@@ -104,6 +104,6 @@ describe("AppSidebar", () => {
 
     expect(screen.getByText("正在读取 Pi 会话")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "刷新项目与会话" })).toBeDisabled();
-    expect(screen.getByText("Pi 运行时未就绪")).toBeInTheDocument();
+    expect(screen.queryByText("Pi 运行时未就绪")).not.toBeInTheDocument();
   });
 });

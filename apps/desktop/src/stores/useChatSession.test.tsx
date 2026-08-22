@@ -224,7 +224,7 @@ describe("useChatSession", () => {
     expect(result.current.error).toBe("abort failed");
   });
 
-  it("等待消费 prompt 声明的最终事件序号后再结束流式状态", async () => {
+  it("prompt 响应先返回时继续接收事件直到 agent.settled", async () => {
     let resolvePrompt: ((finalSequence: number) => void) | undefined;
     vi.mocked(promptAgent).mockImplementation(
       () =>
@@ -239,10 +239,16 @@ describe("useChatSession", () => {
       void result.current.sendPrompt("race");
     });
 
-    await act(async () => resolvePrompt?.(2));
+    await act(async () => resolvePrompt?.(0));
     expect(result.current.phase).toBe("streaming");
     act(() => {
       emit?.(event("agent.started"));
+      emit?.(event("message.delta", { delta: "late answer" }));
+    });
+    expect(result.current.phase).toBe("streaming");
+    expect(result.current.messages.at(-1)?.content).toBe("late answer");
+
+    act(() => {
       emit?.(event("agent.settled"));
     });
 

@@ -32,9 +32,11 @@ describe("AppSidebar", () => {
   it("按项目展示 SDK 会话并支持折叠、选择和刷新", async () => {
     const onSelectSession = vi.fn();
     const onRefresh = vi.fn();
+    const onWidthChange = vi.fn();
     render(
       <AppSidebar
         open
+        width={300}
         activeCwd={"C:\\projects\\alpha"}
         activeSessionPath={savedSession.path}
         sessions={[savedSession]}
@@ -46,6 +48,7 @@ describe("AppSidebar", () => {
         onSelectSession={onSelectSession}
         onRefresh={onRefresh}
         onClose={vi.fn()}
+        onWidthChange={onWidthChange}
       />,
     );
 
@@ -59,13 +62,19 @@ describe("AppSidebar", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "刷新项目与会话" }));
     expect(onRefresh).toHaveBeenCalledOnce();
+
+    fireEvent.keyDown(screen.getByRole("separator", { name: "调整侧边栏宽度" }), {
+      key: "ArrowRight",
+    });
+    expect(onWidthChange).toHaveBeenCalledWith(308);
   });
 
   it("为没有历史会话的当前项目提供创建动作", async () => {
     const onNewSession = vi.fn();
     render(
       <AppSidebar
-        open={false}
+        open
+        width={300}
         activeCwd={"C:\\projects\\empty"}
         activeSessionPath={null}
         sessions={[]}
@@ -77,6 +86,7 @@ describe("AppSidebar", () => {
         onSelectSession={vi.fn()}
         onRefresh={vi.fn()}
         onClose={vi.fn()}
+        onWidthChange={vi.fn()}
       />,
     );
 
@@ -87,7 +97,8 @@ describe("AppSidebar", () => {
   it("无项目时展示加载状态并禁用不可用操作", () => {
     render(
       <AppSidebar
-        open={false}
+        open
+        width={300}
         activeCwd=""
         activeSessionPath={null}
         sessions={[]}
@@ -99,6 +110,7 @@ describe("AppSidebar", () => {
         onSelectSession={vi.fn()}
         onRefresh={vi.fn()}
         onClose={vi.fn()}
+        onWidthChange={vi.fn()}
       />,
     );
 

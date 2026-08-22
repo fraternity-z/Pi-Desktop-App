@@ -8,14 +8,16 @@ import {
   Plus,
   RefreshCw,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type KeyboardEvent, type PointerEvent } from "react";
 
 import type { AgentSessionSummary } from "../ipc/agent";
 import type { CatalogPhase, ChatPhase } from "../stores/useChatSession";
 import type { RuntimeStatusController } from "../stores/useRuntimeStatus";
+import appIconUrl from "../../../../src-tauri/icons/64x64.png";
 
 interface AppSidebarProps {
   open: boolean;
+  width: number;
   activeCwd: string;
   activeSessionPath: string | null;
   sessions: AgentSessionSummary[];
@@ -27,6 +29,7 @@ interface AppSidebarProps {
   onSelectSession: (session: AgentSessionSummary) => void;
   onRefresh: () => void;
   onClose: () => void;
+  onWidthChange: (width: number) => void;
 }
 
 interface ProjectGroup {
@@ -37,6 +40,7 @@ interface ProjectGroup {
 
 export function AppSidebar({
   open,
+  width,
   activeCwd,
   activeSessionPath,
   sessions,
@@ -48,6 +52,7 @@ export function AppSidebar({
   onSelectSession,
   onRefresh,
   onClose,
+  onWidthChange,
 }: AppSidebarProps) {
   const runtimeReady = runtime.phase === "ready" && runtime.status.status === "ready";
   const projects = useMemo(() => groupSessionsByProject(sessions, activeCwd), [activeCwd, sessions]);
@@ -78,11 +83,43 @@ export function AppSidebar({
     });
   }
 
+  function beginResize(event: PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = width;
+
+    function handlePointerMove(pointerEvent: globalThis.PointerEvent) {
+      onWidthChange(clampSidebarWidth(startWidth + pointerEvent.clientX - startX));
+    }
+
+    function finishResize() {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", finishResize);
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", finishResize, { once: true });
+  }
+
+  function resizeWithKeyboard(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+      return;
+    }
+    event.preventDefault();
+    onWidthChange(clampSidebarWidth(width + (event.key === "ArrowRight" ? 8 : -8)));
+  }
+
   return (
-    <aside className={`app-sidebar${open ? " app-sidebar-open" : ""}`} aria-label="项目与会话导航">
+    <aside
+      className={`app-sidebar${open ? " app-sidebar-open" : " app-sidebar-collapsed"}`}
+      aria-label="项目与会话导航"
+      aria-hidden={!open}
+      inert={!open}
+      style={{ width: open ? `${width}px` : 0 }}
+    >
       <div className="sidebar-brand-row">
         <div className="sidebar-brand">
-          <span className="brand-mark" aria-hidden="true">Pi</span>
+          <img className="brand-mark" src={appIconUrl} alt="" aria-hidden="true" />
           <span>Pi Desktop</span>
         </div>
         <button
@@ -218,9 +255,26 @@ export function AppSidebar({
           )}
         </section>
       </div>
-
+      {open && (
+        <div
+          className="sidebar-resizer"
+          role="separator"
+          aria-label="调整侧边栏宽度"
+          aria-orientation="vertical"
+          aria-valuemin={232}
+          aria-valuemax={360}
+          aria-valuenow={width}
+          tabIndex={0}
+          onPointerDown={beginResize}
+          onKeyDown={resizeWithKeyboard}
+        />
+      )}
     </aside>
   );
+}
+
+function clampSidebarWidth(width: number): number {
+  return Math.min(360, Math.max(232, Math.round(width)));
 }
 
 function groupSessionsByProject(

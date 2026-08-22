@@ -24,9 +24,9 @@ describe("ChatComposer", () => {
       />,
     );
 
-    expect(screen.getByLabelText("模型")).toBeDisabled();
-    expect(screen.getByRole("option", { name: "无可用模型" })).toBeInTheDocument();
-    expect(screen.getByLabelText("思考强度")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "选择模型" })).toBeDisabled();
+    expect(screen.getByText("无可用模型")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "选择思考强度" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
   });
 
@@ -59,11 +59,11 @@ describe("ChatComposer", () => {
       />,
     );
 
-    fireEvent.change(screen.getByLabelText("模型"), {
-      target: { value: "anthropic\u0000claude" },
-    });
+    fireEvent.click(screen.getByRole("button", { name: "选择模型" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Claude" }));
     expect(onModelChange).toHaveBeenCalledWith("anthropic", "claude");
-    fireEvent.change(screen.getByLabelText("思考强度"), { target: { value: "high" } });
+    fireEvent.click(screen.getByRole("button", { name: "选择思考强度" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "深度思考" }));
     expect(onThinkingLevelChange).toHaveBeenCalledWith("high");
 
     const textarea = screen.getByLabelText("发送给 Pi 的消息");
@@ -73,5 +73,34 @@ describe("ChatComposer", () => {
     expect(onSend).not.toHaveBeenCalled();
     fireEvent.keyDown(textarea, { key: "Enter" });
     expect(onSend).toHaveBeenCalledOnce();
+  });
+
+  it("按 Escape 关闭已打开的配置菜单", () => {
+    render(
+      <ChatComposer
+        workspaceName="workspace"
+        draft="执行检查"
+        phase="ready"
+        eventConnection="ready"
+        models={[{ provider: "openai", id: "gpt", name: "GPT", reasoning: true }]}
+        configuration={{
+          model: { provider: "openai", id: "gpt", name: "GPT", reasoning: true },
+          thinkingLevel: "medium",
+          availableThinkingLevels: ["off", "medium", "high"],
+        }}
+        configuring={false}
+        canSend
+        onDraftChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onThinkingLevelChange={vi.fn()}
+        onSend={vi.fn()}
+        onAbort={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "选择模型" }));
+    expect(screen.getByRole("menu", { name: "模型列表" })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("menu", { name: "模型列表" })).not.toBeInTheDocument();
   });
 });

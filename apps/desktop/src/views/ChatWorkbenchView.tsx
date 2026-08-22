@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  ArrowDown,
   Ban,
   CheckCircle2,
   CircleX,
@@ -9,10 +10,9 @@ import {
   Menu,
   MessageSquarePlus,
   RefreshCw,
-  TerminalSquare,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
 
 import { AppSidebar } from "../components/AppSidebar";
 import { ChatComposer } from "../components/ChatComposer";
@@ -21,17 +21,23 @@ import type { AgentSessionSummary } from "../ipc/agent";
 import { selectProjectDirectory } from "../ipc/project";
 import { useChatSession, type ToolExecution } from "../stores/useChatSession";
 import { useRuntimeStatus } from "../stores/useRuntimeStatus";
+import appIconUrl from "../../../../src-tauri/icons/64x64.png";
 
 export function ChatWorkbenchView() {
   const runtime = useRuntimeStatus();
   const session = useChatSession();
   const [draft, setDraft] = useState("");
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(() => !isNarrowViewport());
+  const [sidebarWidth, setSidebarWidth] = useState(readSidebarWidth);
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [projectPath, setProjectPath] = useState("");
   const [projectSelectionError, setProjectSelectionError] = useState<string | null>(null);
   const [selectingProject, setSelectingProject] = useState(false);
   const messagesEnd = useRef<HTMLDivElement>(null);
+  const conversationScroll = useRef<HTMLDivElement>(null);
+  const shouldStickToBottom = useRef(true);
+  const projectDialogTrigger = useRef<HTMLElement | null>(null);
+  const [atConversationBottom, setAtConversationBottom] = useState(true);
 
   const runtimeReady = runtime.phase === "ready" && runtime.status.status === "ready";
   const eventChannelReady = session.eventConnection === "ready";
@@ -47,8 +53,24 @@ export function ChatWorkbenchView() {
     draft.trim().length > 0;
 
   useEffect(() => {
-    messagesEnd.current?.scrollIntoView?.({ block: "end" });
+    if (shouldStickToBottom.current) {
+      scrollConversationToBottom(conversationScroll.current, messagesEnd.current);
+    }
   }, [session.messages]);
+
+  useEffect(() => {
+    shouldStickToBottom.current = true;
+    setAtConversationBottom(true);
+    scrollConversationToBottom(conversationScroll.current, messagesEnd.current);
+  }, [session.sessionId]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("pi-desktop.sidebar-width", String(sidebarWidth));
+    } catch {
+      // Local persistence is optional; the in-memory width remains usable.
+    }
+  }, [sidebarWidth]);
 
   useEffect(() => {
     if (runtimeReady && eventChannelReady && session.catalogPhase === "idle") {
@@ -65,11 +87,12 @@ export function ChatWorkbenchView() {
       setProjectPath("");
       setProjectSelectionError(null);
       setProjectDialogOpen(false);
-      setSidebarOpen(false);
+      closeSidebarOnNarrowScreen(setSidebarOpen);
     }
   }
 
   function openProjectDialog() {
+    projectDialogTrigger.current = document.activeElement as HTMLElement | null;
     setProjectSelectionError(null);
     setProjectDialogOpen(true);
   }
@@ -81,6 +104,7 @@ export function ChatWorkbenchView() {
     setProjectPath("");
     setProjectSelectionError(null);
     setProjectDialogOpen(false);
+    window.setTimeout(() => projectDialogTrigger.current?.focus(), 0);
   }
 
   async function chooseProjectDirectory() {
@@ -107,13 +131,13 @@ export function ChatWorkbenchView() {
       return;
     }
     if (await session.createSession(cwd)) {
-      setSidebarOpen(false);
+      closeSidebarOnNarrowScreen(setSidebarOpen);
     }
   }
 
   async function openSession(selected: AgentSessionSummary) {
     if (await session.openSession(selected.path)) {
-      setSidebarOpen(false);
+      closeSidebarOnNarrowScreen(setSidebarOpen);
     }
   }
 
@@ -123,6 +147,8 @@ export function ChatWorkbenchView() {
       return;
     }
     const prompt = draft;
+    shouldStickToBottom.current = true;
+    setAtConversationBottom(true);
     setDraft("");
     void session.sendPrompt(prompt);
   }
@@ -133,9 +159,14 @@ export function ChatWorkbenchView() {
     session.error && !session.error.startsWith("AGENT_EVENT_") ? session.error : null;
 
   return (
-    <div className="desktop-shell">
+    <div
+      className="desktop-shell"
+      data-sidebar-open={sidebarOpen}
+      style={{ "--sidebar-width": `${sidebarOpen ? sidebarWidth : 0}px` } as CSSProperties}
+    >
       <AppSidebar
         open={sidebarOpen}
+        width={sidebarWidth}
         activeCwd={session.cwd}
         activeSessionPath={session.sessionPath}
         sessions={session.sessions}
@@ -147,6 +178,7 @@ export function ChatWorkbenchView() {
         onSelectSession={(selected) => void openSession(selected)}
         onRefresh={() => void session.loadCatalogs()}
         onClose={() => setSidebarOpen(false)}
+        onWidthChange={setSidebarWidth}
       />
       {sidebarOpen && (
         <button
@@ -160,15 +192,17 @@ export function ChatWorkbenchView() {
       <main className="workspace-main">
         <header className="topbar">
           <div className="topbar-title-group">
-            <button
-              className="icon-button sidebar-open-button"
-              type="button"
-              onClick={() => setSidebarOpen(true)}
-              aria-label="打开侧边栏"
-              title="打开侧边栏"
-            >
-              <Menu size={19} />
-            </button>
+            {!sidebarOpen && (
+              <button
+                className="icon-button sidebar-open-button"
+                type="button"
+                onClick={() => setSidebarOpen(true)}
+                aria-label="打开侧边栏"
+                title="打开侧边栏"
+              >
+                <Menu size={19} />
+              </button>
+            )}
             <div className="topbar-title">
               <span>{hasSession ? workspaceName : "Pi Desktop"}</span>
               <h1>{hasSession ? conversationTitle : "会话工作台"}</h1>
@@ -219,64 +253,93 @@ export function ChatWorkbenchView() {
             )}
           </div>
 
-          <div className="conversation-scroll" aria-live="polite">
-            {!hasSession ? (
-              <EmptyWorkspace
-                loading={session.catalogPhase === "loading"}
-                hasSavedSessions={session.sessions.length > 0}
-                disabled={!runtimeReady || !eventChannelReady}
-                onAddProject={openProjectDialog}
-                onOpenSidebar={() => setSidebarOpen(true)}
-              />
-            ) : session.messages.length === 0 ? (
-              <div className="empty-conversation">
-                <TerminalSquare size={42} strokeWidth={1.45} aria-hidden="true" />
-                <h2>在 {workspaceName} 中开始</h2>
-                <p>输入任务，Pi 会在当前项目上下文中执行并实时返回结果。</p>
+          <div
+            className="conversation-scroll"
+            aria-live="polite"
+            ref={conversationScroll}
+            onScroll={(event) => {
+              const target = event.currentTarget;
+              const atBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 72;
+              shouldStickToBottom.current = atBottom;
+              setAtConversationBottom(atBottom);
+            }}
+          >
+            <div className="thread-content-column-stack">
+              <div className={`thread-body${hasSession && session.messages.length > 0 ? "" : " thread-body-empty"}`}>
+                {!hasSession ? (
+                  <EmptyWorkspace
+                    loading={session.catalogPhase === "loading"}
+                    hasSavedSessions={session.sessions.length > 0}
+                    disabled={!runtimeReady || !eventChannelReady}
+                    onAddProject={openProjectDialog}
+                    onOpenSidebar={() => setSidebarOpen(true)}
+                  />
+                ) : session.messages.length === 0 ? (
+                  <div className="empty-conversation">
+                    <img className="empty-product-logo" src={appIconUrl} alt="" aria-hidden="true" />
+                    <h2>开始对话</h2>
+                    <p>直接输入即可，Pi 会在 {workspaceName} 的项目上下文中执行。</p>
+                  </div>
+                ) : (
+                  <div className="message-stream">
+                    {session.messages.map((message) => (
+                      <article className={`message message-${message.role}`} key={message.id}>
+                        <p className="message-role">{message.role === "user" ? "你" : "Pi"}</p>
+                        <div className="message-content">
+                          {message.content ||
+                            (session.phase === "streaming" ? (
+                              <span className="message-loading">
+                                <LoaderCircle className="spin" size={15} />
+                                正在响应
+                              </span>
+                            ) : message.role === "assistant" && (message.tools?.length ?? 0) === 0 ? (
+                              <span className="message-empty">本次任务没有返回文本。</span>
+                            ) : null)}
+                        </div>
+                        {message.tools && message.tools.length > 0 && (
+                          <ToolExecutionList tools={message.tools} />
+                        )}
+                      </article>
+                    ))}
+                    <div ref={messagesEnd} />
+                  </div>
+                )}
               </div>
-            ) : (
-              <div className="message-stream">
-                {session.messages.map((message) => (
-                  <article className={`message message-${message.role}`} key={message.id}>
-                    <p className="message-role">{message.role === "user" ? "你" : "Pi"}</p>
-                    <div className="message-content">
-                      {message.content ||
-                        (session.phase === "streaming" ? (
-                          <span className="message-loading">
-                            <LoaderCircle className="spin" size={15} />
-                            正在响应
-                          </span>
-                        ) : message.role === "assistant" && (message.tools?.length ?? 0) === 0 ? (
-                          <span className="message-empty">本次任务没有返回文本。</span>
-                        ) : null)}
-                    </div>
-                    {message.tools && message.tools.length > 0 && (
-                      <ToolExecutionList tools={message.tools} />
-                    )}
-                  </article>
-                ))}
-                <div ref={messagesEnd} />
-              </div>
-            )}
-          </div>
 
-          {hasSession && (
-            <ChatComposer
-              workspaceName={workspaceName}
-              draft={draft}
-              phase={session.phase}
-              eventConnection={session.eventConnection}
-              models={session.models}
-              configuration={session.configuration}
-              configuring={session.configuring}
-              canSend={canSend}
-              onDraftChange={setDraft}
-              onModelChange={(provider, id) => void session.updateModel(provider, id)}
-              onThinkingLevelChange={(level) => void session.updateThinkingLevel(level)}
-              onSend={sendPrompt}
-              onAbort={() => void session.abort()}
-            />
-          )}
+              {hasSession && (
+                <ChatComposer
+                  workspaceName={workspaceName}
+                  draft={draft}
+                  phase={session.phase}
+                  eventConnection={session.eventConnection}
+                  models={session.models}
+                  configuration={session.configuration}
+                  configuring={session.configuring}
+                  canSend={canSend}
+                  onDraftChange={setDraft}
+                  onModelChange={(provider, id) => void session.updateModel(provider, id)}
+                  onThinkingLevelChange={(level) => void session.updateThinkingLevel(level)}
+                  onSend={sendPrompt}
+                  onAbort={() => void session.abort()}
+                />
+              )}
+              {hasSession && session.messages.length > 0 && !atConversationBottom && (
+                <button
+                  className="scroll-latest-button"
+                  type="button"
+                  aria-label="跳到最新消息"
+                  title="跳到最新消息"
+                  onClick={() => {
+                    shouldStickToBottom.current = true;
+                    setAtConversationBottom(true);
+                    scrollConversationToBottom(conversationScroll.current, messagesEnd.current);
+                  }}
+                >
+                  <ArrowDown size={16} />
+                </button>
+              )}
+            </div>
+          </div>
         </section>
       </main>
 
@@ -352,7 +415,7 @@ function EmptyWorkspace({
       {loading ? (
         <LoaderCircle className="spin" size={36} strokeWidth={1.5} aria-hidden="true" />
       ) : (
-        <TerminalSquare size={40} strokeWidth={1.45} aria-hidden="true" />
+        <img className="empty-product-logo" src={appIconUrl} alt="" aria-hidden="true" />
       )}
       <h2>{hasSavedSessions ? "选择一个 Pi 会话" : "添加项目并开始会话"}</h2>
       <p>
@@ -398,6 +461,16 @@ function ProjectDialog({
   onClose,
 }: ProjectDialogProps) {
   const canSubmit = !disabled && !creating && !selecting && path.trim().length > 0;
+
+  useEffect(() => {
+    function closeOnEscape(event: globalThis.KeyboardEvent) {
+      if (event.key === "Escape" && !creating && !selecting) {
+        onClose();
+      }
+    }
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [creating, onClose, selecting]);
 
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={onClose}>
@@ -514,4 +587,37 @@ function formatProjectSelectionError(error: unknown): string {
     return `${error.code}: ${error.message}`;
   }
   return "PROJECT_DIRECTORY_SELECTION_FAILED: 无法打开资源管理器，请重试";
+}
+
+function isNarrowViewport(): boolean {
+  return typeof window !== "undefined" && window.innerWidth <= 900;
+}
+
+function closeSidebarOnNarrowScreen(setOpen: (open: boolean) => void) {
+  if (isNarrowViewport()) {
+    setOpen(false);
+  }
+}
+
+function readSidebarWidth(): number {
+  try {
+    const stored = Number(window.localStorage.getItem("pi-desktop.sidebar-width"));
+    if (Number.isFinite(stored) && stored >= 232 && stored <= 360) {
+      return Math.round(stored);
+    }
+  } catch {
+    // Fall through to the target product's default rail width.
+  }
+  return 300;
+}
+
+function scrollConversationToBottom(
+  scrollElement: HTMLDivElement | null,
+  endElement: HTMLDivElement | null,
+) {
+  if (scrollElement?.scrollTo) {
+    scrollElement.scrollTo({ top: scrollElement.scrollHeight, behavior: "auto" });
+    return;
+  }
+  endElement?.scrollIntoView?.({ block: "end" });
 }

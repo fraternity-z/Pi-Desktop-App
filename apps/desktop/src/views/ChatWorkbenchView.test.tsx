@@ -56,6 +56,7 @@ describe("ChatWorkbenchView", () => {
   let unlisten: Mock<() => void>;
 
   beforeEach(() => {
+    window.localStorage.clear();
     emitAgentEvent = undefined;
     unlisten = vi.fn<() => void>();
     vi.mocked(getRuntimeStatus).mockReset().mockResolvedValue(readyRuntime);
@@ -207,6 +208,17 @@ describe("ChatWorkbenchView", () => {
     expect(createAgentSession).not.toHaveBeenCalled();
   });
 
+  it("按 Escape 取消添加项目", async () => {
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    await openAddProjectDialog();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(screen.queryByRole("dialog", { name: "添加项目" })).not.toBeInTheDocument();
+    expect(createAgentSession).not.toHaveBeenCalled();
+  });
+
   it("Shift+Enter 保留草稿，不提前发送", async () => {
     render(<ChatWorkbenchView />);
     await screen.findByRole("status", { name: "状态正常" });
@@ -264,9 +276,8 @@ describe("ChatWorkbenchView", () => {
       ...defaultSession.configuration,
       model: { provider: "anthropic", id: "claude", name: "Claude", reasoning: true },
     });
-    fireEvent.change(screen.getByLabelText("模型"), {
-      target: { value: "anthropic\u0000claude" },
-    });
+    fireEvent.click(screen.getByRole("button", { name: "选择模型" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Claude" }));
     await waitFor(() =>
       expect(configureAgentSession).toHaveBeenCalledWith("saved", {
         model: { provider: "anthropic", id: "claude" },
@@ -277,7 +288,8 @@ describe("ChatWorkbenchView", () => {
       ...defaultSession.configuration,
       thinkingLevel: "high",
     });
-    fireEvent.change(screen.getByLabelText("思考强度"), { target: { value: "high" } });
+    fireEvent.click(screen.getByRole("button", { name: "选择思考强度" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "深度思考" }));
     await waitFor(() =>
       expect(configureAgentSession).toHaveBeenCalledWith("saved", { thinkingLevel: "high" }),
     );

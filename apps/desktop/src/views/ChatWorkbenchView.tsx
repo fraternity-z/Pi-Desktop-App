@@ -15,18 +15,26 @@ import { AppSidebar } from "../components/AppSidebar";
 import { ChatComposer } from "../components/ChatComposer";
 import { ConversationTimeline } from "../components/ConversationTimeline";
 import { RuntimeStatusControl } from "../components/RuntimeStatusControl";
+import { SettingsSidebar, type SettingsSectionId } from "../components/SettingsSidebar";
 import type { AgentSessionSummary, PromptStreamingBehavior } from "../ipc/agent";
 import { selectProjectDirectory } from "../ipc/project";
+import { useAppPreferences } from "../stores/useAppPreferences";
 import { useChatSession } from "../stores/useChatSession";
+import { useRequestHeaderSettings } from "../stores/useRequestHeaderSettings";
 import { useRuntimeStatus } from "../stores/useRuntimeStatus";
+import { SettingsView } from "./SettingsView";
 import appIconUrl from "../../../../src-tauri/icons/64x64.png";
 
 export function ChatWorkbenchView() {
   const runtime = useRuntimeStatus();
   const session = useChatSession();
+  const requestHeaders = useRequestHeaderSettings();
+  const { preferences, updatePreferences } = useAppPreferences();
   const [draft, setDraft] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(() => !isNarrowViewport());
   const [sidebarWidth, setSidebarWidth] = useState(readSidebarWidth);
+  const [activeView, setActiveView] = useState<"chat" | "settings">("chat");
+  const [settingsSection, setSettingsSection] = useState<SettingsSectionId>("general");
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [projectPath, setProjectPath] = useState("");
   const [projectSelectionError, setProjectSelectionError] = useState<string | null>(null);
@@ -85,7 +93,7 @@ export function ChatWorkbenchView() {
       setProjectPath("");
       setProjectSelectionError(null);
       setProjectDialogOpen(false);
-      closeSidebarOnNarrowScreen(setSidebarOpen);
+      closeSidebarAfterNavigation();
     }
   }
 
@@ -129,20 +137,55 @@ export function ChatWorkbenchView() {
       return;
     }
     if (await session.createSession(cwd)) {
-      closeSidebarOnNarrowScreen(setSidebarOpen);
+      closeSidebarAfterNavigation();
     }
   }
 
   async function createConversation() {
     if (await session.createConversation()) {
-      closeSidebarOnNarrowScreen(setSidebarOpen);
+      closeSidebarAfterNavigation();
     }
   }
 
   async function openSession(selected: AgentSessionSummary) {
     if (await session.openSession(selected.path)) {
+      closeSidebarAfterNavigation();
+    }
+  }
+
+  function closeSidebarAfterNavigation() {
+    if (preferences.closeSidebarOnNavigation) {
       closeSidebarOnNarrowScreen(setSidebarOpen);
     }
+  }
+
+  function openSettings() {
+    setSettingsSection("general");
+    setActiveView("settings");
+    closeSidebarAfterNavigation();
+  }
+
+  function leaveSettings() {
+    setActiveView("chat");
+    closeSidebarAfterNavigation();
+    window.setTimeout(() => {
+      scrollConversationToBottom(conversationScroll.current, messagesEnd.current);
+    }, 0);
+  }
+
+  function openSettingsSection(section: SettingsSectionId) {
+    setSettingsSection(section);
+    closeSidebarAfterNavigation();
+  }
+
+  async function removeWorkspace(cwd: string) {
+    if (
+      preferences.confirmRemoveWorkspace &&
+      !window.confirm(`确定从最近项目中移除“${getWorkspaceName(cwd)}”吗？`)
+    ) {
+      return;
+    }
+    await session.removeWorkspace(cwd);
   }
 
   function sendPrompt(event?: FormEvent, behavior?: PromptStreamingBehavior) {
@@ -168,29 +211,43 @@ export function ChatWorkbenchView() {
     <div
       className="desktop-shell"
       data-sidebar-open={sidebarOpen}
+      data-active-view={activeView}
       style={{ "--sidebar-width": `${sidebarOpen ? sidebarWidth : 0}px` } as CSSProperties}
     >
-      <AppSidebar
-        open={sidebarOpen}
-        width={sidebarWidth}
-        activeCwd={session.cwd}
-        activeSessionPath={session.sessionPath}
-        sessions={session.sessions}
-        recentWorkspaces={session.recentWorkspaces}
-        conversationHome={session.conversationHome}
-        runningSessionIds={session.runningSessionIds}
-        catalogPhase={session.catalogPhase}
-        phase={session.phase}
-        runtime={runtime}
-        onAddProject={openProjectDialog}
-        onNewConversation={() => void createConversation()}
-        onNewSession={(cwd) => void createSession(cwd)}
-        onRemoveWorkspace={(cwd) => void session.removeWorkspace(cwd)}
-        onSelectSession={(selected) => void openSession(selected)}
-        onRefresh={() => void session.loadCatalogs()}
-        onClose={() => setSidebarOpen(false)}
-        onWidthChange={setSidebarWidth}
-      />
+      {activeView === "settings" ? (
+        <SettingsSidebar
+          open={sidebarOpen}
+          width={sidebarWidth}
+          activeSection={settingsSection}
+          onBack={leaveSettings}
+          onSectionChange={openSettingsSection}
+          onClose={() => setSidebarOpen(false)}
+          onWidthChange={setSidebarWidth}
+        />
+      ) : (
+        <AppSidebar
+          open={sidebarOpen}
+          width={sidebarWidth}
+          activeCwd={session.cwd}
+          activeSessionPath={session.sessionPath}
+          sessions={session.sessions}
+          recentWorkspaces={session.recentWorkspaces}
+          conversationHome={session.conversationHome}
+          runningSessionIds={session.runningSessionIds}
+          catalogPhase={session.catalogPhase}
+          phase={session.phase}
+          runtime={runtime}
+          onAddProject={openProjectDialog}
+          onNewConversation={() => void createConversation()}
+          onNewSession={(cwd) => void createSession(cwd)}
+          onRemoveWorkspace={(cwd) => void removeWorkspace(cwd)}
+          onSelectSession={(selected) => void openSession(selected)}
+          onRefresh={() => void session.loadCatalogs()}
+          onOpenSettings={openSettings}
+          onClose={() => setSidebarOpen(false)}
+          onWidthChange={setSidebarWidth}
+        />
+      )}
       {sidebarOpen && (
         <button
           className="sidebar-scrim"
@@ -200,6 +257,21 @@ export function ChatWorkbenchView() {
         />
       )}
 
+      {activeView === "settings" ? (
+        <SettingsView
+          section={settingsSection}
+          sidebarOpen={sidebarOpen}
+          sidebarWidth={sidebarWidth}
+          preferences={preferences}
+          requestHeaders={requestHeaders}
+          runtime={runtime}
+          eventConnection={session.eventConnection}
+          onOpenSidebar={() => setSidebarOpen(true)}
+          onBack={leaveSettings}
+          onSidebarWidthChange={setSidebarWidth}
+          onPreferencesChange={updatePreferences}
+        />
+      ) : (
       <main className="workspace-main">
         <header className="topbar">
           <div className="topbar-title-group">
@@ -219,7 +291,9 @@ export function ChatWorkbenchView() {
               <h1>{hasSession ? conversationTitle : "会话工作台"}</h1>
             </div>
           </div>
-          <RuntimeStatusControl runtime={runtime} eventConnection={session.eventConnection} />
+          {preferences.showRuntimeStatus && (
+            <RuntimeStatusControl runtime={runtime} eventConnection={session.eventConnection} />
+          )}
         </header>
 
         <section className="conversation-shell" aria-label="Pi 会话工作台">
@@ -287,6 +361,7 @@ export function ChatWorkbenchView() {
                     loading={session.catalogPhase === "loading"}
                     hasSavedSessions={session.sessions.length > 0}
                     disabled={!runtimeReady || !eventChannelReady}
+                    showSuggestions={preferences.showSuggestions}
                     onAddProject={openProjectDialog}
                     onNewConversation={() => void createConversation()}
                     onOpenSidebar={() => setSidebarOpen(true)}
@@ -295,7 +370,9 @@ export function ChatWorkbenchView() {
                   <div className="empty-conversation">
                     <img className="empty-product-logo" src={appIconUrl} alt="" aria-hidden="true" />
                     <h2>开始对话</h2>
-                    <p>直接输入即可，Pi 会在 {workspaceName} 的项目上下文中执行。</p>
+                    {preferences.showSuggestions && (
+                      <p>直接输入即可，Pi 会在 {workspaceName} 的项目上下文中执行。</p>
+                    )}
                   </div>
                 ) : (
                   <>
@@ -347,6 +424,7 @@ export function ChatWorkbenchView() {
           </div>
         </section>
       </main>
+      )}
 
       {projectDialogOpen && (
         <ProjectDialog
@@ -368,6 +446,7 @@ interface EmptyWorkspaceProps {
   loading: boolean;
   hasSavedSessions: boolean;
   disabled: boolean;
+  showSuggestions: boolean;
   onAddProject: () => void;
   onNewConversation: () => void;
   onOpenSidebar: () => void;
@@ -377,6 +456,7 @@ function EmptyWorkspace({
   loading,
   hasSavedSessions,
   disabled,
+  showSuggestions,
   onAddProject,
   onNewConversation,
   onOpenSidebar,
@@ -389,11 +469,13 @@ function EmptyWorkspace({
         <img className="empty-product-logo" src={appIconUrl} alt="" aria-hidden="true" />
       )}
       <h2>{hasSavedSessions ? "选择一个 Pi 会话" : "添加项目并开始会话"}</h2>
-      <p>
-        {hasSavedSessions
-          ? "从侧边栏继续已有工作，或为项目创建新会话。"
-          : "项目会使用本机 Pi 配置，并保存在 Pi 的原生会话目录中。"}
-      </p>
+      {showSuggestions && (
+        <p>
+          {hasSavedSessions
+            ? "从侧边栏继续已有工作，或为项目创建新会话。"
+            : "项目会使用本机 Pi 配置，并保存在 Pi 的原生会话目录中。"}
+        </p>
+      )}
       <div className="empty-workspace-actions">
         <button className="secondary-button" type="button" onClick={onNewConversation} disabled={disabled}>
           <MessageSquarePlus size={16} />

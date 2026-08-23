@@ -1,5 +1,11 @@
 import { isAbsolute } from "node:path";
 
+import {
+  REQUEST_HEADER_CLIENTS,
+  type RequestHeaderClient,
+  type RequestHeaderSettings,
+} from "./request-headers.js";
+
 export const PROTOCOL_VERSION = 1 as const;
 export const MAX_FRAME_BYTES = 1024 * 1024;
 export const MAX_PROMPT_CHARS = 200_000;
@@ -18,6 +24,7 @@ export const BRIDGE_OPERATIONS = [
   "ping",
   "health",
   "model.list",
+  "request-headers.configure",
   "session.create",
   "session.list",
   "session.open",
@@ -40,6 +47,7 @@ export const BRIDGE_CAPABILITIES = [
   "background-sessions",
   "thinking-stream",
   "queue",
+  "request-header-profiles",
 ] as const;
 
 export type BridgeOperation = (typeof BRIDGE_OPERATIONS)[number];
@@ -59,6 +67,7 @@ interface RequestBase {
 
 export type BridgeRequest =
   | (RequestBase & { op: "ping" | "health" | "model.list" | "session.list" | "shutdown" })
+  | (RequestBase & { op: "request-headers.configure" } & RequestHeaderSettings)
   | (RequestBase & { op: "session.create"; cwd: string })
   | (RequestBase & { op: "session.open"; sessionPath: string })
   | (RequestBase & {
@@ -183,6 +192,19 @@ function readStreamingBehavior(
   return value.streamingBehavior;
 }
 
+function readRequestHeaderSettings(value: Record<string, unknown>): RequestHeaderSettings {
+  if (typeof value.enabled !== "boolean") {
+    throw new ProtocolError("INVALID_REQUEST", "enabled 必须为布尔值");
+  }
+  if (
+    typeof value.client !== "string" ||
+    !REQUEST_HEADER_CLIENTS.includes(value.client as RequestHeaderClient)
+  ) {
+    throw new ProtocolError("INVALID_REQUEST", "client 必须为 claude-code 或 codex");
+  }
+  return { enabled: value.enabled, client: value.client as RequestHeaderClient };
+}
+
 export function parseRequest(line: string): BridgeRequest {
   if (Buffer.byteLength(line, "utf8") > MAX_FRAME_BYTES) {
     throw new ProtocolError("FRAME_TOO_LARGE", "协议帧超过 1 MiB 限制");
@@ -221,6 +243,13 @@ export function parseRequest(line: string): BridgeRequest {
         v: PROTOCOL_VERSION,
         id,
         op: value.op as "ping" | "health" | "model.list" | "session.list" | "shutdown",
+      };
+    case "request-headers.configure":
+      return {
+        v: PROTOCOL_VERSION,
+        id,
+        op: "request-headers.configure",
+        ...readRequestHeaderSettings(value),
       };
     case "session.create": {
       const cwd = requireString(value, "cwd", 4096);

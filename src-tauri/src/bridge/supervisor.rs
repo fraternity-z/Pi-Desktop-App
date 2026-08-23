@@ -17,8 +17,8 @@ use serde_json::{Value, json};
 use crate::{
     bridge::protocol::{
         AgentModel, AgentSessionSummary, BridgeEvent, BridgeHello, BridgeResponse, CreatedSession,
-        PROTOCOL_VERSION, PromptStreamingBehavior, SessionConfiguration, parse_hello_frame,
-        validate_event, validate_frame_size,
+        PROTOCOL_VERSION, PromptStreamingBehavior, RequestHeaderSettings, SessionConfiguration,
+        parse_hello_frame, validate_event, validate_frame_size,
     },
     error::AppError,
 };
@@ -147,6 +147,35 @@ impl BridgeSupervisor {
             return Err(AppError::new(
                 "BRIDGE_HEALTH_INVALID",
                 "Bridge health 响应缺少 status=ok",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn configure_request_headers(
+        &self,
+        settings: &RequestHeaderSettings,
+    ) -> Result<(), AppError> {
+        let fields = serde_json::to_value(settings)
+            .map_err(|_| AppError::new("BRIDGE_REQUEST_INVALID", "无法序列化请求头客户端配置"))?;
+        let data = self
+            .request("request-headers.configure", fields, self.response_timeout)?
+            .ok_or_else(|| {
+                AppError::new(
+                    "BRIDGE_REQUEST_HEADERS_INVALID",
+                    "Bridge request-headers.configure 响应缺少配置数据",
+                )
+            })?;
+        let configured: RequestHeaderSettings = serde_json::from_value(data).map_err(|_| {
+            AppError::new(
+                "BRIDGE_REQUEST_HEADERS_INVALID",
+                "Bridge request-headers.configure 响应字段无效",
+            )
+        })?;
+        if configured != *settings {
+            return Err(AppError::new(
+                "BRIDGE_REQUEST_HEADERS_INVALID",
+                "Bridge request-headers.configure 响应与请求不一致",
             ));
         }
         Ok(())
@@ -662,6 +691,7 @@ fn public_remote_error_code(code: &str) -> Option<&'static str> {
         "QUEUE_CLEAR_FAILED" => "QUEUE_CLEAR_FAILED",
         "ABORT_FAILED" => "ABORT_FAILED",
         "RUNTIME_CLOSED" => "RUNTIME_CLOSED",
+        "REQUEST_HEADERS_UNSUPPORTED" => "REQUEST_HEADERS_UNSUPPORTED",
         _ => return None,
     })
 }
@@ -934,7 +964,7 @@ mod tests {
 
     use super::*;
 
-    const HELLO: &str = r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions","models","session-history","session-configuration","tool-status","background-sessions","thinking-stream","queue"]}"#;
+    const HELLO: &str = r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions","models","session-history","session-configuration","tool-status","background-sessions","thinking-stream","queue","request-header-profiles"]}"#;
 
     struct MockTransport {
         reads: Arc<Mutex<VecDeque<Result<String, AppError>>>>,
@@ -1003,6 +1033,37 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Value>(&writes.lock().unwrap()[0]).unwrap(),
             json!({"v": 1, "id": "rust-1", "op": "health"})
+        );
+    }
+
+    #[test]
+    fn sends_and_validates_request_header_settings() {
+        let transport = MockTransport::new([
+            Ok(HELLO),
+            Ok(
+                r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":{"enabled":true,"client":"codex"}}"#,
+            ),
+        ]);
+        let writes = transport.writes.clone();
+        let supervisor = connect(transport);
+        let settings = RequestHeaderSettings {
+            enabled: true,
+            client: crate::bridge::protocol::RequestHeaderClient::Codex,
+        };
+
+        supervisor
+            .configure_request_headers(&settings)
+            .expect("请求头设置应同步成功");
+
+        assert_eq!(
+            serde_json::from_str::<Value>(&writes.lock().unwrap()[0]).unwrap(),
+            json!({
+                "v": 1,
+                "id": "rust-1",
+                "op": "request-headers.configure",
+                "enabled": true,
+                "client": "codex"
+            })
         );
     }
 

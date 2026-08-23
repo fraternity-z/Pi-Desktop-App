@@ -14,7 +14,7 @@ use crate::{
     bridge::{
         protocol::{
             AgentModel, AgentSessionSummary, CreatedSession, PromptStreamingBehavior,
-            SessionConfiguration, SessionConfigurationUpdate,
+            RequestHeaderSettings, SessionConfiguration, SessionConfigurationUpdate,
         },
         supervisor::{
             BridgeEventSink, BridgeLaunchConfig, BridgeSupervisor, normalize_process_path,
@@ -38,6 +38,7 @@ pub struct BridgeRuntime {
     supervisor: Mutex<Option<Arc<BridgeSupervisor>>>,
     known_sessions: Mutex<HashSet<String>>,
     snapshot: Mutex<RuntimeSnapshot>,
+    request_header_settings: Mutex<RequestHeaderSettings>,
     launch: Option<RuntimeLaunchContext>,
     closed: AtomicBool,
 }
@@ -49,18 +50,27 @@ struct RuntimeLaunchContext {
 }
 
 impl BridgeRuntime {
-    pub fn initialize(bridge_script: PathBuf, event_sink: BridgeEventSink) -> Self {
+    pub fn initialize(
+        bridge_script: PathBuf,
+        event_sink: BridgeEventSink,
+        request_header_settings: RequestHeaderSettings,
+    ) -> Self {
         let launch = RuntimeLaunchContext {
             bridge_script,
             event_sink,
         };
-        match start_bridge(launch.bridge_script.clone(), launch.event_sink.clone()) {
+        match start_bridge(
+            launch.bridge_script.clone(),
+            launch.event_sink.clone(),
+            &request_header_settings,
+        ) {
             Ok((supervisor, source)) => {
                 let snapshot = ready_snapshot(supervisor.hello(), &source);
                 Self {
                     supervisor: Mutex::new(Some(Arc::new(supervisor))),
                     known_sessions: Mutex::new(HashSet::new()),
                     snapshot: Mutex::new(snapshot),
+                    request_header_settings: Mutex::new(request_header_settings),
                     launch: Some(launch),
                     closed: AtomicBool::new(false),
                 }
@@ -69,17 +79,19 @@ impl BridgeRuntime {
                 supervisor: Mutex::new(None),
                 known_sessions: Mutex::new(HashSet::new()),
                 snapshot: Mutex::new(unavailable_snapshot(error)),
+                request_header_settings: Mutex::new(request_header_settings),
                 launch: Some(launch),
                 closed: AtomicBool::new(false),
             },
         }
     }
 
-    pub fn unavailable(error: AppError) -> Self {
+    pub fn unavailable(error: AppError, request_header_settings: RequestHeaderSettings) -> Self {
         Self {
             supervisor: Mutex::new(None),
             known_sessions: Mutex::new(HashSet::new()),
             snapshot: Mutex::new(unavailable_snapshot(error)),
+            request_header_settings: Mutex::new(request_header_settings),
             launch: None,
             closed: AtomicBool::new(false),
         }
@@ -125,6 +137,39 @@ impl BridgeRuntime {
 
     pub fn list_models(&self) -> Result<Vec<AgentModel>, AppError> {
         self.with_supervisor(|supervisor| supervisor.list_models())
+    }
+
+    pub fn configure_request_headers(
+        &self,
+        settings: RequestHeaderSettings,
+    ) -> Result<RequestHeaderSettings, AppError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(AppError::new("BRIDGE_CLOSED", "Pi Bridge 已关闭"));
+        }
+        let previous = {
+            let mut current = self
+                .request_header_settings
+                .lock()
+                .map_err(|_| AppError::new("BRIDGE_STATE_POISONED", "请求头客户端设置锁不可用"))?;
+            std::mem::replace(&mut *current, settings.clone())
+        };
+        let supervisor = self
+            .supervisor
+            .lock()
+            .map_err(|_| AppError::new("BRIDGE_STATE_POISONED", "Bridge 状态锁不可用"))?
+            .clone();
+        if let Some(supervisor) = supervisor
+            && let Err(error) = supervisor.configure_request_headers(&settings)
+        {
+            if let Ok(mut current) = self.request_header_settings.lock() {
+                *current = previous;
+            }
+            if is_connection_failure(&error) {
+                self.discard_supervisor(&supervisor, error.clone());
+            }
+            return Err(error);
+        }
+        Ok(settings)
     }
 
     pub fn configure_session(
@@ -188,6 +233,11 @@ impl BridgeRuntime {
         if self.closed.load(Ordering::Acquire) {
             return Err(AppError::new("BRIDGE_CLOSED", "Pi Bridge 已关闭"));
         }
+        let request_header_settings = self
+            .request_header_settings
+            .lock()
+            .map_err(|_| AppError::new("BRIDGE_STATE_POISONED", "请求头客户端设置锁不可用"))?
+            .clone();
         let mut slot = self
             .supervisor
             .lock()
@@ -199,7 +249,11 @@ impl BridgeRuntime {
             .launch
             .as_ref()
             .ok_or_else(|| AppError::new("BRIDGE_UNAVAILABLE", "Pi Bridge 当前不可用"))?;
-        match start_bridge(launch.bridge_script.clone(), launch.event_sink.clone()) {
+        match start_bridge(
+            launch.bridge_script.clone(),
+            launch.event_sink.clone(),
+            &request_header_settings,
+        ) {
             Ok((supervisor, source)) => {
                 let snapshot = ready_snapshot(supervisor.hello(), &source);
                 let supervisor = Arc::new(supervisor);
@@ -291,6 +345,7 @@ impl Drop for BridgeRuntime {
 fn start_bridge(
     bridge_script: PathBuf,
     event_sink: BridgeEventSink,
+    request_header_settings: &RequestHeaderSettings,
 ) -> Result<(BridgeSupervisor, RuntimeSource), AppError> {
     let runtime_paths = discover_runtime(&RuntimeDiscoveryOptions::default())?;
     let source = runtime_paths.source.clone();
@@ -305,6 +360,10 @@ fn start_bridge(
         event_sink,
     )?;
     if let Err(error) = supervisor.health() {
+        let _ = supervisor.shutdown();
+        return Err(error);
+    }
+    if let Err(error) = supervisor.configure_request_headers(request_header_settings) {
         let _ = supervisor.shutdown();
         return Err(error);
     }
@@ -478,8 +537,10 @@ mod tests {
 
     #[test]
     fn unavailable_runtime_exposes_stable_non_sensitive_snapshot() {
-        let runtime =
-            BridgeRuntime::unavailable(AppError::new("RUNTIME_NOT_FOUND", "未找到可用运行时"));
+        let runtime = BridgeRuntime::unavailable(
+            AppError::new("RUNTIME_NOT_FOUND", "未找到可用运行时"),
+            RequestHeaderSettings::default(),
+        );
 
         let snapshot = runtime.snapshot();
 
@@ -503,6 +564,23 @@ mod tests {
         assert_eq!(
             source_label(&RuntimeSource::PathPiCommand),
             "path-pi-command"
+        );
+    }
+
+    #[test]
+    fn unavailable_runtime_keeps_request_header_settings_for_future_restart() {
+        let runtime = BridgeRuntime::unavailable(
+            AppError::new("RUNTIME_NOT_FOUND", "未找到可用运行时"),
+            RequestHeaderSettings::default(),
+        );
+        let settings = RequestHeaderSettings {
+            enabled: true,
+            client: crate::bridge::protocol::RequestHeaderClient::Codex,
+        };
+
+        assert_eq!(
+            runtime.configure_request_headers(settings.clone()),
+            Ok(settings)
         );
     }
 

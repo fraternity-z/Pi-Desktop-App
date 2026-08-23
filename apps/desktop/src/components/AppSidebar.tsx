@@ -7,6 +7,7 @@ import {
   PenLine,
   Plus,
   RefreshCw,
+  Settings,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState, type KeyboardEvent, type PointerEvent } from "react";
@@ -34,6 +35,7 @@ interface AppSidebarProps {
   onRemoveWorkspace: (cwd: string) => void;
   onSelectSession: (session: AgentSessionSummary) => void;
   onRefresh: () => void;
+  onOpenSettings: () => void;
   onClose: () => void;
   onWidthChange: (width: number) => void;
 }
@@ -62,6 +64,7 @@ export function AppSidebar({
   onRemoveWorkspace,
   onSelectSession,
   onRefresh,
+  onOpenSettings,
   onClose,
   onWidthChange,
 }: AppSidebarProps) {
@@ -111,32 +114,6 @@ export function AppSidebar({
       }
       return next;
     });
-  }
-
-  function beginResize(event: PointerEvent<HTMLDivElement>) {
-    event.preventDefault();
-    const startX = event.clientX;
-    const startWidth = width;
-
-    function handlePointerMove(pointerEvent: globalThis.PointerEvent) {
-      onWidthChange(clampSidebarWidth(startWidth + pointerEvent.clientX - startX));
-    }
-
-    function finishResize() {
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", finishResize);
-    }
-
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", finishResize, { once: true });
-  }
-
-  function resizeWithKeyboard(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
-      return;
-    }
-    event.preventDefault();
-    onWidthChange(clampSidebarWidth(width + (event.key === "ArrowRight" ? 8 : -8)));
   }
 
   return (
@@ -309,25 +286,67 @@ export function AppSidebar({
           )}
         </section>
       </div>
-      {open && (
-        <div
-          className="sidebar-resizer"
-          role="separator"
-          aria-label="调整侧边栏宽度"
-          aria-orientation="vertical"
-          aria-valuemin={232}
-          aria-valuemax={360}
-          aria-valuenow={width}
-          tabIndex={0}
-          onPointerDown={beginResize}
-          onKeyDown={resizeWithKeyboard}
-        />
-      )}
+      <nav className="sidebar-footer" aria-label="应用导航">
+        <button type="button" onClick={onOpenSettings}>
+          <Settings size={17} />
+          <span>设置</span>
+        </button>
+      </nav>
+      <SidebarResizer open={open} width={width} onWidthChange={onWidthChange} />
     </aside>
   );
 }
 
-function clampSidebarWidth(width: number): number {
+export function SidebarResizer({
+  open,
+  width,
+  onWidthChange,
+}: {
+  open: boolean;
+  width: number;
+  onWidthChange: (width: number) => void;
+}) {
+  function beginResize(event: PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = width;
+
+    function handlePointerMove(pointerEvent: globalThis.PointerEvent) {
+      onWidthChange(clampSidebarWidth(startWidth + pointerEvent.clientX - startX));
+    }
+
+    function finishResize() {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", finishResize);
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", finishResize, { once: true });
+  }
+
+  function resizeWithKeyboard(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    onWidthChange(clampSidebarWidth(width + (event.key === "ArrowRight" ? 8 : -8)));
+  }
+
+  return open ? (
+    <div
+      className="sidebar-resizer"
+      role="separator"
+      aria-label="调整侧边栏宽度"
+      aria-orientation="vertical"
+      aria-valuemin={232}
+      aria-valuemax={360}
+      aria-valuenow={width}
+      tabIndex={0}
+      onPointerDown={beginResize}
+      onKeyDown={resizeWithKeyboard}
+    />
+  ) : null;
+}
+
+export function clampSidebarWidth(width: number): number {
   return Math.min(360, Math.max(232, Math.round(width)));
 }
 

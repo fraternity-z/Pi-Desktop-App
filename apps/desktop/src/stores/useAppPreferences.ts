@@ -1,0 +1,125 @@
+import { useCallback, useEffect, useState } from "react";
+
+export type InterfaceDensity = "comfortable" | "compact";
+
+export interface AppPreferences {
+  schemaVersion: 1;
+  showSuggestions: boolean;
+  showRuntimeStatus: boolean;
+  sidebarTranslucent: boolean;
+  interfaceDensity: InterfaceDensity;
+  reduceMotion: boolean;
+  confirmRemoveWorkspace: boolean;
+  closeSidebarOnNavigation: boolean;
+}
+
+export const APP_PREFERENCES_STORAGE_KEY = "pi-desktop.app-preferences.v1";
+
+export const DEFAULT_APP_PREFERENCES: AppPreferences = {
+  schemaVersion: 1,
+  showSuggestions: true,
+  showRuntimeStatus: true,
+  sidebarTranslucent: false,
+  interfaceDensity: "comfortable",
+  reduceMotion: false,
+  confirmRemoveWorkspace: true,
+  closeSidebarOnNavigation: true,
+};
+
+type PreferencesStorage = Pick<Storage, "getItem" | "setItem">;
+
+export function normalizeAppPreferences(value: unknown): AppPreferences {
+  if (!isRecord(value) || value.schemaVersion !== 1) {
+    return { ...DEFAULT_APP_PREFERENCES };
+  }
+
+  return {
+    schemaVersion: 1,
+    showSuggestions: readBoolean(value.showSuggestions, DEFAULT_APP_PREFERENCES.showSuggestions),
+    showRuntimeStatus: readBoolean(
+      value.showRuntimeStatus,
+      DEFAULT_APP_PREFERENCES.showRuntimeStatus,
+    ),
+    sidebarTranslucent: readBoolean(
+      value.sidebarTranslucent,
+      DEFAULT_APP_PREFERENCES.sidebarTranslucent,
+    ),
+    interfaceDensity:
+      value.interfaceDensity === "compact" || value.interfaceDensity === "comfortable"
+        ? value.interfaceDensity
+        : DEFAULT_APP_PREFERENCES.interfaceDensity,
+    reduceMotion: readBoolean(value.reduceMotion, DEFAULT_APP_PREFERENCES.reduceMotion),
+    confirmRemoveWorkspace: readBoolean(
+      value.confirmRemoveWorkspace,
+      DEFAULT_APP_PREFERENCES.confirmRemoveWorkspace,
+    ),
+    closeSidebarOnNavigation: readBoolean(
+      value.closeSidebarOnNavigation,
+      DEFAULT_APP_PREFERENCES.closeSidebarOnNavigation,
+    ),
+  };
+}
+
+export function loadAppPreferences(storage = getDefaultStorage()): AppPreferences {
+  if (!storage) return { ...DEFAULT_APP_PREFERENCES };
+  try {
+    const stored = storage.getItem(APP_PREFERENCES_STORAGE_KEY);
+    return stored ? normalizeAppPreferences(JSON.parse(stored)) : { ...DEFAULT_APP_PREFERENCES };
+  } catch {
+    return { ...DEFAULT_APP_PREFERENCES };
+  }
+}
+
+export function saveAppPreferences(
+  preferences: AppPreferences,
+  storage = getDefaultStorage(),
+): AppPreferences {
+  const normalized = normalizeAppPreferences(preferences);
+  if (!storage) return normalized;
+  try {
+    storage.setItem(APP_PREFERENCES_STORAGE_KEY, JSON.stringify(normalized));
+  } catch {
+    // Preferences remain usable in memory when persistence is unavailable.
+  }
+  return normalized;
+}
+
+export function applyAppPreferences(preferences: AppPreferences): void {
+  if (typeof document === "undefined") return;
+  const root = document.documentElement;
+  root.dataset.interfaceDensity = preferences.interfaceDensity;
+  root.dataset.reduceMotion = String(preferences.reduceMotion);
+  root.dataset.sidebarTranslucent = String(preferences.sidebarTranslucent);
+}
+
+export function useAppPreferences() {
+  const [preferences, setPreferences] = useState<AppPreferences>(loadAppPreferences);
+
+  useEffect(() => {
+    const normalized = saveAppPreferences(preferences);
+    applyAppPreferences(normalized);
+  }, [preferences]);
+
+  const updatePreferences = useCallback((patch: Partial<AppPreferences>) => {
+    setPreferences((current) => normalizeAppPreferences({ ...current, ...patch }));
+  }, []);
+
+  return { preferences, updatePreferences };
+}
+
+function getDefaultStorage(): PreferencesStorage | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function readBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}

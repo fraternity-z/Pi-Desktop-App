@@ -6,6 +6,12 @@ import {
   type PromptStreamingBehavior,
   type ThinkingLevel,
 } from "./protocol.js";
+import {
+  DEFAULT_REQUEST_HEADER_SETTINGS,
+  createRequestHeaderExtension,
+  type RequestHeaderExtensionFactory,
+  type RequestHeaderSettings,
+} from "./request-headers.js";
 
 export interface PiModelLike {
   readonly provider: string;
@@ -62,11 +68,23 @@ export interface PiSdkLike {
     open(sessionPath: string): PiSessionManagerInstanceLike;
     listAll(sessionDir?: string): Promise<PiSessionInfoLike[]>;
   };
+  DefaultResourceLoader?: new (options: {
+    cwd: string;
+    agentDir: string;
+    extensionFactories: Array<{
+      name: string;
+      factory: RequestHeaderExtensionFactory;
+      hidden: boolean;
+    }>;
+  }) => {
+    reload(): Promise<void>;
+  };
   createAgentSession(options: {
     cwd?: string;
     agentDir: string;
     modelRuntime: PiModelRuntimeLike;
     sessionManager: PiSessionManagerInstanceLike;
+    resourceLoader?: { reload(): Promise<void> };
   }): Promise<{
     session: PiSessionLike;
     modelFallbackMessage?: string;
@@ -141,6 +159,7 @@ export interface RuntimeEvent {
 }
 
 export interface SessionRuntime {
+  configureRequestHeaders(settings: RequestHeaderSettings): RequestHeaderSettings;
   createSession(cwd: string): Promise<CreatedAgentSession>;
   listSessions(): Promise<AgentSessionSummary[]>;
   openSession(sessionPath: string): Promise<CreatedAgentSession>;
@@ -192,6 +211,7 @@ export class PiSessionRuntime implements SessionRuntime {
   private readonly listeners = new Set<(event: RuntimeEvent) => void>();
   private modelRuntimePromise: Promise<PiModelRuntimeLike> | undefined;
   private readonly sessions = new Map<string, ManagedSession>();
+  private requestHeaderSettings: RequestHeaderSettings = { ...DEFAULT_REQUEST_HEADER_SETTINGS };
   private closed = false;
 
   constructor(
@@ -199,15 +219,29 @@ export class PiSessionRuntime implements SessionRuntime {
     private readonly agentDir: string,
   ) {}
 
+  configureRequestHeaders(settings: RequestHeaderSettings): RequestHeaderSettings {
+    this.ensureOpen();
+    if (settings.enabled && typeof this.sdk.DefaultResourceLoader !== "function") {
+      throw new RuntimeError(
+        "REQUEST_HEADERS_UNSUPPORTED",
+        "当前 Pi SDK 不支持请求头扩展，请升级后重试",
+      );
+    }
+    this.requestHeaderSettings = { ...settings };
+    return { ...this.requestHeaderSettings };
+  }
+
   async createSession(cwd: string): Promise<CreatedAgentSession> {
     this.ensureOpen();
     try {
       const modelRuntime = await this.getModelRuntime();
+      const resourceLoader = await this.createResourceLoader(cwd);
       const result = await this.sdk.createAgentSession({
         cwd,
         agentDir: this.agentDir,
         modelRuntime,
         sessionManager: this.sdk.SessionManager.create(cwd),
+        ...(resourceLoader ? { resourceLoader } : {}),
       });
       return this.activateSession(result, cwd);
     } catch (error) {
@@ -244,11 +278,13 @@ export class PiSessionRuntime implements SessionRuntime {
       const sessionManager = this.sdk.SessionManager.open(sessionPath);
       const cwd = sessionManager.getCwd?.() ?? "";
       const modelRuntime = await this.getModelRuntime();
+      const resourceLoader = await this.createResourceLoader(cwd || process.cwd());
       const result = await this.sdk.createAgentSession({
         ...(cwd ? { cwd } : {}),
         agentDir: this.agentDir,
         modelRuntime,
         sessionManager,
+        ...(resourceLoader ? { resourceLoader } : {}),
       });
       return this.activateSession(result, cwd);
     } catch (error) {
@@ -364,6 +400,31 @@ export class PiSessionRuntime implements SessionRuntime {
       modelsPath: join(this.agentDir, "models.json"),
     });
     return this.modelRuntimePromise;
+  }
+
+  private async createResourceLoader(cwd: string): Promise<{ reload(): Promise<void> } | undefined> {
+    if (typeof this.sdk.DefaultResourceLoader !== "function") {
+      if (this.requestHeaderSettings.enabled) {
+        throw new RuntimeError(
+          "REQUEST_HEADERS_UNSUPPORTED",
+          "当前 Pi SDK 不支持请求头扩展，请升级后重试",
+        );
+      }
+      return undefined;
+    }
+    const resourceLoader = new this.sdk.DefaultResourceLoader({
+      cwd,
+      agentDir: this.agentDir,
+      extensionFactories: [
+        {
+          name: "pi-desktop-request-headers",
+          hidden: true,
+          factory: createRequestHeaderExtension(() => this.requestHeaderSettings),
+        },
+      ],
+    });
+    await resourceLoader.reload();
+    return resourceLoader;
   }
 
   private activateSession(

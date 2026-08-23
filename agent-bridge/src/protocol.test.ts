@@ -43,6 +43,10 @@ describe("parseRequest", () => {
     ['{"v":1,"id":"r-5","op":"model.list"}', { v: 1, id: "r-5", op: "model.list" }],
     ['{"v":1,"id":"r-6","op":"session.list"}', { v: 1, id: "r-6", op: "session.list" }],
     [
+      '{"v":1,"id":"r-6b","op":"request-headers.configure","enabled":true,"client":"codex"}',
+      { v: 1, id: "r-6b", op: "request-headers.configure", enabled: true, client: "codex" },
+    ],
+    [
       '{"v":1,"id":"r-7","op":"session.open","sessionPath":"C:\\\\agent\\\\sessions\\\\s.jsonl"}',
       {
         v: 1,
@@ -80,6 +84,14 @@ describe("parseRequest", () => {
     ],
     ["INVALID_REQUEST", '{"v":1,"id":"r-1","op":"session.open","sessionPath":"relative"}'],
     ["INVALID_REQUEST", '{"v":1,"id":"r-1","op":"session.configure","sessionId":"s-1"}'],
+    [
+      "INVALID_REQUEST",
+      '{"v":1,"id":"r-1","op":"request-headers.configure","enabled":"yes","client":"codex"}',
+    ],
+    [
+      "INVALID_REQUEST",
+      '{"v":1,"id":"r-1","op":"request-headers.configure","enabled":true,"client":"custom"}',
+    ],
     [
       "INVALID_REQUEST",
       '{"v":1,"id":"r-1","op":"session.configure","sessionId":"s-1","thinkingLevel":"ultra"}',
@@ -126,6 +138,7 @@ describe("outbound frames", () => {
         "background-sessions",
         "thinking-stream",
         "queue",
+        "request-header-profiles",
       ],
     });
   });

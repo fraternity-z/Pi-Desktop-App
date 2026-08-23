@@ -52,6 +52,12 @@ export class BridgeServer {
         case "model.list":
           data = await this.runtime.listModels();
           break;
+        case "request-headers.configure":
+          data = this.runtime.configureRequestHeaders({
+            enabled: request.enabled,
+            client: request.client,
+          });
+          break;
         case "session.create":
           data = await this.runtime.createSession(request.cwd);
           break;

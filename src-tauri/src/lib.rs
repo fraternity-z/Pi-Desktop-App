@@ -11,7 +11,7 @@ use tauri::{Emitter, Manager, path::BaseDirectory};
 use crate::{
     bridge::{protocol::BridgeEvent, runtime::BridgeRuntime, supervisor::BridgeEventSink},
     error::AppError,
-    storage::WorkspaceStore,
+    storage::{RequestHeaderSettingsStore, WorkspaceStore},
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -19,6 +19,12 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            let config_dir = app
+                .path()
+                .app_config_dir()
+                .map_err(|error| error.to_string())?;
+            let request_header_store = RequestHeaderSettingsStore::new(config_dir.clone());
+            let request_header_settings = request_header_store.state();
             let event_app = app.handle().clone();
             let event_sink: BridgeEventSink = Arc::new(move |event: BridgeEvent| {
                 let _ = event_app.emit("agent://event", event);
@@ -26,18 +32,17 @@ pub fn run() {
             let runtime = app
                 .path()
                 .resolve("resources/pi-bridge/pi-bridge.mjs", BaseDirectory::Resource)
-                .map(|path| BridgeRuntime::initialize(path, event_sink))
+                .map(|path| {
+                    BridgeRuntime::initialize(path, event_sink, request_header_settings.clone())
+                })
                 .unwrap_or_else(|_| {
-                    BridgeRuntime::unavailable(AppError::new(
-                        "BRIDGE_RESOURCE_MISSING",
-                        "无法解析打包的 Bridge 资源路径",
-                    ))
+                    BridgeRuntime::unavailable(
+                        AppError::new("BRIDGE_RESOURCE_MISSING", "无法解析打包的 Bridge 资源路径"),
+                        request_header_settings,
+                    )
                 });
             app.manage(runtime);
-            let config_dir = app
-                .path()
-                .app_config_dir()
-                .map_err(|error| error.to_string())?;
+            app.manage(request_header_store);
             let documents_dir = app
                 .path()
                 .document_dir()
@@ -56,6 +61,8 @@ pub fn run() {
             commands::runtime::agent_prompt,
             commands::runtime::agent_clear_queue,
             commands::runtime::agent_abort,
+            commands::settings::get_request_header_settings,
+            commands::settings::update_request_header_settings,
             commands::workspace::workspace_get_state,
             commands::workspace::workspace_remember,
             commands::workspace::workspace_remove_recent,

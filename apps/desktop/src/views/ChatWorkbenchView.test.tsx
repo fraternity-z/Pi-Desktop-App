@@ -15,6 +15,7 @@ import {
   type AgentSession,
 } from "../ipc/agent";
 import { selectProjectDirectory } from "../ipc/project";
+import { getRequestHeaderSettings, updateRequestHeaderSettings } from "../ipc/settings";
 import { getRuntimeStatus } from "../ipc/system";
 import {
   ensureConversationWorkspace,
@@ -36,6 +37,11 @@ vi.mock("../ipc/agent", () => ({
   promptAgent: vi.fn(),
 }));
 vi.mock("../ipc/project", () => ({ selectProjectDirectory: vi.fn() }));
+vi.mock("../ipc/settings", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../ipc/settings")>()),
+  getRequestHeaderSettings: vi.fn(),
+  updateRequestHeaderSettings: vi.fn(),
+}));
 vi.mock("../ipc/system", () => ({ getRuntimeStatus: vi.fn() }));
 vi.mock("../ipc/workspace", () => ({
   ensureConversationWorkspace: vi.fn(),
@@ -76,6 +82,12 @@ describe("ChatWorkbenchView", () => {
     emitAgentEvent = undefined;
     unlisten = vi.fn<() => void>();
     vi.mocked(getRuntimeStatus).mockReset().mockResolvedValue(readyRuntime);
+    vi.mocked(getRequestHeaderSettings)
+      .mockReset()
+      .mockResolvedValue({ enabled: false, client: "claude-code" });
+    vi.mocked(updateRequestHeaderSettings)
+      .mockReset()
+      .mockImplementation(async (settings) => settings);
     vi.mocked(selectProjectDirectory).mockReset().mockResolvedValue("C:\\work");
     vi.mocked(createAgentSession).mockReset().mockResolvedValue(defaultSession);
     vi.mocked(openAgentSession).mockReset().mockResolvedValue({
@@ -400,6 +412,60 @@ describe("ChatWorkbenchView", () => {
     const emptyTitle = await screen.findByRole("heading", { name: "开始对话" });
     expect(emptyTitle.closest(".thread-body-empty")).not.toBeNull();
     expect(await screen.findByLabelText("发送给 Pi 的消息")).toBeInTheDocument();
+  });
+
+  it("从侧栏进入设置、切换分类、保存偏好并返回工作台", async () => {
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    expect(screen.getByTestId("settings-general")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "外观" }));
+    expect(screen.getByTestId("settings-appearance")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("switch", { name: "减少动态效果" }));
+    await waitFor(() => expect(document.documentElement.dataset.reduceMotion).toBe("true"));
+
+    fireEvent.click(screen.getByRole("button", { name: "运行时" }));
+    const requestHeaderToggle = await screen.findByRole("switch", {
+      name: "客户端请求头伪装",
+    });
+    fireEvent.click(requestHeaderToggle);
+    await waitFor(() =>
+      expect(updateRequestHeaderSettings).toHaveBeenCalledWith({
+        enabled: true,
+        client: "claude-code",
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "常规" }));
+    fireEvent.click(screen.getByRole("switch", { name: "运行状态" }));
+    fireEvent.click(screen.getByRole("button", { name: "返回" }));
+
+    expect(screen.getByRole("heading", { name: "会话工作台" })).toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "状态正常" })).not.toBeInTheDocument();
+    expect(window.localStorage.getItem("pi-desktop.app-preferences.v1")).toContain(
+      '"showRuntimeStatus":false',
+    );
+  });
+
+  it("按偏好在移除最近项目之前请求确认", async () => {
+    vi.mocked(getWorkspaceState).mockResolvedValueOnce({
+      recentWorkspaces: ["C:\\work"],
+      lastWorkspace: null,
+      conversationHome: "C:\\Users\\me\\Documents\\Pix\\conversations",
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    render(<ChatWorkbenchView />);
+
+    const remove = await screen.findByRole("button", { name: "从列表移除work" });
+    fireEvent.click(remove);
+    expect(removeRecentWorkspace).not.toHaveBeenCalled();
+
+    fireEvent.click(remove);
+    await waitFor(() => expect(removeRecentWorkspace).toHaveBeenCalledWith("C:\\work"));
+    expect(confirm).toHaveBeenCalledTimes(2);
+    confirm.mockRestore();
   });
 });
 

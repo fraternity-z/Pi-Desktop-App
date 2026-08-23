@@ -35,6 +35,7 @@ describe("AppSidebar", () => {
     const onWidthChange = vi.fn();
     const onNewConversation = vi.fn();
     const onRemoveWorkspace = vi.fn();
+    const onOpenSettings = vi.fn();
     render(
       <AppSidebar
         open
@@ -54,6 +55,7 @@ describe("AppSidebar", () => {
         onRemoveWorkspace={onRemoveWorkspace}
         onSelectSession={onSelectSession}
         onRefresh={onRefresh}
+        onOpenSettings={onOpenSettings}
         onClose={vi.fn()}
         onWidthChange={onWidthChange}
       />,
@@ -73,6 +75,8 @@ describe("AppSidebar", () => {
     expect(onNewConversation).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: "从列表移除alpha" }));
     expect(onRemoveWorkspace).toHaveBeenCalledWith("C:\\projects\\alpha");
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    expect(onOpenSettings).toHaveBeenCalledOnce();
     expect(screen.getByLabelText("正在运行")).toBeInTheDocument();
 
     fireEvent.keyDown(screen.getByRole("separator", { name: "调整侧边栏宽度" }), {
@@ -102,6 +106,7 @@ describe("AppSidebar", () => {
         onRemoveWorkspace={vi.fn()}
         onSelectSession={vi.fn()}
         onRefresh={vi.fn()}
+        onOpenSettings={vi.fn()}
         onClose={vi.fn()}
         onWidthChange={vi.fn()}
       />,
@@ -131,6 +136,7 @@ describe("AppSidebar", () => {
         onRemoveWorkspace={vi.fn()}
         onSelectSession={vi.fn()}
         onRefresh={vi.fn()}
+        onOpenSettings={vi.fn()}
         onClose={vi.fn()}
         onWidthChange={vi.fn()}
       />,

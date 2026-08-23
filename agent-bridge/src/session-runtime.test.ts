@@ -8,6 +8,10 @@ import {
   type PiSessionLike,
   type RuntimeEvent,
 } from "./session-runtime.js";
+import type {
+  RequestHeaderExtensionContextLike,
+  RequestHeaderExtensionFactory,
+} from "./request-headers.js";
 
 const reasoningModel: PiModelLike = {
   provider: "openai",
@@ -239,6 +243,62 @@ describe("PiSessionRuntime", () => {
       { sessionId: "s-1", name: "agent.settled" },
     ]);
     expect(JSON.stringify(events)).not.toContain("secret");
+  });
+
+  it("通过隐藏内联扩展将最新请求头配置应用到既有会话", async () => {
+    const sessionMock = createSessionMock();
+    const sdk = sdkReturning(sessionMock);
+    type LoaderOptions = ConstructorParameters<
+      NonNullable<PiSdkLike["DefaultResourceLoader"]>
+    >[0];
+    let extensionFactory: RequestHeaderExtensionFactory | undefined;
+    const reload = vi.fn(async () => undefined);
+    sdk.DefaultResourceLoader = class {
+      constructor(options: LoaderOptions) {
+        extensionFactory = options.extensionFactories[0]?.factory;
+      }
+
+      reload(): Promise<void> {
+        return reload();
+      }
+    };
+    const runtime = new PiSessionRuntime(sdk, "C:\\agent");
+    runtime.configureRequestHeaders({ enabled: true, client: "claude-code" });
+
+    await runtime.createSession("C:\\work");
+
+    expect(reload).toHaveBeenCalledOnce();
+    expect(sdk.createAgentSession).toHaveBeenCalledWith(
+      expect.objectContaining({ resourceLoader: expect.any(Object) }),
+    );
+    let handler:
+      | ((
+          event: { headers: Record<string, string | null> },
+          context: RequestHeaderExtensionContextLike,
+        ) => void)
+      | undefined;
+    extensionFactory?.({
+      on: (_event, nextHandler) => {
+        handler = nextHandler;
+      },
+    });
+    const headerContext = { sessionManager: { getSessionId: () => "s-1" } };
+    const claudeHeaders: Record<string, string | null> = {};
+    handler?.({ headers: claudeHeaders }, headerContext);
+    expect(claudeHeaders["X-Claude-Code-Session-Id"]).toBe("s-1");
+
+    runtime.configureRequestHeaders({ enabled: true, client: "codex" });
+    const codexHeaders: Record<string, string | null> = {};
+    handler?.({ headers: codexHeaders }, headerContext);
+    expect(codexHeaders.originator).toBe("codex-tui");
+  });
+
+  it("开启请求头伪装时拒绝不支持资源加载器的 SDK", () => {
+    const runtime = new PiSessionRuntime(sdkReturning(createSessionMock()), "C:\\agent");
+
+    expect(() =>
+      runtime.configureRequestHeaders({ enabled: true, client: "claude-code" }),
+    ).toThrowError(expect.objectContaining<Partial<RuntimeError>>({ code: "REQUEST_HEADERS_UNSUPPORTED" }));
   });
 
   it("打开持久会话、恢复富文本历史并保留此前会话", async () => {

@@ -11,6 +11,7 @@ interface RuntimeMock {
   listSessions: ReturnType<typeof vi.fn>;
   openSession: ReturnType<typeof vi.fn>;
   listModels: ReturnType<typeof vi.fn>;
+  configureRequestHeaders: ReturnType<typeof vi.fn>;
   configureSession: ReturnType<typeof vi.fn>;
   prompt: ReturnType<typeof vi.fn>;
   clearQueue: ReturnType<typeof vi.fn>;
@@ -40,6 +41,7 @@ function createRuntimeMock(): RuntimeMock {
       streaming: false,
   }));
   const listModels = vi.fn(async () => []);
+  const configureRequestHeaders = vi.fn((settings) => settings);
   const configureSession = vi.fn(async () => ({
     model: null,
     thinkingLevel: "off" as const,
@@ -50,6 +52,7 @@ function createRuntimeMock(): RuntimeMock {
   const abort = vi.fn(async () => undefined);
   const shutdown = vi.fn(async () => undefined);
   const runtime: SessionRuntime = {
+    configureRequestHeaders,
     createSession,
     listSessions,
     openSession,
@@ -71,6 +74,7 @@ function createRuntimeMock(): RuntimeMock {
     listSessions,
     openSession,
     listModels,
+    configureRequestHeaders,
     configureSession,
     prompt,
     clearQueue,
@@ -104,6 +108,9 @@ describe("BridgeServer", () => {
     await server.handleLine('{"v":1,"id":"5","op":"model.list"}');
     await server.handleLine('{"v":1,"id":"6","op":"session.list"}');
     await server.handleLine(
+      '{"v":1,"id":"6b","op":"request-headers.configure","enabled":true,"client":"codex"}',
+    );
+    await server.handleLine(
       '{"v":1,"id":"7","op":"session.open","sessionPath":"C:\\\\agent\\\\sessions\\\\s.jsonl"}',
     );
     await server.handleLine(
@@ -125,6 +132,10 @@ describe("BridgeServer", () => {
     );
     expect(runtimeMock.listModels).toHaveBeenCalledOnce();
     expect(runtimeMock.listSessions).toHaveBeenCalledOnce();
+    expect(runtimeMock.configureRequestHeaders).toHaveBeenCalledWith({
+      enabled: true,
+      client: "codex",
+    });
     expect(runtimeMock.openSession).toHaveBeenCalledWith("C:\\agent\\sessions\\s.jsonl");
     expect(runtimeMock.configureSession).toHaveBeenCalledWith("s-2", {
       thinkingLevel: "high",

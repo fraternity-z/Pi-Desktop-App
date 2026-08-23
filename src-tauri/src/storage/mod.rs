@@ -6,7 +6,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{bridge::supervisor::normalize_process_path, error::AppError};
+use crate::{
+    bridge::{protocol::RequestHeaderSettings, supervisor::normalize_process_path},
+    error::AppError,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +40,7 @@ impl Default for AppSettings {
 }
 
 const WORKSPACE_SCHEMA_VERSION: u16 = 1;
+const REQUEST_HEADER_SETTINGS_SCHEMA_VERSION: u16 = 1;
 const MAX_RECENT_WORKSPACES: usize = 12;
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -59,6 +63,83 @@ pub struct WorkspaceStore {
     settings_path: PathBuf,
     conversation_home: PathBuf,
     preferences: Mutex<WorkspacePreferences>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RequestHeaderPreferences {
+    schema_version: u16,
+    #[serde(flatten)]
+    settings: RequestHeaderSettings,
+}
+
+pub struct RequestHeaderSettingsStore {
+    settings_path: PathBuf,
+    settings: Mutex<RequestHeaderSettings>,
+}
+
+impl RequestHeaderSettingsStore {
+    pub fn new(config_dir: PathBuf) -> Self {
+        let settings_path = config_dir.join("request-header-settings.json");
+        let settings = read_request_header_settings(&settings_path);
+        Self {
+            settings_path,
+            settings: Mutex::new(settings),
+        }
+    }
+
+    pub fn state(&self) -> RequestHeaderSettings {
+        self.settings
+            .lock()
+            .map(|settings| settings.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn update(
+        &self,
+        settings: RequestHeaderSettings,
+    ) -> Result<RequestHeaderSettings, AppError> {
+        let mut current = self.settings.lock().map_err(|_| {
+            AppError::new(
+                "REQUEST_HEADER_SETTINGS_STATE_POISONED",
+                "请求头客户端设置锁不可用",
+            )
+        })?;
+        self.persist(&settings)?;
+        *current = settings.clone();
+        Ok(settings)
+    }
+
+    fn persist(&self, settings: &RequestHeaderSettings) -> Result<(), AppError> {
+        let parent = self.settings_path.parent().ok_or_else(|| {
+            AppError::new(
+                "REQUEST_HEADER_SETTINGS_PATH_INVALID",
+                "请求头客户端设置路径无效",
+            )
+        })?;
+        fs::create_dir_all(parent).map_err(|_| {
+            AppError::new(
+                "REQUEST_HEADER_SETTINGS_WRITE_FAILED",
+                "无法创建应用配置目录",
+            )
+        })?;
+        let preferences = RequestHeaderPreferences {
+            schema_version: REQUEST_HEADER_SETTINGS_SCHEMA_VERSION,
+            settings: settings.clone(),
+        };
+        let payload = serde_json::to_vec_pretty(&preferences).map_err(|_| {
+            AppError::new(
+                "REQUEST_HEADER_SETTINGS_WRITE_FAILED",
+                "无法序列化请求头客户端设置",
+            )
+        })?;
+        fs::write(&self.settings_path, payload).map_err(|_| {
+            AppError::new(
+                "REQUEST_HEADER_SETTINGS_WRITE_FAILED",
+                "无法保存请求头客户端设置",
+            )
+        })
+    }
 }
 
 impl WorkspaceStore {
@@ -197,6 +278,15 @@ fn read_workspace_preferences(path: &Path) -> WorkspacePreferences {
     preferences
 }
 
+fn read_request_header_settings(path: &Path) -> RequestHeaderSettings {
+    fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<RequestHeaderPreferences>(&bytes).ok())
+        .filter(|preferences| preferences.schema_version == REQUEST_HEADER_SETTINGS_SCHEMA_VERSION)
+        .map(|preferences| preferences.settings)
+        .unwrap_or_default()
+}
+
 fn state_from(preferences: &WorkspacePreferences, conversation_home: &Path) -> WorkspaceState {
     WorkspaceState {
         recent_workspaces: preferences.recent_workspaces.clone(),
@@ -275,6 +365,33 @@ mod tests {
 
         let reloaded = WorkspaceStore::new(config, documents);
         assert_eq!(reloaded.state().recent_workspaces.len(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn persists_versioned_request_header_settings_and_defaults_safely() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-desktop-request-header-test-{}",
+            std::process::id()
+        ));
+        let settings = RequestHeaderSettings {
+            enabled: true,
+            client: crate::bridge::protocol::RequestHeaderClient::Codex,
+        };
+        let store = RequestHeaderSettingsStore::new(root.clone());
+        assert_eq!(store.state(), RequestHeaderSettings::default());
+
+        assert_eq!(store.update(settings.clone()), Ok(settings.clone()));
+        assert_eq!(
+            RequestHeaderSettingsStore::new(root.clone()).state(),
+            settings
+        );
+
+        fs::write(root.join("request-header-settings.json"), b"{invalid").unwrap();
+        assert_eq!(
+            RequestHeaderSettingsStore::new(root.clone()).state(),
+            RequestHeaderSettings::default()
+        );
         let _ = fs::remove_dir_all(root);
     }
 }

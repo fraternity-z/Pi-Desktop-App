@@ -5,6 +5,21 @@ use crate::error::AppError;
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum RequestHeaderClient {
+    #[default]
+    ClaudeCode,
+    Codex,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestHeaderSettings {
+    pub enabled: bool,
+    pub client: RequestHeaderClient,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeHello {
@@ -179,6 +194,7 @@ pub fn validate_hello(hello: &BridgeHello) -> Result<(), AppError> {
         "background-sessions",
         "thinking-stream",
         "queue",
+        "request-header-profiles",
     ] {
         if !hello.capabilities.iter().any(|item| item == capability) {
             return Err(AppError::new(
@@ -501,6 +517,7 @@ mod tests {
         "background-sessions",
         "thinking-stream",
         "queue",
+        "request-header-profiles",
     ];
 
     fn hello(protocol_version: u16, capabilities: &[&str]) -> BridgeHello {
@@ -523,7 +540,7 @@ mod tests {
     #[test]
     fn deserializes_bridge_json_shape() {
         let value: BridgeHello = serde_json::from_str(
-            r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions","models","session-history","session-configuration","tool-status","background-sessions","thinking-stream","queue"]}"#,
+            r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions","models","session-history","session-configuration","tool-status","background-sessions","thinking-stream","queue","request-header-profiles"]}"#,
         )
         .expect("Bridge hello JSON 必须可反序列化");
 

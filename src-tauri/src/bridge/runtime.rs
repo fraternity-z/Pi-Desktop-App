@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     env,
     path::{Path, PathBuf},
     sync::{
@@ -12,8 +13,8 @@ use serde::Serialize;
 use crate::{
     bridge::{
         protocol::{
-            AgentModel, AgentSessionSummary, CreatedSession, SessionConfiguration,
-            SessionConfigurationUpdate,
+            AgentModel, AgentSessionSummary, CreatedSession, PromptStreamingBehavior,
+            SessionConfiguration, SessionConfigurationUpdate,
         },
         supervisor::{
             BridgeEventSink, BridgeLaunchConfig, BridgeSupervisor, normalize_process_path,
@@ -35,7 +36,7 @@ pub struct RuntimeSnapshot {
 
 pub struct BridgeRuntime {
     supervisor: Mutex<Option<Arc<BridgeSupervisor>>>,
-    active_session: Mutex<Option<String>>,
+    known_sessions: Mutex<HashSet<String>>,
     snapshot: Mutex<RuntimeSnapshot>,
     launch: Option<RuntimeLaunchContext>,
     closed: AtomicBool,
@@ -58,7 +59,7 @@ impl BridgeRuntime {
                 let snapshot = ready_snapshot(supervisor.hello(), &source);
                 Self {
                     supervisor: Mutex::new(Some(Arc::new(supervisor))),
-                    active_session: Mutex::new(None),
+                    known_sessions: Mutex::new(HashSet::new()),
                     snapshot: Mutex::new(snapshot),
                     launch: Some(launch),
                     closed: AtomicBool::new(false),
@@ -66,7 +67,7 @@ impl BridgeRuntime {
             }
             Err(error) => Self {
                 supervisor: Mutex::new(None),
-                active_session: Mutex::new(None),
+                known_sessions: Mutex::new(HashSet::new()),
                 snapshot: Mutex::new(unavailable_snapshot(error)),
                 launch: Some(launch),
                 closed: AtomicBool::new(false),
@@ -77,7 +78,7 @@ impl BridgeRuntime {
     pub fn unavailable(error: AppError) -> Self {
         Self {
             supervisor: Mutex::new(None),
-            active_session: Mutex::new(None),
+            known_sessions: Mutex::new(HashSet::new()),
             snapshot: Mutex::new(unavailable_snapshot(error)),
             launch: None,
             closed: AtomicBool::new(false),
@@ -106,11 +107,7 @@ impl BridgeRuntime {
         let cwd = canonical_workspace(Path::new(cwd.trim()))?;
         let session = self.with_supervisor(|supervisor| supervisor.create_session(&cwd))?;
         validate_session_id(&session.session_id)?;
-        *self
-            .active_session
-            .lock()
-            .map_err(|_| AppError::new("BRIDGE_STATE_POISONED", "会话状态锁不可用"))? =
-            Some(session.session_id.clone());
+        self.remember_session(&session.session_id)?;
         Ok(session)
     }
 
@@ -122,11 +119,7 @@ impl BridgeRuntime {
         let session_path = canonical_session_path(Path::new(session_path.trim()))?;
         let session = self.with_supervisor(|supervisor| supervisor.open_session(&session_path))?;
         validate_session_id(&session.session_id)?;
-        *self
-            .active_session
-            .lock()
-            .map_err(|_| AppError::new("BRIDGE_STATE_POISONED", "会话状态锁不可用"))? =
-            Some(session.session_id.clone());
+        self.remember_session(&session.session_id)?;
         Ok(session)
     }
 
@@ -140,7 +133,7 @@ impl BridgeRuntime {
         update: SessionConfigurationUpdate,
     ) -> Result<SessionConfiguration, AppError> {
         validate_session_configuration_update(&update)?;
-        self.ensure_active_session(&session_id)?;
+        self.ensure_known_session(&session_id)?;
         self.with_supervisor(|supervisor| {
             supervisor.configure_session(
                 &session_id,
@@ -153,14 +146,26 @@ impl BridgeRuntime {
         })
     }
 
-    pub fn prompt(&self, session_id: String, text: String) -> Result<u64, AppError> {
+    pub fn prompt(
+        &self,
+        session_id: String,
+        text: String,
+        streaming_behavior: Option<PromptStreamingBehavior>,
+    ) -> Result<u64, AppError> {
         ensure_valid_prompt(&text)?;
-        self.ensure_active_session(&session_id)?;
-        self.with_supervisor(|supervisor| supervisor.prompt(&session_id, &text))
+        self.ensure_known_session(&session_id)?;
+        self.with_supervisor(|supervisor| {
+            supervisor.prompt(&session_id, &text, streaming_behavior.as_ref())
+        })
+    }
+
+    pub fn clear_queue(&self, session_id: String) -> Result<(), AppError> {
+        self.ensure_known_session(&session_id)?;
+        self.with_supervisor(|supervisor| supervisor.clear_queue(&session_id))
     }
 
     pub fn abort(&self, session_id: String) -> Result<(), AppError> {
-        self.ensure_active_session(&session_id)?;
+        self.ensure_known_session(&session_id)?;
         self.with_supervisor(|supervisor| supervisor.abort(&session_id))
     }
 
@@ -174,8 +179,8 @@ impl BridgeRuntime {
         if let Some(supervisor) = supervisor {
             let _ = supervisor.shutdown();
         }
-        if let Ok(mut active_session) = self.active_session.lock() {
-            *active_session = None;
+        if let Ok(mut known_sessions) = self.known_sessions.lock() {
+            known_sessions.clear();
         }
     }
 
@@ -217,8 +222,8 @@ impl BridgeRuntime {
         {
             *slot = None;
         }
-        if let Ok(mut active_session) = self.active_session.lock() {
-            *active_session = None;
+        if let Ok(mut known_sessions) = self.known_sessions.lock() {
+            known_sessions.clear();
         }
         self.set_snapshot(unavailable_snapshot(error));
     }
@@ -252,18 +257,27 @@ impl BridgeRuntime {
         }
     }
 
-    fn ensure_active_session(&self, session_id: &str) -> Result<(), AppError> {
+    fn remember_session(&self, session_id: &str) -> Result<(), AppError> {
+        self.known_sessions
+            .lock()
+            .map_err(|_| AppError::new("BRIDGE_STATE_POISONED", "会话状态锁不可用"))?
+            .insert(session_id.to_owned());
+        Ok(())
+    }
+
+    fn ensure_known_session(&self, session_id: &str) -> Result<(), AppError> {
         validate_session_id(session_id)?;
-        let active_session = self
-            .active_session
+        let known_sessions = self
+            .known_sessions
             .lock()
             .map_err(|_| AppError::new("BRIDGE_STATE_POISONED", "会话状态锁不可用"))?;
-        match active_session.as_deref() {
-            Some(active) if active == session_id => Ok(()),
-            _ => Err(AppError::new(
-                "SESSION_NOT_ACTIVE",
-                "指定会话不是当前活动会话",
-            )),
+        if known_sessions.contains(session_id) {
+            Ok(())
+        } else {
+            Err(AppError::new(
+                "SESSION_NOT_OPEN",
+                "指定会话尚未在当前运行时中打开",
+            ))
         }
     }
 }

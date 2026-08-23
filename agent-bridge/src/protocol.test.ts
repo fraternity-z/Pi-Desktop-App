@@ -22,6 +22,21 @@ describe("parseRequest", () => {
       { v: 1, id: "r-3", op: "prompt", sessionId: "s-1", text: "hello" },
     ],
     [
+      '{"v":1,"id":"r-3b","op":"prompt","sessionId":"s-1","text":"guide","streamingBehavior":"steer"}',
+      {
+        v: 1,
+        id: "r-3b",
+        op: "prompt",
+        sessionId: "s-1",
+        text: "guide",
+        streamingBehavior: "steer",
+      },
+    ],
+    [
+      '{"v":1,"id":"r-3c","op":"queue.clear","sessionId":"s-1"}',
+      { v: 1, id: "r-3c", op: "queue.clear", sessionId: "s-1" },
+    ],
+    [
       '{"v":1,"id":"r-4","op":"abort","sessionId":"s-1"}',
       { v: 1, id: "r-4", op: "abort", sessionId: "s-1" },
     ],
@@ -59,6 +74,10 @@ describe("parseRequest", () => {
     ["UNSUPPORTED_OPERATION", '{"v":1,"id":"r-1","op":"unknown"}'],
     ["INVALID_REQUEST", '{"v":1,"id":"r-1","op":"session.create","cwd":"relative"}'],
     ["INVALID_REQUEST", '{"v":1,"id":"r-1","op":"prompt","sessionId":"s-1"}'],
+    [
+      "INVALID_REQUEST",
+      '{"v":1,"id":"r-1","op":"prompt","sessionId":"s-1","text":"hello","streamingBehavior":"later"}',
+    ],
     ["INVALID_REQUEST", '{"v":1,"id":"r-1","op":"session.open","sessionPath":"relative"}'],
     ["INVALID_REQUEST", '{"v":1,"id":"r-1","op":"session.configure","sessionId":"s-1"}'],
     [
@@ -104,6 +123,9 @@ describe("outbound frames", () => {
         "session-history",
         "session-configuration",
         "tool-status",
+        "background-sessions",
+        "thinking-stream",
+        "queue",
       ],
     });
   });

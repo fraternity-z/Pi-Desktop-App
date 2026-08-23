@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 import {
   abortAgent,
+  clearAgentQueue,
   configureAgentSession,
   createAgentSession,
   listAgentModels,
@@ -15,10 +16,17 @@ import {
 } from "../ipc/agent";
 import { selectProjectDirectory } from "../ipc/project";
 import { getRuntimeStatus } from "../ipc/system";
+import {
+  ensureConversationWorkspace,
+  getWorkspaceState,
+  rememberWorkspace,
+  removeRecentWorkspace,
+} from "../ipc/workspace";
 import { ChatWorkbenchView } from "./ChatWorkbenchView";
 
 vi.mock("../ipc/agent", () => ({
   abortAgent: vi.fn(),
+  clearAgentQueue: vi.fn(),
   configureAgentSession: vi.fn(),
   createAgentSession: vi.fn(),
   listAgentModels: vi.fn(),
@@ -29,6 +37,12 @@ vi.mock("../ipc/agent", () => ({
 }));
 vi.mock("../ipc/project", () => ({ selectProjectDirectory: vi.fn() }));
 vi.mock("../ipc/system", () => ({ getRuntimeStatus: vi.fn() }));
+vi.mock("../ipc/workspace", () => ({
+  ensureConversationWorkspace: vi.fn(),
+  getWorkspaceState: vi.fn(),
+  rememberWorkspace: vi.fn(),
+  removeRecentWorkspace: vi.fn(),
+}));
 
 const readyRuntime = {
   status: "ready" as const,
@@ -49,6 +63,8 @@ const defaultSession: AgentSession = {
     availableThinkingLevels: ["off", "medium", "high"],
   },
   messages: [],
+  queuedMessages: { steering: [], followUp: [] },
+  streaming: false,
 };
 
 describe("ChatWorkbenchView", () => {
@@ -76,6 +92,25 @@ describe("ChatWorkbenchView", () => {
     vi.mocked(configureAgentSession).mockReset().mockResolvedValue(defaultSession.configuration);
     vi.mocked(promptAgent).mockReset().mockImplementation(() => new Promise<number>(() => {}));
     vi.mocked(abortAgent).mockReset().mockResolvedValue(undefined);
+    vi.mocked(clearAgentQueue).mockReset().mockResolvedValue(undefined);
+    vi.mocked(getWorkspaceState).mockReset().mockResolvedValue({
+      recentWorkspaces: [],
+      lastWorkspace: null,
+      conversationHome: "C:\\Users\\me\\Documents\\Pix\\conversations",
+    });
+    vi.mocked(rememberWorkspace).mockReset().mockImplementation(async (cwd) => ({
+      recentWorkspaces: [cwd],
+      lastWorkspace: cwd,
+      conversationHome: "C:\\Users\\me\\Documents\\Pix\\conversations",
+    }));
+    vi.mocked(removeRecentWorkspace).mockReset().mockResolvedValue({
+      recentWorkspaces: [],
+      lastWorkspace: null,
+      conversationHome: "C:\\Users\\me\\Documents\\Pix\\conversations",
+    });
+    vi.mocked(ensureConversationWorkspace)
+      .mockReset()
+      .mockResolvedValue("C:\\Users\\me\\Documents\\Pix\\conversations");
     vi.mocked(listenToAgentEvents)
       .mockReset()
       .mockImplementation(async (handler) => {
@@ -97,7 +132,7 @@ describe("ChatWorkbenchView", () => {
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
 
     expect(await screen.findByText("检查项目")).toBeInTheDocument();
-    expect(promptAgent).toHaveBeenCalledWith("s-1", "检查项目");
+    expect(promptAgent).toHaveBeenCalledWith("s-1", "检查项目", undefined);
     act(() => {
       emitAgentEvent?.(
         agentEvent("tool.started", { toolCallId: "tool-1", toolName: "read_file" }, 1),
@@ -105,18 +140,20 @@ describe("ChatWorkbenchView", () => {
     });
     expect(screen.getByText("执行中")).toBeInTheDocument();
     act(() => {
-      emitAgentEvent?.(agentEvent("message.delta", { delta: "完成" }, 2));
-      emitAgentEvent?.(agentEvent("message.delta", { delta: "检查" }, 3));
+      emitAgentEvent?.(agentEvent("thinking.delta", { delta: "分析项目" }, 2));
+      emitAgentEvent?.(agentEvent("message.delta", { delta: "完成" }, 3));
+      emitAgentEvent?.(agentEvent("message.delta", { delta: "检查" }, 4));
       emitAgentEvent?.(
-        agentEvent("tool.completed", { toolCallId: "tool-1", toolName: "read_file" }, 4),
+        agentEvent("tool.completed", { toolCallId: "tool-1", toolName: "read_file" }, 5),
       );
       emitAgentEvent?.(
-        agentEvent("tool.failed", { toolCallId: "tool-2", toolName: "bash" }, 5),
+        agentEvent("tool.failed", { toolCallId: "tool-2", toolName: "bash" }, 6),
       );
-      emitAgentEvent?.(agentEvent("agent.settled", undefined, 6));
+      emitAgentEvent?.(agentEvent("agent.settled", undefined, 7));
     });
 
     expect(screen.getByText("完成检查")).toBeInTheDocument();
+    expect(screen.getByText("思考过程")).toBeInTheDocument();
     expect(screen.getByText("read_file")).toBeInTheDocument();
     expect(screen.getByText("已完成")).toBeInTheDocument();
     expect(screen.getByText("失败")).toBeInTheDocument();
@@ -138,6 +175,34 @@ describe("ChatWorkbenchView", () => {
     fireEvent.click(await screen.findByRole("button", { name: "停止" }));
     await waitFor(() => expect(abortAgent).toHaveBeenCalledWith("s-1"));
     expect(screen.getByText("已停止")).toBeInTheDocument();
+  });
+
+  it("流式期间将 Enter 与 Alt+Enter 分别加入引导和后续队列", async () => {
+    const { container } = render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    await addProject("C:\\work");
+    const composer = await screen.findByLabelText("发送给 Pi 的消息");
+
+    fireEvent.change(composer, { target: { value: "开始任务" } });
+    fireEvent.keyDown(composer, { key: "Enter" });
+    fireEvent.change(composer, { target: { value: "调整方向" } });
+    fireEvent.keyDown(composer, { key: "Enter" });
+    fireEvent.change(composer, { target: { value: "完成后总结" } });
+    fireEvent.keyDown(composer, { key: "Enter", altKey: true });
+
+    expect(promptAgent).toHaveBeenNthCalledWith(1, "s-1", "开始任务", undefined);
+    expect(promptAgent).toHaveBeenNthCalledWith(2, "s-1", "调整方向", "steer");
+    expect(promptAgent).toHaveBeenNthCalledWith(3, "s-1", "完成后总结", "followUp");
+    expect(screen.getByText("2 条排队")).toBeInTheDocument();
+    expect(screen.getByText("调整方向")).toBeInTheDocument();
+    expect(screen.getByText("完成后总结")).toBeInTheDocument();
+    expect(
+      [...container.querySelectorAll(".user-message-bubble")].map((item) => item.textContent),
+    ).toEqual(["开始任务"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "清空排队消息" }));
+    await waitFor(() => expect(clearAgentQueue).toHaveBeenCalledWith("s-1"));
+    expect(screen.queryByText("2 条排队")).not.toBeInTheDocument();
   });
 
   it("运行时不可用时禁用添加项目并展示稳定错误", async () => {
@@ -254,6 +319,11 @@ describe("ChatWorkbenchView", () => {
   });
 
   it("从 SDK 目录恢复会话，并同步模型与思考强度", async () => {
+    vi.mocked(getWorkspaceState).mockResolvedValueOnce({
+      recentWorkspaces: ["C:\\work"],
+      lastWorkspace: null,
+      conversationHome: "C:\\Users\\me\\Documents\\Pix\\conversations",
+    });
     vi.mocked(listAgentSessions).mockResolvedValueOnce([
       {
         id: "saved",
@@ -305,11 +375,31 @@ describe("ChatWorkbenchView", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
 
-    expect(await screen.findByText("正在响应")).toBeInTheDocument();
+    expect(await screen.findAllByText("Pi 正在处理")).not.toHaveLength(0);
     act(() => {
-      emitAgentEvent?.(agentEvent("agent.settled", undefined, 1));
+      emitAgentEvent?.(agentEvent("message.completed", { reason: "stop" }, 1));
+      emitAgentEvent?.(agentEvent("agent.settled", undefined, 2));
     });
     expect(await screen.findByText("本次任务没有返回文本。")).toBeInTheDocument();
+  });
+
+  it("可从空状态创建不绑定项目的纯对话", async () => {
+    vi.mocked(createAgentSession).mockResolvedValueOnce({
+      ...defaultSession,
+      cwd: "C:\\Users\\me\\Documents\\Pix\\conversations",
+    });
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+
+    fireEvent.click(await screen.findByRole("button", { name: "新建对话" }));
+
+    await waitFor(() => expect(ensureConversationWorkspace).toHaveBeenCalledOnce());
+    expect(createAgentSession).toHaveBeenCalledWith(
+      "C:\\Users\\me\\Documents\\Pix\\conversations",
+    );
+    const emptyTitle = await screen.findByRole("heading", { name: "开始对话" });
+    expect(emptyTitle.closest(".thread-body-empty")).not.toBeNull();
+    expect(await screen.findByLabelText("发送给 Pi 的消息")).toBeInTheDocument();
   });
 });
 

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   abortAgent,
+  clearAgentQueue,
   configureAgentSession,
   createAgentSession,
   listAgentModels,
@@ -31,6 +32,7 @@ describe("agent IPC", () => {
       .mockResolvedValueOnce([{ provider: "openai", id: "gpt", name: "GPT" }])
       .mockResolvedValueOnce({ thinkingLevel: "high" })
       .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce(undefined);
 
     await expect(createAgentSession("C:\\work")).resolves.toEqual({
@@ -41,7 +43,8 @@ describe("agent IPC", () => {
     await openAgentSession("C:\\agent\\sessions\\saved.jsonl");
     await listAgentModels();
     await configureAgentSession("saved", { thinkingLevel: "high" });
-    await promptAgent("s-1", "hello");
+    await promptAgent("s-1", "hello", "steer");
+    await clearAgentQueue("s-1");
     await abortAgent("s-1");
 
     expect(invoke).toHaveBeenNthCalledWith(1, "agent_create_session", { cwd: "C:\\work" });
@@ -57,8 +60,10 @@ describe("agent IPC", () => {
     expect(invoke).toHaveBeenNthCalledWith(6, "agent_prompt", {
       sessionId: "s-1",
       text: "hello",
+      streamingBehavior: "steer",
     });
-    expect(invoke).toHaveBeenNthCalledWith(7, "agent_abort", { sessionId: "s-1" });
+    expect(invoke).toHaveBeenNthCalledWith(7, "agent_clear_queue", { sessionId: "s-1" });
+    expect(invoke).toHaveBeenNthCalledWith(8, "agent_abort", { sessionId: "s-1" });
   });
 
   it("订阅经过边界校验的事件、丢弃无效载荷并返回解绑函数", async () => {
@@ -166,5 +171,28 @@ describe("agent IPC", () => {
       }),
     ).toEqual(expect.objectContaining({ name: "session.configurationChanged" }));
     expect(parseAgentEvent([])).toBeNull();
+  });
+
+  it("校验队列事件内容和总长度", () => {
+    expect(
+      parseAgentEvent({
+        v: 1,
+        kind: "event",
+        seq: 1,
+        sessionId: "s-1",
+        name: "queue.updated",
+        data: { steering: ["guide"], followUp: ["later"] },
+      }),
+    ).toEqual(expect.objectContaining({ name: "queue.updated" }));
+    expect(
+      parseAgentEvent({
+        v: 1,
+        kind: "event",
+        seq: 2,
+        sessionId: "s-1",
+        name: "queue.updated",
+        data: { steering: [1], followUp: [] },
+      }),
+    ).toBeNull();
   });
 });

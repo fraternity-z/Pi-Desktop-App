@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   abortAgent,
+  clearAgentQueue,
   configureAgentSession,
   createAgentSession,
   listAgentModels,
@@ -12,10 +13,17 @@ import {
   promptAgent,
   type AgentEvent,
 } from "../ipc/agent";
+import {
+  ensureConversationWorkspace,
+  getWorkspaceState,
+  rememberWorkspace,
+  removeRecentWorkspace,
+} from "../ipc/workspace";
 import { useChatSession } from "./useChatSession";
 
 vi.mock("../ipc/agent", () => ({
   abortAgent: vi.fn(),
+  clearAgentQueue: vi.fn(),
   configureAgentSession: vi.fn(),
   createAgentSession: vi.fn(),
   listAgentModels: vi.fn(),
@@ -23,6 +31,12 @@ vi.mock("../ipc/agent", () => ({
   listenToAgentEvents: vi.fn(),
   openAgentSession: vi.fn(),
   promptAgent: vi.fn(),
+}));
+vi.mock("../ipc/workspace", () => ({
+  ensureConversationWorkspace: vi.fn(),
+  getWorkspaceState: vi.fn(),
+  rememberWorkspace: vi.fn(),
+  removeRecentWorkspace: vi.fn(),
 }));
 
 let nextSequence = 1;
@@ -46,6 +60,8 @@ describe("useChatSession", () => {
         availableThinkingLevels: ["off", "medium", "high"],
       },
       messages: [],
+      queuedMessages: { steering: [], followUp: [] },
+      streaming: false,
     });
     vi.mocked(openAgentSession).mockReset().mockResolvedValue({
       sessionId: "saved",
@@ -58,6 +74,8 @@ describe("useChatSession", () => {
         availableThinkingLevels: ["off", "medium", "high"],
       },
       messages: [{ role: "user", content: "saved prompt" }],
+      queuedMessages: { steering: [], followUp: [] },
+      streaming: false,
     });
     vi.mocked(listAgentSessions).mockReset().mockResolvedValue([]);
     vi.mocked(listAgentModels).mockReset().mockResolvedValue([
@@ -70,6 +88,25 @@ describe("useChatSession", () => {
     });
     vi.mocked(promptAgent).mockReset().mockResolvedValue(0);
     vi.mocked(abortAgent).mockReset().mockResolvedValue(undefined);
+    vi.mocked(clearAgentQueue).mockReset().mockResolvedValue(undefined);
+    vi.mocked(getWorkspaceState).mockReset().mockResolvedValue({
+      recentWorkspaces: [],
+      lastWorkspace: null,
+      conversationHome: "C:\\Users\\me\\Documents\\Pix\\conversations",
+    });
+    vi.mocked(rememberWorkspace).mockReset().mockImplementation(async (cwd) => ({
+      recentWorkspaces: [cwd],
+      lastWorkspace: cwd,
+      conversationHome: "C:\\Users\\me\\Documents\\Pix\\conversations",
+    }));
+    vi.mocked(removeRecentWorkspace).mockReset().mockResolvedValue({
+      recentWorkspaces: [],
+      lastWorkspace: null,
+      conversationHome: "C:\\Users\\me\\Documents\\Pix\\conversations",
+    });
+    vi.mocked(ensureConversationWorkspace)
+      .mockReset()
+      .mockResolvedValue("C:\\Users\\me\\Documents\\Pix\\conversations");
     vi.mocked(listenToAgentEvents)
       .mockReset()
       .mockImplementation(async (handler) => {
@@ -96,8 +133,8 @@ describe("useChatSession", () => {
 
     await act(() => result.current.sendPrompt("   "));
     await act(() => result.current.sendPrompt(" hello "));
-    expect(promptAgent).toHaveBeenCalledWith("s-1", "hello");
-    expect(result.current.messages).toHaveLength(2);
+    expect(promptAgent).toHaveBeenCalledWith("s-1", "hello", undefined);
+    expect(result.current.messages).toHaveLength(1);
 
     await act(() => result.current.abort());
     expect(abortAgent).toHaveBeenCalledWith("s-1");
@@ -180,6 +217,7 @@ describe("useChatSession", () => {
     });
     act(() => {
       emit?.(event("agent.started"));
+      emit?.(event("user.message", { content: "stream" }));
       emit?.(event("tool.started", { toolCallId: "tool-1", toolName: "read" }));
       emit?.(event("message.delta", { delta: "A" }));
       emit?.(event("tool.completed", { toolCallId: "tool-1", toolName: "read" }));
@@ -187,10 +225,11 @@ describe("useChatSession", () => {
       emit?.(event("agent.settled"));
     });
     expect(result.current.phase).toBe("ready");
-    expect(result.current.messages.at(-1)?.content).toBe("A");
-    expect(result.current.messages.at(-1)?.tools).toEqual([
-      { id: "tool-1", name: "read", status: "completed" },
-      { id: "tool-2", name: "bash", status: "failed" },
+    expect(result.current.messages.filter((item) => item.role === "user")).toHaveLength(1);
+    expect(result.current.messages.find((item) => item.role === "assistant")?.content).toBe("A");
+    expect(result.current.messages.filter((item) => item.role === "tool")).toEqual([
+      expect.objectContaining({ toolCallId: "tool-1", toolName: "read", status: "completed" }),
+      expect.objectContaining({ toolCallId: "tool-2", toolName: "bash", status: "failed" }),
     ]);
 
     await act(async () => resolvePrompt?.(10));
@@ -216,8 +255,11 @@ describe("useChatSession", () => {
     act(() => emit?.(event("message.delta", { delta: "partial" })));
     await act(async () => rejectPrompt?.(new Error("model failed")));
 
-    expect(result.current.messages.at(-1)?.content).toBe("partial");
-    expect(result.current.messages.at(-1)?.tools?.[0]?.status).toBe("failed");
+    expect(result.current.messages.find((item) => item.role === "assistant")?.content).toBe("partial");
+    expect(result.current.messages.find((item) => item.role === "tool")?.status).toBe("failed");
+    expect(result.current.messages.at(-1)).toEqual(
+      expect.objectContaining({ role: "system", content: "model failed", status: "failed" }),
+    );
     expect(result.current.error).toBe("model failed");
     vi.mocked(abortAgent).mockRejectedValue("abort failed");
     await act(() => result.current.abort());
@@ -340,10 +382,177 @@ describe("useChatSession", () => {
     expect(result.current.phase).toBe("ready");
     expect(result.current.messages.at(-1)).toEqual(
       expect.objectContaining({
-        role: "assistant",
-        tools: [{ id: "tool-1", name: "bash", status: "cancelled" }],
+        role: "tool",
+        toolCallId: "tool-1",
+        toolName: "bash",
+        status: "cancelled",
       }),
     );
+  });
+
+  it("切换会话后继续接收后台流式事件并保留独立投影", async () => {
+    vi.mocked(promptAgent).mockImplementation(() => new Promise<number>(() => {}));
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:\\work"));
+    act(() => {
+      void result.current.sendPrompt("后台任务");
+    });
+
+    vi.mocked(createAgentSession).mockResolvedValueOnce({
+      sessionId: "s-2",
+      cwd: "C:\\other",
+      sessionPath: "C:\\agent\\sessions\\s-2.jsonl",
+      modelFallbackMessage: null,
+      configuration: {
+        model: { provider: "openai", id: "gpt", name: "GPT", reasoning: true },
+        thinkingLevel: "medium",
+        availableThinkingLevels: ["off", "medium", "high"],
+      },
+      messages: [],
+      queuedMessages: { steering: [], followUp: [] },
+      streaming: false,
+    });
+    await act(() => result.current.createSession("C:\\other"));
+    expect(result.current.sessionId).toBe("s-2");
+    expect(result.current.runningSessionIds).toContain("s-1");
+
+    act(() => {
+      emit?.(event("agent.started", undefined, "s-1"));
+      emit?.(event("thinking.delta", { delta: "分析中" }, "s-1"));
+      emit?.(event("message.delta", { delta: "后台完成" }, "s-1"));
+      emit?.(event("agent.settled", undefined, "s-1"));
+    });
+    expect(result.current.sessionId).toBe("s-2");
+
+    vi.mocked(openAgentSession).mockResolvedValueOnce({
+      sessionId: "s-1",
+      cwd: "C:\\work",
+      sessionPath: "C:\\agent\\sessions\\s-1.jsonl",
+      modelFallbackMessage: null,
+      configuration: {
+        model: { provider: "openai", id: "gpt", name: "GPT", reasoning: true },
+        thinkingLevel: "medium",
+        availableThinkingLevels: ["off", "medium", "high"],
+      },
+      messages: [],
+      queuedMessages: { steering: [], followUp: [] },
+      streaming: false,
+    });
+    await act(() => result.current.openSession("C:\\agent\\sessions\\s-1.jsonl"));
+    expect(result.current.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "thinking", content: "分析中" }),
+        expect.objectContaining({ role: "assistant", content: "后台完成" }),
+      ]),
+    );
+  });
+
+  it("流式期间区分引导与后续队列，并以 SDK 队列事件为准", async () => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:\\work"));
+    await act(() => result.current.sendPrompt("开始任务"));
+
+    await act(() => result.current.sendPrompt("调整方向", "steer"));
+    await act(() => result.current.sendPrompt("完成后总结", "followUp"));
+
+    expect(promptAgent).toHaveBeenNthCalledWith(1, "s-1", "开始任务", undefined);
+    expect(promptAgent).toHaveBeenNthCalledWith(2, "s-1", "调整方向", "steer");
+    expect(promptAgent).toHaveBeenNthCalledWith(3, "s-1", "完成后总结", "followUp");
+    expect(result.current.messages.filter((item) => item.role === "user")).toHaveLength(1);
+    expect(result.current.queuedMessages).toEqual({
+      steering: ["调整方向"],
+      followUp: ["完成后总结"],
+    });
+
+    act(() => {
+      emit?.(
+        event("queue.updated", {
+          steering: ["SDK 引导"],
+          followUp: ["SDK 后续"],
+        }),
+      );
+    });
+    expect(result.current.queuedMessages).toEqual({
+      steering: ["SDK 引导"],
+      followUp: ["SDK 后续"],
+    });
+
+    await act(() => result.current.clearQueue());
+    expect(clearAgentQueue).toHaveBeenCalledWith("s-1");
+    expect(result.current.queuedMessages).toEqual({ steering: [], followUp: [] });
+  });
+
+  it("排队和清空失败时回滚队列，中止后保留暂停状态", async () => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:\\work"));
+    await act(() => result.current.sendPrompt("开始任务"));
+
+    vi.mocked(promptAgent).mockRejectedValueOnce(new Error("queue failed"));
+    await act(() => result.current.sendPrompt("失败引导", "steer"));
+    expect(result.current.phase).toBe("streaming");
+    expect(result.current.queuedMessages).toEqual({ steering: [], followUp: [] });
+    expect(result.current.messages.filter((item) => item.role === "user")).toHaveLength(1);
+
+    act(() => {
+      emit?.(event("queue.updated", { steering: ["保留消息"], followUp: [] }));
+    });
+    vi.mocked(clearAgentQueue).mockRejectedValueOnce(new Error("clear failed"));
+    await act(() => result.current.clearQueue());
+    expect(result.current.queuedMessages.steering).toEqual(["保留消息"]);
+    expect(result.current.error).toBe("clear failed");
+
+    await act(() => result.current.abort());
+    expect(result.current.phase).toBe("ready");
+    expect(result.current.queuePaused).toBe(true);
+
+    act(() => {
+      emit?.(event("queue.updated", { steering: [], followUp: [] }));
+    });
+    expect(result.current.queuePaused).toBe(false);
+  });
+
+  it("恢复带队列的非流式会话时展示暂停状态，并忽略畸形队列事件", async () => {
+    vi.mocked(createAgentSession).mockResolvedValueOnce({
+      sessionId: "queued",
+      cwd: "C:\\work",
+      sessionPath: "C:\\agent\\sessions\\queued.jsonl",
+      modelFallbackMessage: null,
+      configuration: {
+        model: { provider: "openai", id: "gpt", name: "GPT", reasoning: true },
+        thinkingLevel: "medium",
+        availableThinkingLevels: ["off", "medium", "high"],
+      },
+      messages: [],
+      queuedMessages: { steering: ["待继续"], followUp: [] },
+      streaming: false,
+    });
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:\\work"));
+
+    expect(result.current.queuePaused).toBe(true);
+    act(() => emit?.(event("queue.updated", { steering: [1], followUp: [] }, "queued")));
+    expect(result.current.queuedMessages.steering).toEqual(["待继续"]);
+    act(() => emit?.(event("agent.started", undefined, "queued")));
+    expect(result.current.queuePaused).toBe(false);
+  });
+
+  it("创建纯对话工作区并持久化最近项目", async () => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+
+    await act(() => result.current.createConversation());
+    expect(ensureConversationWorkspace).toHaveBeenCalledOnce();
+    expect(createAgentSession).toHaveBeenCalledWith(
+      "C:\\Users\\me\\Documents\\Pix\\conversations",
+    );
+    await waitFor(() => expect(rememberWorkspace).toHaveBeenCalledWith("C:\\work"));
+
+    await act(() => result.current.removeWorkspace("C:\\work"));
+    expect(removeRecentWorkspace).toHaveBeenCalledWith("C:\\work");
   });
 });
 

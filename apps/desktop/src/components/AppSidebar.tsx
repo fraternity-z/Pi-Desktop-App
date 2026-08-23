@@ -7,6 +7,7 @@ import {
   PenLine,
   Plus,
   RefreshCw,
+  X,
 } from "lucide-react";
 import { useEffect, useMemo, useState, type KeyboardEvent, type PointerEvent } from "react";
 
@@ -21,11 +22,16 @@ interface AppSidebarProps {
   activeCwd: string;
   activeSessionPath: string | null;
   sessions: AgentSessionSummary[];
+  recentWorkspaces: string[];
+  conversationHome: string;
+  runningSessionIds: string[];
   catalogPhase: CatalogPhase;
   phase: ChatPhase;
   runtime: RuntimeStatusController;
   onAddProject: () => void;
+  onNewConversation: () => void;
   onNewSession: (cwd?: string) => void;
+  onRemoveWorkspace: (cwd: string) => void;
   onSelectSession: (session: AgentSessionSummary) => void;
   onRefresh: () => void;
   onClose: () => void;
@@ -44,20 +50,33 @@ export function AppSidebar({
   activeCwd,
   activeSessionPath,
   sessions,
+  recentWorkspaces,
+  conversationHome,
+  runningSessionIds,
   catalogPhase,
   phase,
   runtime,
   onAddProject,
+  onNewConversation,
   onNewSession,
+  onRemoveWorkspace,
   onSelectSession,
   onRefresh,
   onClose,
   onWidthChange,
 }: AppSidebarProps) {
   const runtimeReady = runtime.phase === "ready" && runtime.status.status === "ready";
-  const projects = useMemo(() => groupSessionsByProject(sessions, activeCwd), [activeCwd, sessions]);
-  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
-  const switchingDisabled = phase === "creating" || phase === "streaming";
+  const projects = useMemo(
+    () => groupSessionsByProject(sessions, recentWorkspaces, activeCwd, conversationHome),
+    [activeCwd, conversationHome, recentWorkspaces, sessions],
+  );
+  const conversationSessions = useMemo(
+    () => sessions.filter((session) => samePath(session.cwd, conversationHome)),
+    [conversationHome, sessions],
+  );
+  const runningIds = useMemo(() => new Set(runningSessionIds), [runningSessionIds]);
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(readExpandedProjects);
+  const switchingDisabled = phase === "creating";
 
   useEffect(() => {
     setExpandedProjects((current) => {
@@ -70,6 +89,17 @@ export function AppSidebar({
       return next;
     });
   }, [activeCwd, projects]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        "pi-desktop.expanded-workspaces",
+        JSON.stringify([...expandedProjects]),
+      );
+    } catch {
+      // Sidebar expansion remains available in memory when storage is unavailable.
+    }
+  }, [expandedProjects]);
 
   function toggleProject(cwd: string) {
     setExpandedProjects((current) => {
@@ -137,13 +167,33 @@ export function AppSidebar({
         <nav className="sidebar-primary-actions" aria-label="会话操作">
           <button
             type="button"
-            onClick={() => onNewSession(activeCwd || undefined)}
+            onClick={onNewConversation}
             disabled={switchingDisabled || !runtimeReady}
           >
             <PenLine size={17} />
             <span>新建会话</span>
           </button>
         </nav>
+
+        {conversationSessions.length > 0 && (
+          <section className="sidebar-section sidebar-conversation-section">
+            <div className="sidebar-section-heading">
+              <h2 className="sidebar-section-title">对话</h2>
+            </div>
+            <div className="session-list conversation-session-list">
+              {conversationSessions.map((session) => (
+                <SessionRow
+                  key={session.path}
+                  session={session}
+                  active={session.path === activeSessionPath}
+                  running={runningIds.has(session.id)}
+                  disabled={switchingDisabled}
+                  onSelect={onSelectSession}
+                />
+              ))}
+            </div>
+          </section>
+        )}
 
         <section className="sidebar-section">
           <div className="sidebar-section-heading">
@@ -207,6 +257,15 @@ export function AppSidebar({
                         <span>{project.name}</span>
                       </button>
                       <button
+                        className="icon-button project-remove"
+                        type="button"
+                        onClick={() => onRemoveWorkspace(project.cwd)}
+                        aria-label={`从列表移除${project.name}`}
+                        title="从列表移除"
+                      >
+                        <X size={13} />
+                      </button>
+                      <button
                         className="icon-button project-toggle"
                         type="button"
                         onClick={() => toggleProject(project.cwd)}
@@ -221,19 +280,14 @@ export function AppSidebar({
                       <div className="session-list">
                         {project.sessions.length > 0 ? (
                           project.sessions.map((session) => (
-                            <button
-                              className={`session-row${session.path === activeSessionPath ? " session-row-active" : ""}`}
-                              type="button"
+                            <SessionRow
                               key={session.path}
-                              onClick={() => onSelectSession(session)}
+                              session={session}
+                              active={session.path === activeSessionPath}
+                              running={runningIds.has(session.id)}
                               disabled={switchingDisabled}
-                              aria-current={session.path === activeSessionPath ? "page" : undefined}
-                              title={session.name || session.firstMessage || session.id}
-                            >
-                              <MessageSquare size={14} />
-                              <span>{getSessionTitle(session)}</span>
-                              <time dateTime={session.modified}>{formatSessionTime(session.modified)}</time>
-                            </button>
+                              onSelect={onSelectSession}
+                            />
                           ))
                         ) : (
                           <button
@@ -279,22 +333,85 @@ function clampSidebarWidth(width: number): number {
 
 function groupSessionsByProject(
   sessions: AgentSessionSummary[],
+  recentWorkspaces: string[],
   activeCwd: string,
+  conversationHome: string,
 ): ProjectGroup[] {
-  const groups = new Map<string, AgentSessionSummary[]>();
+  const groups = new Map<string, { cwd: string; sessions: AgentSessionSummary[] }>();
+  for (const cwd of recentWorkspaces) {
+    if (!samePath(cwd, conversationHome)) {
+      groups.set(normalizePath(cwd), { cwd, sessions: [] });
+    }
+  }
+  if (activeCwd && !samePath(activeCwd, conversationHome)) {
+    const key = normalizePath(activeCwd);
+    if (!groups.has(key)) groups.set(key, { cwd: activeCwd, sessions: [] });
+  }
   for (const session of sessions) {
-    const group = groups.get(session.cwd) ?? [];
-    group.push(session);
-    groups.set(session.cwd, group);
+    const group = groups.get(normalizePath(session.cwd));
+    if (group) group.sessions.push(session);
   }
-  if (activeCwd && !groups.has(activeCwd)) {
-    groups.set(activeCwd, []);
+  const rank = new Map(recentWorkspaces.map((cwd, index) => [normalizePath(cwd), index]));
+  return [...groups.values()]
+    .map((group) => ({
+      cwd: group.cwd,
+      name: getWorkspaceName(group.cwd),
+      sessions: [...group.sessions].sort((left, right) => right.modified.localeCompare(left.modified)),
+    }))
+    .sort((left, right) => {
+      const leftRank = rank.get(normalizePath(left.cwd)) ?? Number.MAX_SAFE_INTEGER;
+      const rightRank = rank.get(normalizePath(right.cwd)) ?? Number.MAX_SAFE_INTEGER;
+      return leftRank - rightRank || left.name.localeCompare(right.name);
+    });
+}
+
+function SessionRow({
+  session,
+  active,
+  running,
+  disabled,
+  onSelect,
+}: {
+  session: AgentSessionSummary;
+  active: boolean;
+  running: boolean;
+  disabled: boolean;
+  onSelect: (session: AgentSessionSummary) => void;
+}) {
+  return (
+    <button
+      className={`session-row${active ? " session-row-active" : ""}`}
+      type="button"
+      onClick={() => onSelect(session)}
+      disabled={disabled}
+      aria-current={active ? "page" : undefined}
+      title={session.name || session.firstMessage || session.id}
+    >
+      <span className="session-row-icon">
+        <MessageSquare size={14} />
+        {running && <span className="session-running-dot" aria-label="正在运行" />}
+      </span>
+      <span>{getSessionTitle(session)}</span>
+      <time dateTime={session.modified}>{formatSessionTime(session.modified)}</time>
+    </button>
+  );
+}
+
+function readExpandedProjects(): Set<string> {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem("pi-desktop.expanded-workspaces") ?? "[]");
+    return new Set(Array.isArray(stored) ? stored.filter((item): item is string => typeof item === "string") : []);
+  } catch {
+    return new Set();
   }
-  return [...groups.entries()].map(([cwd, projectSessions]) => ({
-    cwd,
-    name: getWorkspaceName(cwd),
-    sessions: projectSessions,
-  }));
+}
+
+function samePath(left: string, right: string): boolean {
+  return Boolean(left && right) && normalizePath(left) === normalizePath(right);
+}
+
+function normalizePath(path: string): string {
+  return path.trim().replace(/[\\/]+$/, "").replace(/\\/g, "/").toLocaleLowerCase();
 }
 
 function getWorkspaceName(path: string): string {

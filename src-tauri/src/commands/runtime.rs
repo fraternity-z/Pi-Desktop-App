@@ -3,8 +3,8 @@ use tauri::State;
 use crate::{
     bridge::{
         protocol::{
-            AgentModel, AgentSessionSummary, CreatedSession, SessionConfiguration,
-            SessionConfigurationUpdate,
+            AgentModel, AgentSessionSummary, CreatedSession, PromptStreamingBehavior,
+            SessionConfiguration, SessionConfigurationUpdate,
         },
         runtime::{BridgeRuntime, RuntimeSnapshot},
     },
@@ -60,8 +60,17 @@ pub async fn agent_prompt(
     runtime: State<'_, BridgeRuntime>,
     session_id: String,
     text: String,
+    streaming_behavior: Option<PromptStreamingBehavior>,
 ) -> Result<u64, AppError> {
-    runtime.prompt(session_id, text)
+    runtime.prompt(session_id, text, streaming_behavior)
+}
+
+#[tauri::command]
+pub async fn agent_clear_queue(
+    runtime: State<'_, BridgeRuntime>,
+    session_id: String,
+) -> Result<(), AppError> {
+    runtime.clear_queue(session_id)
 }
 
 #[tauri::command]

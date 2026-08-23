@@ -1,8 +1,27 @@
 import { ArrowUp, Check, ChevronDown, Folder, LoaderCircle, Square } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+  type KeyboardEvent,
+  type ReactNode,
+  type RefObject,
+} from "react";
+import { createPortal } from "react-dom";
 
-import type { AgentModel, SessionConfiguration, ThinkingLevel } from "../ipc/agent";
+import type {
+  AgentModel,
+  PromptStreamingBehavior,
+  QueuedMessages,
+  SessionConfiguration,
+  ThinkingLevel,
+} from "../ipc/agent";
 import type { AgentEventConnection, ChatPhase } from "../stores/useChatSession";
+import { ComposerQueueCard } from "./ComposerQueueCard";
 
 interface ChatComposerProps {
   workspaceName: string;
@@ -13,10 +32,13 @@ interface ChatComposerProps {
   configuration: SessionConfiguration | null;
   configuring: boolean;
   canSend: boolean;
+  queuedMessages: QueuedMessages;
+  queuePaused: boolean;
   onDraftChange: (value: string) => void;
   onModelChange: (provider: string, id: string) => void;
   onThinkingLevelChange: (level: ThinkingLevel) => void;
-  onSend: (event?: FormEvent) => void;
+  onSend: (event?: FormEvent, behavior?: PromptStreamingBehavior) => void;
+  onClearQueue: () => void;
   onAbort: () => void;
 }
 
@@ -29,20 +51,27 @@ export function ChatComposer({
   configuration,
   configuring,
   canSend,
+  queuedMessages,
+  queuePaused,
   onDraftChange,
   onModelChange,
   onThinkingLevelChange,
   onSend,
+  onClearQueue,
   onAbort,
 }: ChatComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const menuRootRef = useRef<HTMLDivElement>(null);
+  const floatingMenuRef = useRef<HTMLDivElement>(null);
+  const modelTriggerRef = useRef<HTMLButtonElement>(null);
+  const thinkingTriggerRef = useRef<HTMLButtonElement>(null);
   const [openMenu, setOpenMenu] = useState<"model" | "thinking" | null>(null);
   const streaming = phase === "streaming";
-  const disabled = streaming || eventConnection !== "ready";
-  const modelDisabled = disabled || configuring || models.length === 0 || !configuration;
+  const disabled = eventConnection !== "ready";
+  const modelDisabled = disabled || streaming || configuring || models.length === 0 || !configuration;
   const thinkingDisabled =
     disabled ||
+    streaming ||
     configuring ||
     !configuration ||
     configuration.availableThinkingLevels.length <= 1;
@@ -62,7 +91,11 @@ export function ChatComposer({
       return;
     }
     function closeOnPointerDown(event: MouseEvent) {
-      if (!menuRootRef.current?.contains(event.target as Node)) {
+      const target = event.target as Node;
+      if (
+        !menuRootRef.current?.contains(target) &&
+        !floatingMenuRef.current?.contains(target)
+      ) {
         setOpenMenu(null);
       }
     }
@@ -71,11 +104,22 @@ export function ChatComposer({
         setOpenMenu(null);
       }
     }
+    function closeOnViewportChange(event: Event) {
+      const target = event.target;
+      if (target instanceof Node && floatingMenuRef.current?.contains(target)) {
+        return;
+      }
+      setOpenMenu(null);
+    }
     document.addEventListener("mousedown", closeOnPointerDown);
     document.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("scroll", closeOnViewportChange, true);
+    window.addEventListener("resize", closeOnViewportChange);
     return () => {
       document.removeEventListener("mousedown", closeOnPointerDown);
       document.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("scroll", closeOnViewportChange, true);
+      window.removeEventListener("resize", closeOnViewportChange);
     };
   }, [openMenu]);
 
@@ -86,17 +130,22 @@ export function ChatComposer({
   }, [configuring, disabled]);
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.nativeEvent.isComposing) {
+    if (isImeCompositionEvent(event.nativeEvent)) {
       return;
     }
-    if (event.key === "Enter" && !event.shiftKey && !event.altKey) {
+    if (event.key === "Enter" && !event.shiftKey && (!event.altKey || streaming)) {
       event.preventDefault();
-      onSend();
+      onSend(undefined, streaming ? (event.altKey ? "followUp" : "steer") : undefined);
     }
   }
 
   return (
     <div className="composer-dock">
+      <ComposerQueueCard
+        queuedMessages={queuedMessages}
+        paused={queuePaused}
+        onClear={onClearQueue}
+      />
       <div className="composer-protrusion" title={workspaceName}>
         <Folder size={15} />
         <span>{workspaceName}</span>
@@ -108,7 +157,7 @@ export function ChatComposer({
           value={draft}
           onChange={(event) => onDraftChange(event.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={streaming ? "Pi 正在处理当前任务" : "描述你想让 Pi 完成的任务"}
+          placeholder={streaming ? "继续输入可加入后续队列" : "描述你想让 Pi 完成的任务"}
           disabled={disabled}
           rows={1}
         />
@@ -133,19 +182,27 @@ export function ChatComposer({
           <div className="composer-controls" ref={menuRootRef}>
             <div className="composer-picker">
               <button
+                ref={modelTriggerRef}
                 className="composer-picker-trigger"
                 type="button"
                 disabled={modelDisabled}
                 aria-label="选择模型"
                 aria-haspopup="menu"
                 aria-expanded={openMenu === "model"}
+                aria-controls={openMenu === "model" ? "composer-model-menu" : undefined}
                 onClick={() => setOpenMenu((current) => (current === "model" ? null : "model"))}
               >
                 <span>{configuration?.model?.name ?? "无可用模型"}</span>
                 <ChevronDown size={13} aria-hidden="true" />
               </button>
               {openMenu === "model" && (
-                <div className="composer-menu composer-model-menu" role="menu" aria-label="模型列表">
+                <AnchoredComposerMenu
+                  id="composer-model-menu"
+                  anchor={modelTriggerRef.current}
+                  menuRef={floatingMenuRef}
+                  className="composer-model-menu"
+                  ariaLabel="模型列表"
+                >
                   {modelGroups.map(([provider, providerModels]) => (
                     <div className="composer-menu-group" key={provider}>
                       <p>{provider}</p>
@@ -171,18 +228,20 @@ export function ChatComposer({
                       })}
                     </div>
                   ))}
-                </div>
+                </AnchoredComposerMenu>
               )}
             </div>
 
             <div className="composer-picker">
               <button
+                ref={thinkingTriggerRef}
                 className="composer-picker-trigger"
                 type="button"
                 disabled={thinkingDisabled}
                 aria-label="选择思考强度"
                 aria-haspopup="menu"
                 aria-expanded={openMenu === "thinking"}
+                aria-controls={openMenu === "thinking" ? "composer-thinking-menu" : undefined}
                 onClick={() =>
                   setOpenMenu((current) => (current === "thinking" ? null : "thinking"))
                 }
@@ -193,7 +252,13 @@ export function ChatComposer({
                 <ChevronDown size={13} aria-hidden="true" />
               </button>
               {openMenu === "thinking" && configuration && (
-                <div className="composer-menu composer-thinking-menu" role="menu" aria-label="思考强度列表">
+                <AnchoredComposerMenu
+                  id="composer-thinking-menu"
+                  anchor={thinkingTriggerRef.current}
+                  menuRef={floatingMenuRef}
+                  className="composer-thinking-menu"
+                  ariaLabel="思考强度列表"
+                >
                   <p className="composer-menu-title">思考强度</p>
                   {configuration.availableThinkingLevels.map((level) => {
                     const selected = level === configuration.thinkingLevel;
@@ -213,7 +278,7 @@ export function ChatComposer({
                       </button>
                     );
                   })}
-                </div>
+                </AnchoredComposerMenu>
               )}
             </div>
 
@@ -243,6 +308,100 @@ export function ChatComposer({
       </form>
     </div>
   );
+}
+
+interface AnchoredComposerMenuProps {
+  id: string;
+  anchor: HTMLElement | null;
+  menuRef: RefObject<HTMLDivElement | null>;
+  className: string;
+  ariaLabel: string;
+  children: ReactNode;
+}
+
+function AnchoredComposerMenu({
+  id,
+  anchor,
+  menuRef,
+  className,
+  ariaLabel,
+  children,
+}: AnchoredComposerMenuProps) {
+  const [menuSize, setMenuSize] = useState({ width: 280, height: 0 });
+
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    if (!menu) {
+      return;
+    }
+
+    const measure = () => {
+      const next = {
+        width: Math.ceil(menu.offsetWidth) || 280,
+        height: Math.ceil(menu.offsetHeight),
+      };
+      setMenuSize((current) =>
+        current.width === next.width && current.height === next.height ? current : next,
+      );
+    };
+
+    measure();
+    const observer =
+      typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(measure);
+    observer?.observe(menu);
+    return () => observer?.disconnect();
+  }, [anchor, menuRef]);
+
+  if (!anchor || typeof document === "undefined") {
+    return null;
+  }
+
+  const anchorRect = anchor.getBoundingClientRect();
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const viewportPadding = 8;
+  const gap = 7;
+  const availableAbove = Math.max(0, anchorRect.top - gap - viewportPadding);
+  const maxHeight = Math.max(
+    72,
+    Math.min(360, viewportHeight * 0.55, Math.max(72, availableAbove)),
+  );
+  const renderedHeight = Math.min(menuSize.height || maxHeight, maxHeight);
+  const renderedWidth = Math.min(menuSize.width, Math.max(160, viewportWidth - 32));
+  const left = clamp(
+    anchorRect.right - renderedWidth,
+    viewportPadding,
+    Math.max(viewportPadding, viewportWidth - renderedWidth - viewportPadding),
+  );
+  const top = clamp(
+    anchorRect.top - gap - renderedHeight,
+    viewportPadding,
+    Math.max(viewportPadding, viewportHeight - renderedHeight - viewportPadding),
+  );
+  const style: CSSProperties = { left, top, maxHeight };
+
+  return createPortal(
+    <div
+      ref={menuRef}
+      id={id}
+      className={`composer-menu ${className}`}
+      role="menu"
+      aria-label={ariaLabel}
+      data-floating-menu=""
+      style={style}
+    >
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+export function isImeCompositionEvent(event: Pick<globalThis.KeyboardEvent, "isComposing" | "keyCode">): boolean {
+  return event.isComposing || event.keyCode === 229;
 }
 
 function groupModelsByProvider(models: AgentModel[]): [string, AgentModel[]][] {

@@ -13,6 +13,7 @@ interface RuntimeMock {
   listModels: ReturnType<typeof vi.fn>;
   configureSession: ReturnType<typeof vi.fn>;
   prompt: ReturnType<typeof vi.fn>;
+  clearQueue: ReturnType<typeof vi.fn>;
   abort: ReturnType<typeof vi.fn>;
   shutdown: ReturnType<typeof vi.fn>;
 }
@@ -24,7 +25,9 @@ function createRuntimeMock(): RuntimeMock {
     cwd: "C:\\work",
     sessionPath: null,
     configuration: { model: null, thinkingLevel: "off" as const, availableThinkingLevels: ["off" as const] },
-    messages: [],
+      messages: [],
+      queuedMessages: { steering: [], followUp: [] },
+      streaming: false,
   }));
   const listSessions = vi.fn(async () => []);
   const openSession = vi.fn(async () => ({
@@ -32,7 +35,9 @@ function createRuntimeMock(): RuntimeMock {
     cwd: "C:\\work",
     sessionPath: "C:\\agent\\sessions\\s.jsonl",
     configuration: { model: null, thinkingLevel: "off" as const, availableThinkingLevels: ["off" as const] },
-    messages: [],
+      messages: [],
+      queuedMessages: { steering: [], followUp: [] },
+      streaming: false,
   }));
   const listModels = vi.fn(async () => []);
   const configureSession = vi.fn(async () => ({
@@ -41,6 +46,7 @@ function createRuntimeMock(): RuntimeMock {
     availableThinkingLevels: ["off" as const],
   }));
   const prompt = vi.fn(async () => undefined);
+  const clearQueue = vi.fn(async () => undefined);
   const abort = vi.fn(async () => undefined);
   const shutdown = vi.fn(async () => undefined);
   const runtime: SessionRuntime = {
@@ -50,6 +56,7 @@ function createRuntimeMock(): RuntimeMock {
     listModels,
     configureSession,
     prompt,
+    clearQueue,
     abort,
     shutdown,
     subscribe: vi.fn((nextListener: (event: RuntimeEvent) => void) => {
@@ -66,6 +73,7 @@ function createRuntimeMock(): RuntimeMock {
     listModels,
     configureSession,
     prompt,
+    clearQueue,
     abort,
     shutdown,
   };
@@ -101,6 +109,9 @@ describe("BridgeServer", () => {
     await server.handleLine(
       '{"v":1,"id":"8","op":"session.configure","sessionId":"s-2","thinkingLevel":"high"}',
     );
+    await server.handleLine(
+      '{"v":1,"id":"9","op":"queue.clear","sessionId":"s-1"}',
+    );
 
     expect(frames[0]).toEqual(createHello("0.84.2", "22.19.0"));
     expect(frames).toContainEqual(expect.objectContaining({ id: "1", ok: true, data: { pong: true } }));
@@ -108,7 +119,7 @@ describe("BridgeServer", () => {
       expect.objectContaining({ id: "2", ok: true, data: { status: "ok", protocolVersion: 1 } }),
     );
     expect(runtimeMock.createSession).toHaveBeenCalledWith("C:\\work");
-    expect(runtimeMock.prompt).toHaveBeenCalledWith("s-1", "hello");
+    expect(runtimeMock.prompt).toHaveBeenCalledWith("s-1", "hello", undefined);
     expect(frames).toContainEqual(
       expect.objectContaining({ id: "4", ok: true, data: { finalSeq: 0 } }),
     );
@@ -118,6 +129,20 @@ describe("BridgeServer", () => {
     expect(runtimeMock.configureSession).toHaveBeenCalledWith("s-2", {
       thinkingLevel: "high",
     });
+    expect(runtimeMock.clearQueue).toHaveBeenCalledWith("s-1");
+  });
+
+  it("将流式发送行为传递给运行时", async () => {
+    const { server, runtimeMock } = setup();
+    await server.handleLine(
+      '{"v":1,"id":"steer","op":"prompt","sessionId":"s-1","text":"guide","streamingBehavior":"steer"}',
+    );
+    await server.handleLine(
+      '{"v":1,"id":"follow","op":"prompt","sessionId":"s-1","text":"later","streamingBehavior":"followUp"}',
+    );
+
+    expect(runtimeMock.prompt).toHaveBeenNthCalledWith(1, "s-1", "guide", "steer");
+    expect(runtimeMock.prompt).toHaveBeenNthCalledWith(2, "s-1", "later", "followUp");
   });
 
   it("给流事件分配单调序号", () => {

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { ChatComposer } from "./ChatComposer";
+import { ChatComposer, isImeCompositionEvent } from "./ChatComposer";
 
 describe("ChatComposer", () => {
   it("无 SDK 配置时禁用选择器和空内容发送", () => {
@@ -16,10 +16,13 @@ describe("ChatComposer", () => {
         configuration={null}
         configuring={false}
         canSend={false}
+        queuedMessages={{ steering: [], followUp: [] }}
+        queuePaused={false}
         onDraftChange={vi.fn()}
         onModelChange={vi.fn()}
         onThinkingLevelChange={vi.fn()}
         onSend={onSend}
+        onClearQueue={vi.fn()}
         onAbort={vi.fn()}
       />,
     );
@@ -51,10 +54,13 @@ describe("ChatComposer", () => {
         }}
         configuring={false}
         canSend
+        queuedMessages={{ steering: [], followUp: [] }}
+        queuePaused={false}
         onDraftChange={vi.fn()}
         onModelChange={onModelChange}
         onThinkingLevelChange={onThinkingLevelChange}
         onSend={onSend}
+        onClearQueue={vi.fn()}
         onAbort={vi.fn()}
       />,
     );
@@ -90,10 +96,13 @@ describe("ChatComposer", () => {
         }}
         configuring={false}
         canSend
+        queuedMessages={{ steering: [], followUp: [] }}
+        queuePaused={false}
         onDraftChange={vi.fn()}
         onModelChange={vi.fn()}
         onThinkingLevelChange={vi.fn()}
         onSend={vi.fn()}
+        onClearQueue={vi.fn()}
         onAbort={vi.fn()}
       />,
     );
@@ -102,5 +111,92 @@ describe("ChatComposer", () => {
     expect(screen.getByRole("menu", { name: "模型列表" })).toBeInTheDocument();
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("menu", { name: "模型列表" })).not.toBeInTheDocument();
+  });
+
+  it("将模型和思考强度菜单渲染到顶层，避免被输入框裁切", () => {
+    render(
+      <ChatComposer
+        workspaceName="workspace"
+        draft=""
+        phase="ready"
+        eventConnection="ready"
+        models={[
+          { provider: "openai", id: "gpt", name: "GPT", reasoning: true },
+          { provider: "openai", id: "gpt-next", name: "GPT Next", reasoning: true },
+        ]}
+        configuration={{
+          model: { provider: "openai", id: "gpt", name: "GPT", reasoning: true },
+          thinkingLevel: "high",
+          availableThinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+        }}
+        configuring={false}
+        canSend={false}
+        queuedMessages={{ steering: [], followUp: [] }}
+        queuePaused={false}
+        onDraftChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onThinkingLevelChange={vi.fn()}
+        onSend={vi.fn()}
+        onClearQueue={vi.fn()}
+        onAbort={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "选择模型" }));
+    const modelMenu = screen.getByRole("menu", { name: "模型列表" });
+    expect(modelMenu.parentElement).toBe(document.body);
+    expect(modelMenu).toHaveAttribute("data-floating-menu");
+
+    fireEvent.click(screen.getByRole("button", { name: "选择思考强度" }));
+    const thinkingMenu = screen.getByRole("menu", { name: "思考强度列表" });
+    expect(thinkingMenu.parentElement).toBe(document.body);
+    expect(thinkingMenu).toHaveAttribute("data-floating-menu");
+  });
+
+  it("流式阶段允许追加输入并提供停止操作", () => {
+    const onSend = vi.fn();
+    const onAbort = vi.fn();
+    render(
+      <ChatComposer
+        workspaceName="workspace"
+        draft="追加检查"
+        phase="streaming"
+        eventConnection="ready"
+        models={[{ provider: "openai", id: "gpt", name: "GPT", reasoning: true }]}
+        configuration={{
+          model: { provider: "openai", id: "gpt", name: "GPT", reasoning: true },
+          thinkingLevel: "medium",
+          availableThinkingLevels: ["off", "medium", "high"],
+        }}
+        configuring={false}
+        canSend
+        queuedMessages={{ steering: ["已有引导"], followUp: [] }}
+        queuePaused={false}
+        onDraftChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onThinkingLevelChange={vi.fn()}
+        onSend={onSend}
+        onClearQueue={vi.fn()}
+        onAbort={onAbort}
+      />,
+    );
+
+    const textarea = screen.getByLabelText("发送给 Pi 的消息");
+    expect(textarea).toBeEnabled();
+    expect(textarea).toHaveAttribute("placeholder", "继续输入可加入后续队列");
+    expect(screen.getByRole("button", { name: "选择模型" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "选择思考强度" })).toBeDisabled();
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    fireEvent.keyDown(textarea, { key: "Enter", altKey: true });
+    expect(onSend).toHaveBeenNthCalledWith(1, undefined, "steer");
+    expect(onSend).toHaveBeenNthCalledWith(2, undefined, "followUp");
+    fireEvent.click(screen.getByRole("button", { name: "停止" }));
+    expect(onAbort).toHaveBeenCalledOnce();
+  });
+
+  it("兼容 keyCode 229 的输入法组合事件", () => {
+    expect(isImeCompositionEvent({ isComposing: false, keyCode: 229 })).toBe(true);
+    expect(isImeCompositionEvent({ isComposing: true, keyCode: 13 })).toBe(true);
+    expect(isImeCompositionEvent({ isComposing: false, keyCode: 13 })).toBe(false);
   });
 });

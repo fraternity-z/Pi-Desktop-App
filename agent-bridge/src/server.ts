@@ -70,8 +70,11 @@ export class BridgeServer {
           });
           break;
         case "prompt":
-          await this.runtime.prompt(request.sessionId, request.text);
+          await this.runtime.prompt(request.sessionId, request.text, request.streamingBehavior);
           data = { finalSeq: this.sequence };
+          break;
+        case "queue.clear":
+          await this.runtime.clearQueue(request.sessionId);
           break;
         case "abort":
           await this.runtime.abort(request.sessionId);

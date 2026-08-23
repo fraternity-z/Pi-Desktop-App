@@ -23,6 +23,7 @@ export const BRIDGE_OPERATIONS = [
   "session.open",
   "session.configure",
   "prompt",
+  "queue.clear",
   "abort",
   "shutdown",
 ] as const;
@@ -36,11 +37,15 @@ export const BRIDGE_CAPABILITIES = [
   "session-history",
   "session-configuration",
   "tool-status",
+  "background-sessions",
+  "thinking-stream",
+  "queue",
 ] as const;
 
 export type BridgeOperation = (typeof BRIDGE_OPERATIONS)[number];
 export type BridgeCapability = (typeof BRIDGE_CAPABILITIES)[number];
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+export type PromptStreamingBehavior = "steer" | "followUp";
 
 export interface ModelSelection {
   provider: string;
@@ -62,7 +67,13 @@ export type BridgeRequest =
       model?: ModelSelection;
       thinkingLevel?: ThinkingLevel;
     })
-  | (RequestBase & { op: "prompt"; sessionId: string; text: string })
+  | (RequestBase & {
+      op: "prompt";
+      sessionId: string;
+      text: string;
+      streamingBehavior?: PromptStreamingBehavior;
+    })
+  | (RequestBase & { op: "queue.clear"; sessionId: string })
   | (RequestBase & { op: "abort"; sessionId: string });
 
 export interface BridgeHello {
@@ -162,6 +173,16 @@ function readThinkingLevel(value: Record<string, unknown>): ThinkingLevel | unde
   return value.thinkingLevel as ThinkingLevel;
 }
 
+function readStreamingBehavior(
+  value: Record<string, unknown>,
+): PromptStreamingBehavior | undefined {
+  if (value.streamingBehavior === undefined) return undefined;
+  if (value.streamingBehavior !== "steer" && value.streamingBehavior !== "followUp") {
+    throw new ProtocolError("INVALID_REQUEST", "streamingBehavior 必须为 steer 或 followUp");
+  }
+  return value.streamingBehavior;
+}
+
 export function parseRequest(line: string): BridgeRequest {
   if (Buffer.byteLength(line, "utf8") > MAX_FRAME_BYTES) {
     throw new ProtocolError("FRAME_TOO_LARGE", "协议帧超过 1 MiB 限制");
@@ -230,19 +251,23 @@ export function parseRequest(line: string): BridgeRequest {
         ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
       };
     }
-    case "prompt":
+    case "prompt": {
+      const streamingBehavior = readStreamingBehavior(value);
       return {
         v: PROTOCOL_VERSION,
         id,
         op: "prompt",
         sessionId: requireString(value, "sessionId"),
         text: requireString(value, "text", MAX_PROMPT_CHARS),
+        ...(streamingBehavior === undefined ? {} : { streamingBehavior }),
       };
+    }
+    case "queue.clear":
     case "abort":
       return {
         v: PROTOCOL_VERSION,
         id,
-        op: "abort",
+        op: value.op as "queue.clear" | "abort",
         sessionId: requireString(value, "sessionId"),
       };
   }

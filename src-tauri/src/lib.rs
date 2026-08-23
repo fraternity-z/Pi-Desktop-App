@@ -11,6 +11,7 @@ use tauri::{Emitter, Manager, path::BaseDirectory};
 use crate::{
     bridge::{protocol::BridgeEvent, runtime::BridgeRuntime, supervisor::BridgeEventSink},
     error::AppError,
+    storage::WorkspaceStore,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -33,6 +34,15 @@ pub fn run() {
                     ))
                 });
             app.manage(runtime);
+            let config_dir = app
+                .path()
+                .app_config_dir()
+                .map_err(|error| error.to_string())?;
+            let documents_dir = app
+                .path()
+                .document_dir()
+                .map_err(|error| error.to_string())?;
+            app.manage(WorkspaceStore::new(config_dir, documents_dir));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -44,7 +54,12 @@ pub fn run() {
             commands::runtime::agent_list_models,
             commands::runtime::agent_configure_session,
             commands::runtime::agent_prompt,
-            commands::runtime::agent_abort
+            commands::runtime::agent_clear_queue,
+            commands::runtime::agent_abort,
+            commands::workspace::workspace_get_state,
+            commands::workspace::workspace_remember,
+            commands::workspace::workspace_remove_recent,
+            commands::workspace::workspace_ensure_conversation
         ])
         .run(tauri::generate_context!())
         .expect("启动 Pi Desktop 的 Tauri Runtime 失败");

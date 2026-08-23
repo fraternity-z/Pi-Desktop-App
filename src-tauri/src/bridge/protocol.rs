@@ -76,9 +76,31 @@ pub struct SessionConfigurationUpdate {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub enum PromptStreamingBehavior {
+    Steer,
+    FollowUp,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedMessages {
+    pub steering: Vec<String>,
+    pub follow_up: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentMessageSummary {
     pub role: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_error: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -98,6 +120,10 @@ pub struct CreatedSession {
     pub model_fallback_message: Option<String>,
     pub configuration: SessionConfiguration,
     pub messages: Vec<AgentMessageSummary>,
+    #[serde(default)]
+    pub queued_messages: QueuedMessages,
+    #[serde(default)]
+    pub streaming: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -150,6 +176,9 @@ pub fn validate_hello(hello: &BridgeHello) -> Result<(), AppError> {
         "session-history",
         "session-configuration",
         "tool-status",
+        "background-sessions",
+        "thinking-stream",
+        "queue",
     ] {
         if !hello.capabilities.iter().any(|item| item == capability) {
             return Err(AppError::new(
@@ -219,7 +248,7 @@ pub fn validate_event(event: &BridgeEvent) -> Result<(), AppError> {
                 return Err(invalid_event_data(&event.name));
             }
         }
-        "message.delta" => {
+        "message.delta" | "thinking.delta" => {
             let data = event
                 .data
                 .as_ref()
@@ -233,6 +262,51 @@ pub fn validate_event(event: &BridgeEvent) -> Result<(), AppError> {
                 return Err(invalid_event_data(&event.name));
             }
         }
+        "user.message" => {
+            let data = event
+                .data
+                .as_ref()
+                .and_then(serde_json::Value::as_object)
+                .filter(|data| data.len() == 1 && data.contains_key("content"));
+            let content = data
+                .and_then(|data| data.get("content"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|content| !content.trim().is_empty() && content.chars().count() <= 200_000);
+            if content.is_none() {
+                return Err(invalid_event_data(&event.name));
+            }
+        }
+        "message.completed" => {
+            let reason = event
+                .data
+                .as_ref()
+                .and_then(serde_json::Value::as_object)
+                .filter(|data| data.len() == 1)
+                .and_then(|data| data.get("reason"))
+                .and_then(serde_json::Value::as_str);
+            if !matches!(reason, Some("stop" | "length" | "toolUse")) {
+                return Err(invalid_event_data(&event.name));
+            }
+        }
+        "message.failed" => {
+            let data = event
+                .data
+                .as_ref()
+                .and_then(serde_json::Value::as_object)
+                .filter(|data| data.len() == 2);
+            let reason = data
+                .and_then(|data| data.get("reason"))
+                .and_then(serde_json::Value::as_str);
+            let message = data
+                .and_then(|data| data.get("message"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|message| !message.trim().is_empty() && message.len() <= 512);
+            if !matches!(reason, Some("aborted" | "error" | "pending" | "deferred"))
+                || message.is_none()
+            {
+                return Err(invalid_event_data(&event.name));
+            }
+        }
         "tool.started" | "tool.completed" | "tool.failed" => {
             let data = event
                 .data
@@ -242,6 +316,26 @@ pub fn validate_event(event: &BridgeEvent) -> Result<(), AppError> {
             if data.len() != 2
                 || !valid_bounded_text(data.get("toolCallId"), 256)
                 || !valid_bounded_text(data.get("toolName"), 128)
+            {
+                return Err(invalid_event_data(&event.name));
+            }
+        }
+        "queue.updated" => {
+            let data = event
+                .data
+                .as_ref()
+                .and_then(serde_json::Value::as_object)
+                .filter(|data| {
+                    data.len() == 2
+                        && data.contains_key("steering")
+                        && data.contains_key("followUp")
+                });
+            if data.and_then(|data| {
+                Some(
+                    valid_queue_messages(data.get("steering")?)
+                        && valid_queue_messages(data.get("followUp")?),
+                )
+            }) != Some(true)
             {
                 return Err(invalid_event_data(&event.name));
             }
@@ -316,6 +410,26 @@ fn valid_bounded_text(value: Option<&serde_json::Value>, maximum_length: usize) 
         .is_some_and(|value| !value.trim().is_empty() && value.len() <= maximum_length)
 }
 
+fn valid_queue_messages(value: &serde_json::Value) -> bool {
+    let Some(messages) = value.as_array().filter(|messages| messages.len() <= 64) else {
+        return false;
+    };
+    let mut total = 0;
+    for message in messages {
+        let Some(message) = message
+            .as_str()
+            .filter(|message| !message.trim().is_empty() && message.chars().count() <= 200_000)
+        else {
+            return false;
+        };
+        total += message.chars().count();
+        if total > 400_000 {
+            return false;
+        }
+    }
+    true
+}
+
 fn invalid_event_data(name: &str) -> AppError {
     AppError::new(
         "BRIDGE_EVENT_INVALID",
@@ -384,6 +498,9 @@ mod tests {
         "session-history",
         "session-configuration",
         "tool-status",
+        "background-sessions",
+        "thinking-stream",
+        "queue",
     ];
 
     fn hello(protocol_version: u16, capabilities: &[&str]) -> BridgeHello {
@@ -406,7 +523,7 @@ mod tests {
     #[test]
     fn deserializes_bridge_json_shape() {
         let value: BridgeHello = serde_json::from_str(
-            r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions","models","session-history","session-configuration","tool-status"]}"#,
+            r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions","models","session-history","session-configuration","tool-status","background-sessions","thinking-stream","queue"]}"#,
         )
         .expect("Bridge hello JSON 必须可反序列化");
 
@@ -514,6 +631,26 @@ mod tests {
         assert_eq!(
             validate_event(&invalid)
                 .expect_err("额外工具参数必须失败")
+                .code,
+            "BRIDGE_EVENT_INVALID"
+        );
+    }
+
+    #[test]
+    fn validates_queue_event_contract() {
+        let event: BridgeEvent = serde_json::from_str(
+            r#"{"v":1,"kind":"event","seq":1,"sessionId":"s-1","name":"queue.updated","data":{"steering":["guide"],"followUp":["later"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(validate_event(&event), Ok(()));
+
+        let invalid: BridgeEvent = serde_json::from_str(
+            r#"{"v":1,"kind":"event","seq":1,"sessionId":"s-1","name":"queue.updated","data":{"steering":[1],"followUp":[]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            validate_event(&invalid)
+                .expect_err("非字符串队列项必须失败")
                 .code,
             "BRIDGE_EVENT_INVALID"
         );

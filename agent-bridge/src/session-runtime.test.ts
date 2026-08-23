@@ -26,6 +26,7 @@ interface SessionMock {
   emit(event: unknown): void;
   prompt: ReturnType<typeof vi.fn>;
   abort: ReturnType<typeof vi.fn>;
+  clearQueue: ReturnType<typeof vi.fn>;
   setModel: ReturnType<typeof vi.fn>;
   setThinkingLevel: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
@@ -41,6 +42,8 @@ function createSessionMock(
     messages?: unknown[];
     sessionFile?: string;
     streaming?: boolean;
+    steering?: string[];
+    followUp?: string[];
   } = {},
 ): SessionMock {
   let listener: (event: unknown) => void = () => undefined;
@@ -49,6 +52,7 @@ function createSessionMock(
   let isStreaming = options.streaming ?? false;
   const prompt = vi.fn(async () => undefined);
   const abort = vi.fn(async () => undefined);
+  const clearQueue = vi.fn();
   const dispose = vi.fn();
   const unsubscribe = vi.fn();
   const setModel = vi.fn(async (model: PiModelLike) => {
@@ -72,6 +76,9 @@ function createSessionMock(
     messages: options.messages ?? [],
     prompt,
     abort,
+    clearQueue,
+    getSteeringMessages: () => options.steering ?? [],
+    getFollowUpMessages: () => options.followUp ?? [],
     setModel,
     setThinkingLevel,
     getAvailableThinkingLevels: () =>
@@ -87,6 +94,7 @@ function createSessionMock(
     emit: (event) => listener(event),
     prompt,
     abort,
+    clearQueue,
     setModel,
     setThinkingLevel,
     dispose,
@@ -172,13 +180,16 @@ describe("PiSessionRuntime", () => {
     expect(sdk.listAll).toHaveBeenCalledWith("C:\\agent\\sessions");
 
     await runtime.prompt("s-1", "hello");
-    expect(sessionMock.prompt).toHaveBeenCalledWith("hello", { streamingBehavior: "followUp" });
+    await runtime.prompt("s-1", "guide", "steer");
+    expect(sessionMock.prompt).toHaveBeenNthCalledWith(1, "hello", undefined);
+    expect(sessionMock.prompt).toHaveBeenNthCalledWith(2, "guide", { streamingBehavior: "steer" });
     sessionMock.emit({ type: "agent_start" });
     sessionMock.emit({
       type: "message_update",
       assistantMessageEvent: { type: "text_delta", delta: "Hi" },
     });
     sessionMock.emit({ type: "thinking_level_changed" });
+    sessionMock.emit({ type: "queue_update", steering: ["guide"], followUp: ["later"] });
     sessionMock.emit({
       type: "tool_execution_start",
       toolCallId: "tool-1",
@@ -207,6 +218,11 @@ describe("PiSessionRuntime", () => {
       expect.objectContaining({ sessionId: "s-1", name: "session.configurationChanged" }),
       {
         sessionId: "s-1",
+        name: "queue.updated",
+        data: { steering: ["guide"], followUp: ["later"] },
+      },
+      {
+        sessionId: "s-1",
         name: "tool.started",
         data: { toolCallId: "tool-1", toolName: "read" },
       },
@@ -225,7 +241,7 @@ describe("PiSessionRuntime", () => {
     expect(JSON.stringify(events)).not.toContain("secret");
   });
 
-  it("打开持久会话、恢复文本消息并释放此前会话", async () => {
+  it("打开持久会话、恢复富文本历史并保留此前会话", async () => {
     const first = createSessionMock("first");
     const opened = createSessionMock("opened", {
       sessionFile: "C:\\agent\\sessions\\work\\saved.jsonl",
@@ -233,6 +249,20 @@ describe("PiSessionRuntime", () => {
         { role: "system", content: "hidden" },
         { role: "user", content: "hello" },
         { role: "assistant", content: [{ type: "text", text: "world" }] },
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", text: "reasoning" },
+            { type: "text", text: "done" },
+          ],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "tool-1",
+          toolName: "read",
+          content: [{ type: "text", text: "sensitive output" }],
+          isError: false,
+        },
       ],
     });
     const sdk = sdkReturning(first, opened);
@@ -246,11 +276,24 @@ describe("PiSessionRuntime", () => {
         messages: [
           { role: "user", content: "hello" },
           { role: "assistant", content: "world" },
+          { role: "thinking", content: "reasoning" },
+          { role: "assistant", content: "done" },
+          {
+            role: "tool",
+            content: "",
+            toolCallId: "tool-1",
+            toolName: "read",
+            isError: false,
+          },
         ],
       }),
     );
-    expect(first.unsubscribe).toHaveBeenCalledOnce();
-    expect(first.dispose).toHaveBeenCalledOnce();
+    expect(first.unsubscribe).not.toHaveBeenCalled();
+    expect(first.dispose).not.toHaveBeenCalled();
+    await expect(runtime.openSession("C:\\agent\\sessions\\work\\saved.jsonl")).resolves.toEqual(
+      expect.objectContaining({ sessionId: "opened" }),
+    );
+    expect(sdk.createAgentSession).toHaveBeenCalledTimes(2);
   });
 
   it("更新模型和思考强度并返回 SDK 的有效配置", async () => {
@@ -276,14 +319,14 @@ describe("PiSessionRuntime", () => {
     ).rejects.toEqual(expect.objectContaining<Partial<RuntimeError>>({ code: "MODEL_NOT_FOUND" }));
   });
 
-  it("阻止流式期间切换或配置，并对不存在会话返回稳定错误", async () => {
+  it("允许流式期间打开后台会话，但阻止修改繁忙会话配置", async () => {
     const streaming = createSessionMock("streaming", { streaming: true });
     const second = createSessionMock("second");
     const runtime = new PiSessionRuntime(sdkReturning(streaming, second), "C:\\agent");
     await runtime.createSession("C:\\work");
 
-    await expect(runtime.createSession("C:\\two")).rejects.toEqual(
-      expect.objectContaining<Partial<RuntimeError>>({ code: "SESSION_BUSY" }),
+    await expect(runtime.createSession("C:\\two")).resolves.toEqual(
+      expect.objectContaining({ sessionId: "second" }),
     );
     await expect(runtime.configureSession("streaming", { thinkingLevel: "low" })).rejects.toEqual(
       expect.objectContaining<Partial<RuntimeError>>({ code: "SESSION_BUSY" }),
@@ -293,12 +336,49 @@ describe("PiSessionRuntime", () => {
     );
   });
 
+  it("投影用户、思考、完成和失败事件，且不泄露模型错误详情", async () => {
+    const sessionMock = createSessionMock();
+    const runtime = new PiSessionRuntime(sdkReturning(sessionMock), "C:\\agent");
+    const events: RuntimeEvent[] = [];
+    runtime.subscribe((event) => events.push(event));
+    await runtime.createSession("C:\\work");
+
+    sessionMock.emit({ type: "message_start", message: { role: "user", content: "hello" } });
+    sessionMock.emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_delta", delta: "plan" },
+    });
+    sessionMock.emit({
+      type: "message_end",
+      message: { role: "assistant", stopReason: "stop" },
+    });
+    sessionMock.emit({
+      type: "message_end",
+      message: { role: "assistant", stopReason: "error", errorMessage: "token=secret" },
+    });
+
+    expect(events).toEqual([
+      { sessionId: "s-1", name: "user.message", data: { content: "hello" } },
+      { sessionId: "s-1", name: "thinking.delta", data: { delta: "plan" } },
+      { sessionId: "s-1", name: "message.completed", data: { reason: "stop" } },
+      {
+        sessionId: "s-1",
+        name: "message.failed",
+        data: { reason: "error", message: "模型响应失败" },
+      },
+    ]);
+    expect(JSON.stringify(events)).not.toContain("secret");
+  });
+
   it("将 SDK prompt 与 abort 异常转换为稳定且不泄露细节的错误", async () => {
     const sessionMock = createSessionMock();
     const runtime = new PiSessionRuntime(sdkReturning(sessionMock), "C:\\agent");
     await runtime.createSession("C:\\work");
     sessionMock.prompt.mockRejectedValueOnce(new Error("token=secret"));
     sessionMock.abort.mockRejectedValueOnce(new Error("authorization secret"));
+    sessionMock.clearQueue.mockImplementationOnce(() => {
+      throw new Error("queue token");
+    });
 
     await expect(runtime.prompt("s-1", "hello")).rejects.toEqual(
       expect.objectContaining<Partial<RuntimeError>>({
@@ -310,6 +390,12 @@ describe("PiSessionRuntime", () => {
       expect.objectContaining<Partial<RuntimeError>>({
         code: "ABORT_FAILED",
         message: "无法停止当前 Pi 任务",
+      }),
+    );
+    await expect(runtime.clearQueue("s-1")).rejects.toEqual(
+      expect.objectContaining<Partial<RuntimeError>>({
+        code: "QUEUE_CLEAR_FAILED",
+        message: "无法清空当前 Pi 消息队列",
       }),
     );
   });
@@ -333,6 +419,142 @@ describe("PiSessionRuntime", () => {
       expect.objectContaining<Partial<RuntimeError>>({ code: "SESSION_SUBSCRIBE_FAILED" }),
     );
     expect(failed.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("过滤畸形历史记录，并用活动会话覆盖磁盘目录项", async () => {
+    const longPrompt = `  ${"x".repeat(270)}  `;
+    const sessionMock = createSessionMock("edge", {
+      sessionFile: "C:\\agent\\sessions\\work\\saved.jsonl",
+      model: { provider: "", id: "invalid" },
+      thinkingLevel: "invalid" as PiSessionLike["thinkingLevel"],
+      messages: [
+        null,
+        { role: "user", content: longPrompt, timestamp: "2026-08-21T00:00:00Z" },
+        {
+          role: "user",
+          content: [
+            { type: "image", data: "hidden" },
+            { type: "text", text: "array user" },
+          ],
+        },
+        { role: "user", content: { text: "ignored" } },
+        { role: "assistant", content: "plain assistant", timestamp: 1_787_270_400_000 },
+        { role: "assistant", content: { text: "ignored" } },
+        {
+          role: "assistant",
+          timestamp: "not-a-date",
+          content: [
+            null,
+            { type: "thinking", text: "edge reasoning" },
+            { type: "text", text: "edge answer" },
+            { type: "text", text: "" },
+            { type: "other", text: "ignored" },
+          ],
+        },
+        { role: "toolResult", toolCallId: "tool-edge", toolName: "read", isError: true },
+        { role: "toolResult", toolCallId: "", toolName: "read" },
+        { role: "system", content: "hidden" },
+      ],
+    });
+    sessionMock.session.getAvailableThinkingLevels = () =>
+      ["invalid"] as unknown as PiSessionLike["thinkingLevel"][];
+    const sdk = sdkReturning(sessionMock);
+    sdk.createAgentSession.mockResolvedValueOnce({ session: sessionMock.session });
+    sdk.listAll.mockResolvedValueOnce([
+      {
+        id: "saved-1",
+        path: "C:\\agent\\sessions\\work\\saved.jsonl",
+        cwd: "C:\\work",
+        name: "  Disk title  ",
+        created: "2026-08-20T08:00:00Z",
+        modified: "2099-08-20T09:00:00Z",
+        messageCount: Number.NaN,
+        firstMessage: 123,
+      },
+      {
+        id: "",
+        path: "C:\\agent\\sessions\\invalid.jsonl",
+        cwd: "C:\\work",
+        created: "2026-08-20T08:00:00Z",
+        modified: "2026-08-20T09:00:00Z",
+        messageCount: 0,
+        firstMessage: "ignored",
+      },
+      {
+        id: "invalid-date",
+        path: "C:\\agent\\sessions\\invalid-date.jsonl",
+        cwd: "C:\\work",
+        created: "not-a-date",
+        modified: "2026-08-20T09:00:00Z",
+        messageCount: 0,
+        firstMessage: "ignored",
+      },
+    ]);
+    const runtime = new PiSessionRuntime(sdk, "C:\\agent");
+
+    const created = await runtime.createSession("C:\\work");
+    expect(created).toEqual(
+      expect.objectContaining({
+        sessionPath: "C:\\agent\\sessions\\work\\saved.jsonl",
+        streaming: false,
+        configuration: {
+          model: null,
+          thinkingLevel: "off",
+          availableThinkingLevels: ["off"],
+        },
+      }),
+    );
+    expect(created).not.toHaveProperty("modelFallbackMessage");
+    expect(created.messages).toEqual([
+      expect.objectContaining({ role: "user", content: longPrompt }),
+      { role: "user", content: "array user" },
+      expect.objectContaining({ role: "assistant", content: "plain assistant" }),
+      { role: "thinking", content: "edge reasoning" },
+      { role: "assistant", content: "edge answer" },
+      {
+        role: "tool",
+        content: "",
+        toolCallId: "tool-edge",
+        toolName: "read",
+        isError: true,
+      },
+    ]);
+
+    await expect(runtime.listSessions()).resolves.toEqual([
+      expect.objectContaining({
+        id: "edge",
+        name: "Disk title",
+        modified: "2099-08-20T09:00:00.000Z",
+        messageCount: 4,
+        firstMessage: `${"x".repeat(239)}…`,
+      }),
+    ]);
+  });
+
+  it("将配置 setter 异常映射为稳定错误码", async () => {
+    const modelFailure = createSessionMock("model-failure");
+    modelFailure.setModel.mockRejectedValueOnce(new Error("provider token"));
+    const thinkingFailure = createSessionMock("thinking-failure");
+    thinkingFailure.setThinkingLevel.mockImplementationOnce(() => {
+      throw new Error("provider token");
+    });
+    const runtime = new PiSessionRuntime(
+      sdkReturning(modelFailure, thinkingFailure),
+      "C:\\agent",
+    );
+    await runtime.createSession("C:\\one");
+    await runtime.createSession("C:\\two");
+
+    await expect(
+      runtime.configureSession("model-failure", {
+        model: { provider: reasoningModel.provider, id: reasoningModel.id },
+      }),
+    ).rejects.toEqual(expect.objectContaining<Partial<RuntimeError>>({ code: "MODEL_UPDATE_FAILED" }));
+    await expect(
+      runtime.configureSession("thinking-failure", { thinkingLevel: "high" }),
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<RuntimeError>>({ code: "THINKING_LEVEL_UPDATE_FAILED" }),
+    );
   });
 
   it("关闭时中止流式会话并幂等清理资源", async () => {

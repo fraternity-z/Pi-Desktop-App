@@ -17,8 +17,8 @@ use serde_json::{Value, json};
 use crate::{
     bridge::protocol::{
         AgentModel, AgentSessionSummary, BridgeEvent, BridgeHello, BridgeResponse, CreatedSession,
-        PROTOCOL_VERSION, SessionConfiguration, parse_hello_frame, validate_event,
-        validate_frame_size,
+        PROTOCOL_VERSION, PromptStreamingBehavior, SessionConfiguration, parse_hello_frame,
+        validate_event, validate_frame_size,
     },
     error::AppError,
 };
@@ -260,19 +260,41 @@ impl BridgeSupervisor {
         })
     }
 
-    pub fn prompt(&self, session_id: &str, text: &str) -> Result<u64, AppError> {
+    pub fn prompt(
+        &self,
+        session_id: &str,
+        text: &str,
+        streaming_behavior: Option<&PromptStreamingBehavior>,
+    ) -> Result<u64, AppError> {
+        let mut fields = serde_json::Map::from_iter([
+            ("sessionId".to_owned(), Value::String(session_id.to_owned())),
+            ("text".to_owned(), Value::String(text.to_owned())),
+        ]);
+        if let Some(streaming_behavior) = streaming_behavior {
+            fields.insert(
+                "streamingBehavior".to_owned(),
+                serde_json::to_value(streaming_behavior).map_err(|_| {
+                    AppError::new("BRIDGE_REQUEST_INVALID", "无法序列化流式消息行为")
+                })?,
+            );
+        }
+        self.request("prompt", Value::Object(fields), DEFAULT_PROMPT_TIMEOUT)?
+            .and_then(|data| data.get("finalSeq").and_then(Value::as_u64))
+            .ok_or_else(|| {
+                AppError::new(
+                    "BRIDGE_PROMPT_RESPONSE_INVALID",
+                    "Bridge prompt 响应缺少 finalSeq",
+                )
+            })
+    }
+
+    pub fn clear_queue(&self, session_id: &str) -> Result<(), AppError> {
         self.request(
-            "prompt",
-            json!({"sessionId": session_id, "text": text}),
-            DEFAULT_PROMPT_TIMEOUT,
-        )?
-        .and_then(|data| data.get("finalSeq").and_then(Value::as_u64))
-        .ok_or_else(|| {
-            AppError::new(
-                "BRIDGE_PROMPT_RESPONSE_INVALID",
-                "Bridge prompt 响应缺少 finalSeq",
-            )
-        })
+            "queue.clear",
+            json!({"sessionId": session_id}),
+            self.response_timeout,
+        )
+        .map(|_| ())
     }
 
     pub fn abort(&self, session_id: &str) -> Result<(), AppError> {
@@ -637,6 +659,7 @@ fn public_remote_error_code(code: &str) -> Option<&'static str> {
         "MODEL_UPDATE_FAILED" => "MODEL_UPDATE_FAILED",
         "THINKING_LEVEL_UPDATE_FAILED" => "THINKING_LEVEL_UPDATE_FAILED",
         "PROMPT_FAILED" => "PROMPT_FAILED",
+        "QUEUE_CLEAR_FAILED" => "QUEUE_CLEAR_FAILED",
         "ABORT_FAILED" => "ABORT_FAILED",
         "RUNTIME_CLOSED" => "RUNTIME_CLOSED",
         _ => return None,
@@ -859,7 +882,7 @@ fn canonical_dir(
 }
 
 #[cfg(windows)]
-pub(super) fn normalize_process_path(path: PathBuf) -> PathBuf {
+pub(crate) fn normalize_process_path(path: PathBuf) -> PathBuf {
     use std::path::{Component, Prefix};
 
     let mut components = path.components();
@@ -885,7 +908,7 @@ pub(super) fn normalize_process_path(path: PathBuf) -> PathBuf {
 }
 
 #[cfg(not(windows))]
-pub(super) fn normalize_process_path(path: PathBuf) -> PathBuf {
+pub(crate) fn normalize_process_path(path: PathBuf) -> PathBuf {
     path
 }
 
@@ -911,7 +934,7 @@ mod tests {
 
     use super::*;
 
-    const HELLO: &str = r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions","models","session-history","session-configuration","tool-status"]}"#;
+    const HELLO: &str = r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions","models","session-history","session-configuration","tool-status","background-sessions","thinking-stream","queue"]}"#;
 
     struct MockTransport {
         reads: Arc<Mutex<VecDeque<Result<String, AppError>>>>,
@@ -1142,7 +1165,7 @@ mod tests {
         let supervisor = connect(transport);
 
         let error = supervisor
-            .prompt("s-1", "hello")
+            .prompt("s-1", "hello", None)
             .expect_err("prompt 响应必须包含最终事件序号");
 
         assert_eq!(error.code, "BRIDGE_PROMPT_RESPONSE_INVALID");
@@ -1238,7 +1261,7 @@ mod tests {
         let supervisor = Arc::new(connect(transport));
 
         let prompt_supervisor = supervisor.clone();
-        let prompt = thread::spawn(move || prompt_supervisor.prompt("s-1", "slow task"));
+        let prompt = thread::spawn(move || prompt_supervisor.prompt("s-1", "slow task", None));
         wait_for_writes(&writes, 1);
 
         let abort_supervisor = supervisor.clone();

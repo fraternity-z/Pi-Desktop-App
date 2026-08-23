@@ -33,6 +33,8 @@ describe("AppSidebar", () => {
     const onSelectSession = vi.fn();
     const onRefresh = vi.fn();
     const onWidthChange = vi.fn();
+    const onNewConversation = vi.fn();
+    const onRemoveWorkspace = vi.fn();
     render(
       <AppSidebar
         open
@@ -40,11 +42,16 @@ describe("AppSidebar", () => {
         activeCwd={"C:\\projects\\alpha"}
         activeSessionPath={savedSession.path}
         sessions={[savedSession]}
+        recentWorkspaces={["C:\\projects\\alpha"]}
+        conversationHome="C:\\Users\\me\\Documents\\Pix\\conversations"
+        runningSessionIds={[savedSession.id]}
         catalogPhase="ready"
         phase="ready"
         runtime={readyRuntime}
         onAddProject={vi.fn()}
+        onNewConversation={onNewConversation}
         onNewSession={vi.fn()}
+        onRemoveWorkspace={onRemoveWorkspace}
         onSelectSession={onSelectSession}
         onRefresh={onRefresh}
         onClose={vi.fn()}
@@ -62,6 +69,11 @@ describe("AppSidebar", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "刷新项目与会话" }));
     expect(onRefresh).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+    expect(onNewConversation).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: "从列表移除alpha" }));
+    expect(onRemoveWorkspace).toHaveBeenCalledWith("C:\\projects\\alpha");
+    expect(screen.getByLabelText("正在运行")).toBeInTheDocument();
 
     fireEvent.keyDown(screen.getByRole("separator", { name: "调整侧边栏宽度" }), {
       key: "ArrowRight",
@@ -78,11 +90,16 @@ describe("AppSidebar", () => {
         activeCwd={"C:\\projects\\empty"}
         activeSessionPath={null}
         sessions={[]}
+        recentWorkspaces={["C:\\projects\\empty"]}
+        conversationHome="C:\\Users\\me\\Documents\\Pix\\conversations"
+        runningSessionIds={[]}
         catalogPhase="ready"
         phase="ready"
         runtime={readyRuntime}
         onAddProject={vi.fn()}
+        onNewConversation={vi.fn()}
         onNewSession={onNewSession}
+        onRemoveWorkspace={vi.fn()}
         onSelectSession={vi.fn()}
         onRefresh={vi.fn()}
         onClose={vi.fn()}
@@ -102,11 +119,16 @@ describe("AppSidebar", () => {
         activeCwd=""
         activeSessionPath={null}
         sessions={[]}
+        recentWorkspaces={[]}
+        conversationHome="C:\\Users\\me\\Documents\\Pix\\conversations"
+        runningSessionIds={[]}
         catalogPhase="loading"
         phase="creating"
         runtime={{ phase: "loading", refresh: vi.fn() }}
         onAddProject={vi.fn()}
+        onNewConversation={vi.fn()}
         onNewSession={vi.fn()}
+        onRemoveWorkspace={vi.fn()}
         onSelectSession={vi.fn()}
         onRefresh={vi.fn()}
         onClose={vi.fn()}

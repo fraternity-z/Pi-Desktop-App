@@ -1,9 +1,6 @@
 import {
   AlertTriangle,
   ArrowDown,
-  Ban,
-  CheckCircle2,
-  CircleX,
   FolderOpen,
   FolderPlus,
   LoaderCircle,
@@ -16,10 +13,11 @@ import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from 
 
 import { AppSidebar } from "../components/AppSidebar";
 import { ChatComposer } from "../components/ChatComposer";
+import { ConversationTimeline } from "../components/ConversationTimeline";
 import { RuntimeStatusControl } from "../components/RuntimeStatusControl";
-import type { AgentSessionSummary } from "../ipc/agent";
+import type { AgentSessionSummary, PromptStreamingBehavior } from "../ipc/agent";
 import { selectProjectDirectory } from "../ipc/project";
-import { useChatSession, type ToolExecution } from "../stores/useChatSession";
+import { useChatSession } from "../stores/useChatSession";
 import { useRuntimeStatus } from "../stores/useRuntimeStatus";
 import appIconUrl from "../../../../src-tauri/icons/64x64.png";
 
@@ -47,7 +45,7 @@ export function ChatWorkbenchView() {
   const conversationTitle = activeSession ? getSessionTitle(activeSession) : workspaceName;
   const canSend =
     hasSession &&
-    session.phase === "ready" &&
+    (session.phase === "ready" || session.phase === "streaming") &&
     eventChannelReady &&
     !session.configuring &&
     draft.trim().length > 0;
@@ -80,7 +78,7 @@ export function ChatWorkbenchView() {
 
   async function createProject(event: FormEvent) {
     event.preventDefault();
-    if (!runtimeReady || !eventChannelReady || session.phase === "streaming") {
+    if (!runtimeReady || !eventChannelReady || session.phase === "creating") {
       return;
     }
     if (await session.createSession(projectPath)) {
@@ -135,13 +133,19 @@ export function ChatWorkbenchView() {
     }
   }
 
+  async function createConversation() {
+    if (await session.createConversation()) {
+      closeSidebarOnNarrowScreen(setSidebarOpen);
+    }
+  }
+
   async function openSession(selected: AgentSessionSummary) {
     if (await session.openSession(selected.path)) {
       closeSidebarOnNarrowScreen(setSidebarOpen);
     }
   }
 
-  function sendPrompt(event?: FormEvent) {
+  function sendPrompt(event?: FormEvent, behavior?: PromptStreamingBehavior) {
     event?.preventDefault();
     if (!canSend) {
       return;
@@ -150,7 +154,9 @@ export function ChatWorkbenchView() {
     shouldStickToBottom.current = true;
     setAtConversationBottom(true);
     setDraft("");
-    void session.sendPrompt(prompt);
+    void session.sendPrompt(prompt, behavior).then((sent) => {
+      if (!sent) setDraft((current) => current || prompt);
+    });
   }
 
   const runtimeMessage = getRuntimeMessage(runtime);
@@ -170,11 +176,16 @@ export function ChatWorkbenchView() {
         activeCwd={session.cwd}
         activeSessionPath={session.sessionPath}
         sessions={session.sessions}
+        recentWorkspaces={session.recentWorkspaces}
+        conversationHome={session.conversationHome}
+        runningSessionIds={session.runningSessionIds}
         catalogPhase={session.catalogPhase}
         phase={session.phase}
         runtime={runtime}
         onAddProject={openProjectDialog}
+        onNewConversation={() => void createConversation()}
         onNewSession={(cwd) => void createSession(cwd)}
+        onRemoveWorkspace={(cwd) => void session.removeWorkspace(cwd)}
         onSelectSession={(selected) => void openSession(selected)}
         onRefresh={() => void session.loadCatalogs()}
         onClose={() => setSidebarOpen(false)}
@@ -259,19 +270,25 @@ export function ChatWorkbenchView() {
             ref={conversationScroll}
             onScroll={(event) => {
               const target = event.currentTarget;
-              const atBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 72;
+              const atBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 64;
               shouldStickToBottom.current = atBottom;
               setAtConversationBottom(atBottom);
             }}
           >
             <div className="thread-content-column-stack">
               <div className={`thread-body${hasSession && session.messages.length > 0 ? "" : " thread-body-empty"}`}>
-                {!hasSession ? (
+                {session.phase === "creating" ? (
+                  <div className="conversation-loading" role="status">
+                    <LoaderCircle className="spin" size={24} />
+                    <span>正在切换会话</span>
+                  </div>
+                ) : !hasSession ? (
                   <EmptyWorkspace
                     loading={session.catalogPhase === "loading"}
                     hasSavedSessions={session.sessions.length > 0}
                     disabled={!runtimeReady || !eventChannelReady}
                     onAddProject={openProjectDialog}
+                    onNewConversation={() => void createConversation()}
                     onOpenSidebar={() => setSidebarOpen(true)}
                   />
                 ) : session.messages.length === 0 ? (
@@ -281,28 +298,13 @@ export function ChatWorkbenchView() {
                     <p>直接输入即可，Pi 会在 {workspaceName} 的项目上下文中执行。</p>
                   </div>
                 ) : (
-                  <div className="message-stream">
-                    {session.messages.map((message) => (
-                      <article className={`message message-${message.role}`} key={message.id}>
-                        <p className="message-role">{message.role === "user" ? "你" : "Pi"}</p>
-                        <div className="message-content">
-                          {message.content ||
-                            (session.phase === "streaming" ? (
-                              <span className="message-loading">
-                                <LoaderCircle className="spin" size={15} />
-                                正在响应
-                              </span>
-                            ) : message.role === "assistant" && (message.tools?.length ?? 0) === 0 ? (
-                              <span className="message-empty">本次任务没有返回文本。</span>
-                            ) : null)}
-                        </div>
-                        {message.tools && message.tools.length > 0 && (
-                          <ToolExecutionList tools={message.tools} />
-                        )}
-                      </article>
-                    ))}
+                  <>
+                    <ConversationTimeline
+                      messages={session.messages}
+                      streaming={session.phase === "streaming"}
+                    />
                     <div ref={messagesEnd} />
-                  </div>
+                  </>
                 )}
               </div>
 
@@ -316,10 +318,13 @@ export function ChatWorkbenchView() {
                   configuration={session.configuration}
                   configuring={session.configuring}
                   canSend={canSend}
+                  queuedMessages={session.queuedMessages}
+                  queuePaused={session.queuePaused}
                   onDraftChange={setDraft}
                   onModelChange={(provider, id) => void session.updateModel(provider, id)}
                   onThinkingLevelChange={(level) => void session.updateThinkingLevel(level)}
                   onSend={sendPrompt}
+                  onClearQueue={() => void session.clearQueue()}
                   onAbort={() => void session.abort()}
                 />
               )}
@@ -359,47 +364,12 @@ export function ChatWorkbenchView() {
   );
 }
 
-function ToolExecutionList({ tools }: { tools: ToolExecution[] }) {
-  return (
-    <ul className="tool-execution-list" aria-label="工具执行状态">
-      {tools.map((tool) => (
-        <li className={`tool-execution tool-execution-${tool.status}`} key={tool.id}>
-          <ToolStatusIcon status={tool.status} />
-          <span>{tool.name}</span>
-          <small>{getToolStatusLabel(tool.status)}</small>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function ToolStatusIcon({ status }: { status: ToolExecution["status"] }) {
-  if (status === "running") {
-    return <LoaderCircle className="spin" size={14} aria-hidden="true" />;
-  }
-  if (status === "completed") {
-    return <CheckCircle2 size={14} aria-hidden="true" />;
-  }
-  if (status === "failed") {
-    return <CircleX size={14} aria-hidden="true" />;
-  }
-  return <Ban size={14} aria-hidden="true" />;
-}
-
-function getToolStatusLabel(status: ToolExecution["status"]): string {
-  return {
-    running: "执行中",
-    completed: "已完成",
-    failed: "失败",
-    cancelled: "已停止",
-  }[status];
-}
-
 interface EmptyWorkspaceProps {
   loading: boolean;
   hasSavedSessions: boolean;
   disabled: boolean;
   onAddProject: () => void;
+  onNewConversation: () => void;
   onOpenSidebar: () => void;
 }
 
@@ -408,6 +378,7 @@ function EmptyWorkspace({
   hasSavedSessions,
   disabled,
   onAddProject,
+  onNewConversation,
   onOpenSidebar,
 }: EmptyWorkspaceProps) {
   return (
@@ -424,6 +395,10 @@ function EmptyWorkspace({
           : "项目会使用本机 Pi 配置，并保存在 Pi 的原生会话目录中。"}
       </p>
       <div className="empty-workspace-actions">
+        <button className="secondary-button" type="button" onClick={onNewConversation} disabled={disabled}>
+          <MessageSquarePlus size={16} />
+          新建对话
+        </button>
         {hasSavedSessions && (
           <button className="secondary-button" type="button" onClick={onOpenSidebar}>
             <MessageSquarePlus size={16} />
@@ -608,7 +583,7 @@ function readSidebarWidth(): number {
   } catch {
     // Fall through to the target product's default rail width.
   }
-  return 300;
+  return 272;
 }
 
 function scrollConversationToBottom(

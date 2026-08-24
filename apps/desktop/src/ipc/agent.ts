@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type PromptStreamingBehavior = "steer" | "followUp";
+export type PackageScope = "global" | "project";
 
 export interface QueuedMessages {
   steering: string[];
@@ -51,6 +52,29 @@ export interface AgentSessionSummary {
   modified: string;
   messageCount: number;
   firstMessage: string;
+}
+
+export interface AgentPackageSummary {
+  source: string;
+  scope: PackageScope;
+  kind: "npm" | "git" | "local" | "unknown";
+  installedPath?: string;
+  filtered: boolean;
+  enabled: boolean;
+}
+
+export interface AgentPackageUpdate {
+  source: string;
+  displayName: string;
+  type: string;
+  scope: PackageScope;
+}
+
+export interface AgentResourceSummary {
+  kind: "extension" | "skill" | "prompt" | "theme" | "context" | "system";
+  name: string;
+  path: string;
+  source?: string;
 }
 
 export interface AgentEvent {
@@ -109,6 +133,58 @@ export async function openAgentSession(sessionPath: string): Promise<AgentSessio
 
 export async function listAgentModels(): Promise<AgentModel[]> {
   return invoke<AgentModel[]>("agent_list_models");
+}
+
+export async function listAgentPackages(cwd: string): Promise<AgentPackageSummary[]> {
+  return invoke<AgentPackageSummary[]>("agent_list_packages", { cwd });
+}
+
+export async function installAgentPackage(
+  cwd: string,
+  source: string,
+  scope: PackageScope,
+): Promise<AgentPackageSummary[]> {
+  return invoke<AgentPackageSummary[]>("agent_install_package", { cwd, source, scope });
+}
+
+export async function setAgentPackageEnabled(
+  cwd: string,
+  source: string,
+  scope: PackageScope,
+  enabled: boolean,
+): Promise<AgentPackageSummary[]> {
+  return invoke<AgentPackageSummary[]>("agent_set_package_enabled", {
+    cwd,
+    source,
+    scope,
+    enabled,
+  });
+}
+
+export async function removeAgentPackage(
+  cwd: string,
+  source: string,
+  scope: PackageScope,
+): Promise<AgentPackageSummary[]> {
+  return invoke<AgentPackageSummary[]>("agent_remove_package", { cwd, source, scope });
+}
+
+export async function updateAgentPackage(
+  cwd: string,
+  source?: string,
+): Promise<AgentPackageSummary[]> {
+  return invoke<AgentPackageSummary[]>("agent_update_package", {
+    cwd,
+    ...(source === undefined ? {} : { source }),
+  });
+}
+
+export async function checkAgentPackageUpdates(cwd: string): Promise<AgentPackageUpdate[]> {
+  return invoke<AgentPackageUpdate[]>("agent_check_package_updates", { cwd });
+}
+
+export async function listAgentResources(cwd: string): Promise<AgentResourceSummary[]> {
+  return invoke<AgentResourceSummary[]>("agent_list_resources", { cwd });
 }
 
 export async function configureAgentSession(

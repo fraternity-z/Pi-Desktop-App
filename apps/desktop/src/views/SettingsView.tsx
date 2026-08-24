@@ -1,11 +1,22 @@
-import { ArrowLeft, LoaderCircle, Menu, RefreshCw } from "lucide-react";
-import type { ReactNode } from "react";
+import {
+  ArchiveRestore,
+  ArrowLeft,
+  Folder,
+  LoaderCircle,
+  Menu,
+  RefreshCw,
+  Search,
+  Trash2,
+} from "lucide-react";
+import { useMemo, useState, type ReactNode } from "react";
 
+import { ConfirmSidebarDialog } from "../components/SidebarDialog";
 import type { SettingsSectionId } from "../components/SettingsSidebar";
 import type { AgentEventConnection } from "../stores/useChatSession";
 import type { AppPreferences, InterfaceDensity } from "../stores/useAppPreferences";
 import type { RequestHeaderSettingsController } from "../stores/useRequestHeaderSettings";
 import type { RuntimeStatusController } from "../stores/useRuntimeStatus";
+import { useSidebarPreferences } from "../stores/useSidebarPreferences";
 
 interface SettingsViewProps {
   section: SettingsSectionId;
@@ -26,6 +37,7 @@ const SECTION_TITLES: Record<SettingsSectionId, string> = {
   appearance: "外观",
   behavior: "行为",
   runtime: "运行时",
+  archived: "已归档",
 };
 
 export function SettingsView({
@@ -99,10 +111,152 @@ export function SettingsView({
               <RequestHeaderSettings controller={requestHeaders} />
             </>
           )}
+          {section === "archived" && <ArchivedSettings />}
         </div>
       </div>
     </main>
   );
+}
+
+function ArchivedSettings() {
+  const sidebar = useSidebarPreferences();
+  const [query, setQuery] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
+  const archivedGroups = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase();
+    const entries = sidebar.preferences.archivedThreads
+      .map((id) => {
+        const meta = sidebar.preferences.archivedThreadMeta[id] ?? {};
+        return {
+          id,
+          title: sidebar.preferences.threadAliases[id] || meta.title || `会话 ${id.slice(0, 8)}`,
+          cwd: meta.cwd || "",
+          archivedAt: meta.archivedAt || "",
+        };
+      })
+      .filter(
+        (item) =>
+          !needle ||
+          item.title.toLocaleLowerCase().includes(needle) ||
+          item.cwd.toLocaleLowerCase().includes(needle),
+      )
+      .sort((left, right) => right.archivedAt.localeCompare(left.archivedAt));
+    const groups = new Map<string, typeof entries>();
+    for (const entry of entries) {
+      const key = entry.cwd || "__conversation__";
+      groups.set(key, [...(groups.get(key) ?? []), entry]);
+    }
+    return [...groups.entries()];
+  }, [query, sidebar.preferences]);
+  const resultCount = archivedGroups.reduce((count, [, entries]) => count + entries.length, 0);
+
+  return (
+    <>
+      <div className="settings-archive-toolbar">
+        <label className="settings-archive-search">
+          <Search size={15} aria-hidden="true" />
+          <input
+            type="search"
+            value={query}
+            aria-label="搜索已归档会话"
+            placeholder="搜索已归档会话"
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </label>
+        <span>{resultCount} 个会话</span>
+      </div>
+
+      {archivedGroups.length === 0 ? (
+        <div className="settings-archive-empty">
+          <ArchiveRestore size={24} aria-hidden="true" />
+          <strong>{query.trim() ? "没有匹配的会话" : "暂无已归档会话"}</strong>
+          <span>{query.trim() ? "请尝试其他关键词。" : "从侧边栏归档的会话会显示在这里。"}</span>
+        </div>
+      ) : (
+        archivedGroups.map(([cwd, entries]) => (
+          <SettingsSection
+            key={cwd}
+            label={cwd === "__conversation__" ? "对话" : archivedWorkspaceName(cwd)}
+          >
+            {entries.map((entry, index) => (
+              <SettingsRow
+                key={entry.id}
+                title={entry.title}
+                description={
+                  <div className="settings-archive-meta">
+                    {entry.cwd && (
+                      <span title={entry.cwd}>
+                        <Folder size={13} aria-hidden="true" />
+                        {entry.cwd}
+                      </span>
+                    )}
+                    <time dateTime={entry.archivedAt || undefined}>
+                      {formatArchivedDate(entry.archivedAt)}
+                    </time>
+                  </div>
+                }
+                control={
+                  <div className="settings-archive-actions">
+                    <button
+                      className="icon-button"
+                      type="button"
+                      aria-label={`恢复${entry.title}`}
+                      title="恢复"
+                      onClick={() => sidebar.setThreadArchived(entry.id, false)}
+                    >
+                      <ArchiveRestore size={16} />
+                    </button>
+                    <button
+                      className="icon-button settings-archive-delete"
+                      type="button"
+                      aria-label={`删除${entry.title}`}
+                      title="删除"
+                      onClick={() => setDeleteTarget({ id: entry.id, title: entry.title })}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                }
+                last={index === entries.length - 1}
+              />
+            ))}
+          </SettingsSection>
+        ))
+      )}
+
+      {deleteTarget && (
+        <ConfirmSidebarDialog
+          title="删除已归档会话"
+          description={`从侧边栏永久隐藏“${deleteTarget.title}”？Pi 原生会话文件不会被删除。`}
+          confirmLabel="删除"
+          danger
+          onConfirm={() => {
+            sidebar.deleteThread(deleteTarget.id);
+            setDeleteTarget(null);
+          }}
+          onClose={() => setDeleteTarget(null)}
+        />
+      )}
+    </>
+  );
+}
+
+function archivedWorkspaceName(path: string): string {
+  const normalized = path.trim().replace(/[\\/]+$/, "");
+  return normalized.split(/[\\/]/).at(-1) || normalized;
+}
+
+function formatArchivedDate(value: string): string {
+  if (!value) return "归档时间未知";
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return "归档时间未知";
+  return `归档于 ${new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(timestamp)}`;
 }
 
 function GeneralSettings({

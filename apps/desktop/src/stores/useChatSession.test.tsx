@@ -554,6 +554,31 @@ describe("useChatSession", () => {
     await act(() => result.current.removeWorkspace("C:\\work"));
     expect(removeRecentWorkspace).toHaveBeenCalledWith("C:\\work");
   });
+
+  it("移除最近项目失败时保留错误并向调用方抛出", async () => {
+    vi.mocked(removeRecentWorkspace).mockRejectedValueOnce({
+      code: "WORKSPACE_REMOVE_FAILED",
+      message: "无法更新最近项目",
+    });
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+
+    let rejection: unknown;
+    await act(async () => {
+      try {
+        await result.current.removeWorkspace("C:\\work");
+      } catch (error) {
+        rejection = error;
+      }
+    });
+    expect(rejection).toEqual({
+      code: "WORKSPACE_REMOVE_FAILED",
+      message: "无法更新最近项目",
+    });
+    await waitFor(() =>
+      expect(result.current.catalogError).toBe("WORKSPACE_REMOVE_FAILED: 无法更新最近项目"),
+    );
+  });
 });
 
 function event(

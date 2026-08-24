@@ -66,6 +66,68 @@ describe("parseRequest", () => {
         thinkingLevel: "high",
       },
     ],
+    [
+      JSON.stringify({ v: 1, id: "r-9", op: "package.list", cwd: "C:\\work" }),
+      { v: 1, id: "r-9", op: "package.list", cwd: "C:\\work" },
+    ],
+    [
+      JSON.stringify({
+        v: 1,
+        id: "r-10",
+        op: "package.install",
+        cwd: "C:\\work",
+        source: "npm:pi-test",
+        scope: "global",
+      }),
+      {
+        v: 1,
+        id: "r-10",
+        op: "package.install",
+        cwd: "C:\\work",
+        source: "npm:pi-test",
+        scope: "global",
+      },
+    ],
+    [
+      JSON.stringify({
+        v: 1,
+        id: "r-11",
+        op: "package.set-enabled",
+        cwd: "C:\\work",
+        source: "npm:pi-test",
+        scope: "project",
+        enabled: false,
+      }),
+      {
+        v: 1,
+        id: "r-11",
+        op: "package.set-enabled",
+        cwd: "C:\\work",
+        source: "npm:pi-test",
+        scope: "project",
+        enabled: false,
+      },
+    ],
+    [
+      JSON.stringify({
+        v: 1,
+        id: "r-12",
+        op: "package.update",
+        cwd: "C:\\work",
+        source: "npm:pi-test",
+      }),
+      {
+        v: 1,
+        id: "r-12",
+        op: "package.update",
+        cwd: "C:\\work",
+        source: "npm:pi-test",
+      },
+    ],
+    [
+      JSON.stringify({ v: 1, id: "r-13", op: "resource.list", cwd: "C:\\work" }),
+      { v: 1, id: "r-13", op: "resource.list", cwd: "C:\\work" },
+    ],
   ])("解析受支持的请求 %s", (line, expected) => {
     expect(parseRequest(line)).toEqual(expected);
   });
@@ -95,6 +157,22 @@ describe("parseRequest", () => {
     [
       "INVALID_REQUEST",
       '{"v":1,"id":"r-1","op":"session.configure","sessionId":"s-1","thinkingLevel":"ultra"}',
+    ],
+    [
+      "INVALID_REQUEST",
+      '{"v":1,"id":"r-1","op":"package.list","cwd":"relative"}',
+    ],
+    [
+      "INVALID_REQUEST",
+      '{"v":1,"id":"r-1","op":"package.install","cwd":"C:\\\\work","source":"npm:test","scope":"workspace"}',
+    ],
+    [
+      "INVALID_REQUEST",
+      '{"v":1,"id":"r-1","op":"package.install","cwd":"C:\\\\work","source":"","scope":"global"}',
+    ],
+    [
+      "INVALID_REQUEST",
+      '{"v":1,"id":"r-1","op":"package.set-enabled","cwd":"C:\\\\work","source":"npm:test","scope":"global","enabled":"yes"}',
     ],
   ])("对无效输入返回稳定错误码 %s", (code, line) => {
     expect(() => parseRequest(line)).toThrowError(
@@ -139,6 +217,8 @@ describe("outbound frames", () => {
         "thinking-stream",
         "queue",
         "request-header-profiles",
+        "packages",
+        "resources",
       ],
     });
   });

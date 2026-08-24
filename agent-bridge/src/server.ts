@@ -52,6 +52,32 @@ export class BridgeServer {
         case "model.list":
           data = await this.runtime.listModels();
           break;
+        case "package.list":
+          data = await this.runtime.listPackages(request.cwd);
+          break;
+        case "package.install":
+          data = await this.runtime.installPackage(request.cwd, request.source, request.scope);
+          break;
+        case "package.set-enabled":
+          data = await this.runtime.setPackageEnabled(
+            request.cwd,
+            request.source,
+            request.scope,
+            request.enabled,
+          );
+          break;
+        case "package.remove":
+          data = await this.runtime.removePackage(request.cwd, request.source, request.scope);
+          break;
+        case "package.update":
+          data = await this.runtime.updatePackage(request.cwd, request.source);
+          break;
+        case "package.check-updates":
+          data = await this.runtime.checkPackageUpdates(request.cwd);
+          break;
+        case "resource.list":
+          data = await this.runtime.listResources(request.cwd);
+          break;
         case "request-headers.configure":
           data = this.runtime.configureRequestHeaders({
             enabled: request.enabled,

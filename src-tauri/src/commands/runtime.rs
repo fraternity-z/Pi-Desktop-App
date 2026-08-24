@@ -3,12 +3,14 @@ use tauri::State;
 use crate::{
     bridge::{
         protocol::{
-            AgentModel, AgentSessionSummary, CreatedSession, PromptStreamingBehavior,
-            SessionConfiguration, SessionConfigurationUpdate,
+            AgentModel, AgentSessionSummary, CreatedSession, PackageScope, PackageSummary,
+            PackageUpdateInfo, PromptStreamingBehavior, ResourceSummary, SessionConfiguration,
+            SessionConfigurationUpdate,
         },
         runtime::{BridgeRuntime, RuntimeSnapshot},
     },
     error::AppError,
+    storage::WorkspaceStore,
 };
 
 #[tauri::command]
@@ -44,6 +46,77 @@ pub async fn agent_list_models(
     runtime: State<'_, BridgeRuntime>,
 ) -> Result<Vec<AgentModel>, AppError> {
     runtime.list_models()
+}
+
+#[tauri::command]
+pub async fn agent_list_packages(
+    runtime: State<'_, BridgeRuntime>,
+    workspace: State<'_, WorkspaceStore>,
+    cwd: String,
+) -> Result<Vec<PackageSummary>, AppError> {
+    runtime.list_packages(workspace.authorize(&cwd)?)
+}
+
+#[tauri::command]
+pub async fn agent_install_package(
+    runtime: State<'_, BridgeRuntime>,
+    workspace: State<'_, WorkspaceStore>,
+    cwd: String,
+    source: String,
+    scope: PackageScope,
+) -> Result<Vec<PackageSummary>, AppError> {
+    runtime.install_package(workspace.authorize(&cwd)?, source, scope)
+}
+
+#[tauri::command]
+pub async fn agent_set_package_enabled(
+    runtime: State<'_, BridgeRuntime>,
+    workspace: State<'_, WorkspaceStore>,
+    cwd: String,
+    source: String,
+    scope: PackageScope,
+    enabled: bool,
+) -> Result<Vec<PackageSummary>, AppError> {
+    runtime.set_package_enabled(workspace.authorize(&cwd)?, source, scope, enabled)
+}
+
+#[tauri::command]
+pub async fn agent_remove_package(
+    runtime: State<'_, BridgeRuntime>,
+    workspace: State<'_, WorkspaceStore>,
+    cwd: String,
+    source: String,
+    scope: PackageScope,
+) -> Result<Vec<PackageSummary>, AppError> {
+    runtime.remove_package(workspace.authorize(&cwd)?, source, scope)
+}
+
+#[tauri::command]
+pub async fn agent_update_package(
+    runtime: State<'_, BridgeRuntime>,
+    workspace: State<'_, WorkspaceStore>,
+    cwd: String,
+    source: Option<String>,
+) -> Result<Vec<PackageSummary>, AppError> {
+    runtime.update_package(workspace.authorize(&cwd)?, source)
+}
+
+#[tauri::command]
+pub async fn agent_check_package_updates(
+    runtime: State<'_, BridgeRuntime>,
+    workspace: State<'_, WorkspaceStore>,
+    cwd: String,
+) -> Result<Vec<PackageUpdateInfo>, AppError> {
+    runtime.check_package_updates(workspace.authorize(&cwd)?)
+}
+
+#[tauri::command]
+pub async fn agent_list_resources(
+    runtime: State<'_, BridgeRuntime>,
+    workspace: State<'_, WorkspaceStore>,
+    cwd: String,
+) -> Result<Vec<ResourceSummary>, AppError> {
+    runtime.list_resources(workspace.authorize(&cwd)?)
 }
 
 #[tauri::command]

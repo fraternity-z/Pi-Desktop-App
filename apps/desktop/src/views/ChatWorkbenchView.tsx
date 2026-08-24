@@ -11,29 +11,41 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
 
-import { AppSidebar } from "../components/AppSidebar";
+import { AppSidebar, threadTitle } from "../components/AppSidebar";
 import { ChatComposer } from "../components/ChatComposer";
 import { ConversationTimeline } from "../components/ConversationTimeline";
 import { RuntimeStatusControl } from "../components/RuntimeStatusControl";
 import { SettingsSidebar, type SettingsSectionId } from "../components/SettingsSidebar";
 import type { AgentSessionSummary, PromptStreamingBehavior } from "../ipc/agent";
 import { selectProjectDirectory } from "../ipc/project";
+import {
+  createWorkspaceWorktree,
+  getWorktreeOptions,
+  revealWorkspace,
+} from "../ipc/workspace";
 import { useAppPreferences } from "../stores/useAppPreferences";
+import { useAgentEcosystem } from "../stores/useAgentEcosystem";
 import { useChatSession } from "../stores/useChatSession";
 import { useRequestHeaderSettings } from "../stores/useRequestHeaderSettings";
 import { useRuntimeStatus } from "../stores/useRuntimeStatus";
+import { useSidebarPreferences } from "../stores/useSidebarPreferences";
+import { PackageManagerView, ResourcesView } from "./EcosystemViews";
 import { SettingsView } from "./SettingsView";
 import appIconUrl from "../../../../src-tauri/icons/64x64.png";
 
 export function ChatWorkbenchView() {
   const runtime = useRuntimeStatus();
   const session = useChatSession();
+  const ecosystem = useAgentEcosystem();
+  const sidebarPreferences = useSidebarPreferences();
   const requestHeaders = useRequestHeaderSettings();
   const { preferences, updatePreferences } = useAppPreferences();
   const [draft, setDraft] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(() => !isNarrowViewport());
   const [sidebarWidth, setSidebarWidth] = useState(readSidebarWidth);
-  const [activeView, setActiveView] = useState<"chat" | "settings">("chat");
+  const [activeView, setActiveView] = useState<"chat" | "settings" | "packages" | "resources">(
+    "chat",
+  );
   const [settingsSection, setSettingsSection] = useState<SettingsSectionId>("general");
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [projectPath, setProjectPath] = useState("");
@@ -43,6 +55,7 @@ export function ChatWorkbenchView() {
   const conversationScroll = useRef<HTMLDivElement>(null);
   const shouldStickToBottom = useRef(true);
   const projectDialogTrigger = useRef<HTMLElement | null>(null);
+  const ecosystemCwd = useRef("");
   const [atConversationBottom, setAtConversationBottom] = useState(true);
 
   const runtimeReady = runtime.phase === "ready" && runtime.status.status === "ready";
@@ -50,7 +63,11 @@ export function ChatWorkbenchView() {
   const hasSession = session.sessionId !== null;
   const workspaceName = getWorkspaceName(session.cwd);
   const activeSession = session.sessions.find((item) => item.path === session.sessionPath);
-  const conversationTitle = activeSession ? getSessionTitle(activeSession) : workspaceName;
+  const conversationTitle = activeSession
+    ? threadTitle(activeSession, sidebarPreferences.preferences.threadAliases)
+    : workspaceName;
+  const managementCwd =
+    session.cwd || session.recentWorkspaces[0] || session.conversationHome;
   const canSend =
     hasSession &&
     (session.phase === "ready" || session.phase === "streaming") &&
@@ -83,6 +100,13 @@ export function ChatWorkbenchView() {
       void session.loadCatalogs();
     }
   }, [eventChannelReady, runtimeReady, session.catalogPhase, session.loadCatalogs]);
+
+  useEffect(() => {
+    if (!runtimeReady || !eventChannelReady || !managementCwd) return;
+    if (ecosystemCwd.current === managementCwd && ecosystem.phase !== "idle") return;
+    ecosystemCwd.current = managementCwd;
+    void ecosystem.refresh(managementCwd);
+  }, [ecosystem.phase, ecosystem.refresh, eventChannelReady, managementCwd, runtimeReady]);
 
   async function createProject(event: FormEvent) {
     event.preventDefault();
@@ -165,6 +189,20 @@ export function ChatWorkbenchView() {
     closeSidebarAfterNavigation();
   }
 
+  function openEcosystem(view: "packages" | "resources") {
+    setActiveView(view);
+    if (managementCwd && ecosystemCwd.current !== managementCwd) {
+      ecosystemCwd.current = managementCwd;
+      void ecosystem.refresh(managementCwd);
+    }
+    closeSidebarAfterNavigation();
+  }
+
+  function leaveEcosystem() {
+    setActiveView("chat");
+    closeSidebarAfterNavigation();
+  }
+
   function leaveSettings() {
     setActiveView("chat");
     closeSidebarAfterNavigation();
@@ -179,13 +217,17 @@ export function ChatWorkbenchView() {
   }
 
   async function removeWorkspace(cwd: string) {
-    if (
-      preferences.confirmRemoveWorkspace &&
-      !window.confirm(`确定从最近项目中移除“${getWorkspaceName(cwd)}”吗？`)
-    ) {
-      return;
-    }
     await session.removeWorkspace(cwd);
+  }
+
+  async function openCreatedWorktree(cwd: string) {
+    if (!(await session.createSession(cwd))) {
+      throw {
+        code: "WORKTREE_OPEN_FAILED",
+        message: "工作树已创建，但无法打开新会话",
+      };
+    }
+    closeSidebarAfterNavigation();
   }
 
   function sendPrompt(event?: FormEvent, behavior?: PromptStreamingBehavior) {
@@ -230,19 +272,29 @@ export function ChatWorkbenchView() {
           width={sidebarWidth}
           activeCwd={session.cwd}
           activeSessionPath={session.sessionPath}
+          activeView={activeView === "packages" || activeView === "resources" ? activeView : "chat"}
           sessions={session.sessions}
           recentWorkspaces={session.recentWorkspaces}
           conversationHome={session.conversationHome}
           runningSessionIds={session.runningSessionIds}
           catalogPhase={session.catalogPhase}
+          ecosystemPhase={ecosystem.phase}
+          packageCount={ecosystem.packages.length}
+          resourceCount={ecosystem.resources.length}
           phase={session.phase}
           runtime={runtime}
           onAddProject={openProjectDialog}
           onNewConversation={() => void createConversation()}
           onNewSession={(cwd) => void createSession(cwd)}
           onRemoveWorkspace={(cwd) => void removeWorkspace(cwd)}
+          onRevealWorkspace={revealWorkspace}
+          onLoadWorktreeOptions={getWorktreeOptions}
+          onCreateWorktree={createWorkspaceWorktree}
+          onOpenCreatedWorktree={openCreatedWorktree}
           onSelectSession={(selected) => void openSession(selected)}
           onRefresh={() => void session.loadCatalogs()}
+          onOpenPackages={() => openEcosystem("packages")}
+          onOpenResources={() => openEcosystem("resources")}
           onOpenSettings={openSettings}
           onClose={() => setSidebarOpen(false)}
           onWidthChange={setSidebarWidth}
@@ -270,6 +322,22 @@ export function ChatWorkbenchView() {
           onBack={leaveSettings}
           onSidebarWidthChange={setSidebarWidth}
           onPreferencesChange={updatePreferences}
+        />
+      ) : activeView === "packages" ? (
+        <PackageManagerView
+          cwd={managementCwd}
+          sidebarOpen={sidebarOpen}
+          ecosystem={ecosystem}
+          onOpenSidebar={() => setSidebarOpen(true)}
+          onBack={leaveEcosystem}
+        />
+      ) : activeView === "resources" ? (
+        <ResourcesView
+          cwd={managementCwd}
+          sidebarOpen={sidebarOpen}
+          ecosystem={ecosystem}
+          onOpenSidebar={() => setSidebarOpen(true)}
+          onBack={leaveEcosystem}
         />
       ) : (
       <main className="workspace-main">
@@ -618,10 +686,6 @@ function getWorkspaceName(path: string): string {
   return normalized.split(/[\\/]/).at(-1) || normalized;
 }
 
-function getSessionTitle(session: AgentSessionSummary): string {
-  return session.name || session.firstMessage || "未命名会话";
-}
-
 function getRuntimeMessage(runtime: ReturnType<typeof useRuntimeStatus>): string | null {
   if (runtime.phase === "error") {
     return `RUNTIME_STATUS_FAILED: ${runtime.message}`;
@@ -665,7 +729,7 @@ function readSidebarWidth(): number {
   } catch {
     // Fall through to the target product's default rail width.
   }
-  return 272;
+  return 300;
 }
 
 function scrollConversationToBottom(

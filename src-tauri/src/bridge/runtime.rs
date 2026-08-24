@@ -13,8 +13,9 @@ use serde::Serialize;
 use crate::{
     bridge::{
         protocol::{
-            AgentModel, AgentSessionSummary, CreatedSession, PromptStreamingBehavior,
-            RequestHeaderSettings, SessionConfiguration, SessionConfigurationUpdate,
+            AgentModel, AgentSessionSummary, CreatedSession, PackageScope, PackageSummary,
+            PackageUpdateInfo, PromptStreamingBehavior, RequestHeaderSettings, ResourceSummary,
+            SessionConfiguration, SessionConfigurationUpdate,
         },
         supervisor::{
             BridgeEventSink, BridgeLaunchConfig, BridgeSupervisor, normalize_process_path,
@@ -137,6 +138,67 @@ impl BridgeRuntime {
 
     pub fn list_models(&self) -> Result<Vec<AgentModel>, AppError> {
         self.with_supervisor(|supervisor| supervisor.list_models())
+    }
+
+    pub fn list_packages(&self, cwd: String) -> Result<Vec<PackageSummary>, AppError> {
+        let cwd = canonical_workspace(Path::new(cwd.trim()))?;
+        self.with_supervisor(|supervisor| supervisor.list_packages(&cwd))
+    }
+
+    pub fn install_package(
+        &self,
+        cwd: String,
+        source: String,
+        scope: PackageScope,
+    ) -> Result<Vec<PackageSummary>, AppError> {
+        let cwd = canonical_workspace(Path::new(cwd.trim()))?;
+        let source = validate_package_source(&source)?;
+        self.with_supervisor(|supervisor| supervisor.install_package(&cwd, source, &scope))
+    }
+
+    pub fn set_package_enabled(
+        &self,
+        cwd: String,
+        source: String,
+        scope: PackageScope,
+        enabled: bool,
+    ) -> Result<Vec<PackageSummary>, AppError> {
+        let cwd = canonical_workspace(Path::new(cwd.trim()))?;
+        let source = validate_package_source(&source)?;
+        self.with_supervisor(|supervisor| {
+            supervisor.set_package_enabled(&cwd, source, &scope, enabled)
+        })
+    }
+
+    pub fn remove_package(
+        &self,
+        cwd: String,
+        source: String,
+        scope: PackageScope,
+    ) -> Result<Vec<PackageSummary>, AppError> {
+        let cwd = canonical_workspace(Path::new(cwd.trim()))?;
+        let source = validate_package_source(&source)?;
+        self.with_supervisor(|supervisor| supervisor.remove_package(&cwd, source, &scope))
+    }
+
+    pub fn update_package(
+        &self,
+        cwd: String,
+        source: Option<String>,
+    ) -> Result<Vec<PackageSummary>, AppError> {
+        let cwd = canonical_workspace(Path::new(cwd.trim()))?;
+        let source = source.as_deref().map(validate_package_source).transpose()?;
+        self.with_supervisor(|supervisor| supervisor.update_package(&cwd, source))
+    }
+
+    pub fn check_package_updates(&self, cwd: String) -> Result<Vec<PackageUpdateInfo>, AppError> {
+        let cwd = canonical_workspace(Path::new(cwd.trim()))?;
+        self.with_supervisor(|supervisor| supervisor.check_package_updates(&cwd))
+    }
+
+    pub fn list_resources(&self, cwd: String) -> Result<Vec<ResourceSummary>, AppError> {
+        let cwd = canonical_workspace(Path::new(cwd.trim()))?;
+        self.with_supervisor(|supervisor| supervisor.list_resources(&cwd))
     }
 
     pub fn configure_request_headers(
@@ -459,6 +521,17 @@ fn ensure_valid_prompt(text: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+fn validate_package_source(source: &str) -> Result<&str, AppError> {
+    let source = source.trim();
+    if source.is_empty() || source.chars().count() > 4096 || source.contains(['\r', '\n', '\0']) {
+        return Err(AppError::new(
+            "PACKAGE_SOURCE_INVALID",
+            "插件来源必须为 1-4096 个不含换行或空字符的字符",
+        ));
+    }
+    Ok(source)
+}
+
 fn system_agent_dir() -> Result<PathBuf, AppError> {
     let home = env::var_os("USERPROFILE")
         .or_else(|| env::var_os("HOME"))
@@ -616,6 +689,23 @@ mod tests {
                 .expect_err("超长提示必须被拒绝")
                 .code,
             "PROMPT_INVALID"
+        );
+    }
+
+    #[test]
+    fn validates_package_source_boundaries() {
+        assert_eq!(validate_package_source("npm:pi-test"), Ok("npm:pi-test"));
+        assert_eq!(
+            validate_package_source("  ")
+                .expect_err("空插件来源必须被拒绝")
+                .code,
+            "PACKAGE_SOURCE_INVALID"
+        );
+        assert_eq!(
+            validate_package_source("npm:ok\ntoken=secret")
+                .expect_err("包含换行的插件来源必须被拒绝")
+                .code,
+            "PACKAGE_SOURCE_INVALID"
         );
     }
 

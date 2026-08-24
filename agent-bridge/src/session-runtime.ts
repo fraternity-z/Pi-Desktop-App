@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { basename, isAbsolute, join, win32 } from "node:path";
 
 import {
   THINKING_LEVELS,
@@ -29,6 +30,73 @@ interface PiSessionManagerInstanceLike {
   getCwd?(): string;
 }
 
+export type PackageScope = "global" | "project";
+
+export interface PackageSummary {
+  source: string;
+  scope: PackageScope;
+  kind: "npm" | "git" | "local" | "unknown";
+  installedPath?: string;
+  filtered: boolean;
+  enabled: boolean;
+}
+
+export interface PackageUpdateInfo {
+  source: string;
+  displayName: string;
+  type: string;
+  scope: PackageScope;
+}
+
+export interface ResourceSummary {
+  kind: "extension" | "skill" | "prompt" | "theme" | "context" | "system";
+  name: string;
+  path: string;
+  source?: string;
+}
+
+interface PiSettingsManagerLike {
+  getGlobalSettings(): { packages?: unknown[] };
+  getProjectSettings(): { packages?: unknown[] };
+  setPackages(packages: unknown[]): void;
+  setProjectPackages(packages: unknown[]): void;
+}
+
+interface PiPackageManagerLike {
+  listConfiguredPackages(): Array<{
+    source: string;
+    scope: string;
+    installedPath?: string;
+    filtered: boolean;
+  }>;
+  installAndPersist(source: string, options: { local: boolean }): Promise<void>;
+  removeAndPersist(source: string, options: { local: boolean }): Promise<boolean>;
+  update(source?: string): Promise<void>;
+  checkForAvailableUpdates(): Promise<
+    Array<{ source: string; displayName: string; type: string; scope: string }>
+  >;
+}
+
+interface PiResourceLoaderLike {
+  reload(): Promise<void>;
+  getExtensions?(): {
+    extensions: Array<{ path: string; sourceInfo?: { source?: string } }>;
+  };
+  getSkills?(): {
+    skills: Array<{ name: string; filePath: string; sourceInfo?: { source?: string } }>;
+  };
+  getPrompts?(): {
+    prompts: Array<{ name: string; filePath: string; sourceInfo?: { source?: string } }>;
+  };
+  getThemes?(): { themes: Array<{ name?: string; path?: string }> };
+  getAgentsFiles?(): { agentsFiles: Array<{ path: string }> };
+}
+
+interface PackageContext {
+  manager: PiPackageManagerLike;
+  settingsManager: PiSettingsManagerLike;
+}
+
 interface PiSessionInfoLike {
   path: string;
   id: string;
@@ -56,6 +124,7 @@ export interface PiSessionLike {
   setModel(model: PiModelLike): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): void;
   getAvailableThinkingLevels(): ThinkingLevel[];
+  reload?(): Promise<void>;
   dispose(): void;
 }
 
@@ -68,6 +137,18 @@ export interface PiSdkLike {
     open(sessionPath: string): PiSessionManagerInstanceLike;
     listAll(sessionDir?: string): Promise<PiSessionInfoLike[]>;
   };
+  SettingsManager?: {
+    create(
+      cwd: string,
+      agentDir: string,
+      options?: { projectTrusted?: boolean },
+    ): PiSettingsManagerLike;
+  };
+  DefaultPackageManager?: new (options: {
+    cwd: string;
+    agentDir: string;
+    settingsManager: PiSettingsManagerLike;
+  }) => PiPackageManagerLike;
   DefaultResourceLoader?: new (options: {
     cwd: string;
     agentDir: string;
@@ -76,15 +157,13 @@ export interface PiSdkLike {
       factory: RequestHeaderExtensionFactory;
       hidden: boolean;
     }>;
-  }) => {
-    reload(): Promise<void>;
-  };
+  }) => PiResourceLoaderLike;
   createAgentSession(options: {
     cwd?: string;
     agentDir: string;
     modelRuntime: PiModelRuntimeLike;
     sessionManager: PiSessionManagerInstanceLike;
-    resourceLoader?: { reload(): Promise<void> };
+    resourceLoader?: PiResourceLoaderLike;
   }): Promise<{
     session: PiSessionLike;
     modelFallbackMessage?: string;
@@ -164,6 +243,18 @@ export interface SessionRuntime {
   listSessions(): Promise<AgentSessionSummary[]>;
   openSession(sessionPath: string): Promise<CreatedAgentSession>;
   listModels(): Promise<AgentModel[]>;
+  listPackages(cwd: string): Promise<PackageSummary[]>;
+  installPackage(cwd: string, source: string, scope: PackageScope): Promise<PackageSummary[]>;
+  setPackageEnabled(
+    cwd: string,
+    source: string,
+    scope: PackageScope,
+    enabled: boolean,
+  ): Promise<PackageSummary[]>;
+  removePackage(cwd: string, source: string, scope: PackageScope): Promise<PackageSummary[]>;
+  updatePackage(cwd: string, source?: string): Promise<PackageSummary[]>;
+  checkPackageUpdates(cwd: string): Promise<PackageUpdateInfo[]>;
+  listResources(cwd: string): Promise<ResourceSummary[]>;
   configureSession(
     sessionId: string,
     update: { model?: ModelSelection; thinkingLevel?: ThinkingLevel },
@@ -192,6 +283,7 @@ export class RuntimeError extends Error {
 interface ManagedSession {
   cwd: string;
   session: PiSessionLike;
+  resourceLoader?: PiResourceLoaderLike;
   unsubscribe: () => void;
   createdAt: string;
   lastActivityAt: string;
@@ -205,6 +297,240 @@ const MAX_TOOL_NAME_CHARS = 128;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function packageKindFromSource(source: string): PackageSummary["kind"] {
+  if (
+    source.startsWith("git+") ||
+    source.startsWith("git:") ||
+    source.startsWith("https://") ||
+    source.startsWith("http://") ||
+    source.startsWith("ssh://") ||
+    source.includes("github.com:")
+  ) {
+    return "git";
+  }
+  if (
+    isAbsolute(source) ||
+    win32.isAbsolute(source) ||
+    source.startsWith("./") ||
+    source.startsWith("../") ||
+    source.startsWith(".\\") ||
+    source.startsWith("..\\") ||
+    source.startsWith("file:") ||
+    source.startsWith("~")
+  ) {
+    return "local";
+  }
+  if (source.startsWith("npm:") || source.includes("@") || /^[\w.-]+(\/[\w.-]+)?$/.test(source)) {
+    return "npm";
+  }
+  return "unknown";
+}
+
+function packageSourceString(entry: unknown): string {
+  if (typeof entry === "string") return entry;
+  return isRecord(entry) && typeof entry.source === "string" ? entry.source : "";
+}
+
+const DISABLED_PACKAGE_FILTER_PREFIX = "__pix_disabled_filters__/";
+
+function disabledPackageFilters(entry: object): Record<string, unknown> | undefined {
+  const extensions = (entry as { extensions?: unknown }).extensions;
+  if (!Array.isArray(extensions)) return undefined;
+  const marker = extensions.find(
+    (value): value is string =>
+      typeof value === "string" && value.startsWith(DISABLED_PACKAGE_FILTER_PREFIX),
+  );
+  if (!marker) return undefined;
+  try {
+    const decoded = JSON.parse(
+      Buffer.from(marker.slice(DISABLED_PACKAGE_FILTER_PREFIX.length), "base64url").toString("utf8"),
+    ) as unknown;
+    return isRecord(decoded) && typeof decoded.source === "string" ? decoded : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function packageEntryEnabled(entry: unknown): boolean {
+  if (typeof entry === "string") return true;
+  if (!isRecord(entry)) return true;
+  if (entry.autoload !== false) return true;
+  return (
+    [entry.extensions, entry.skills, entry.prompts, entry.themes].some(
+      (patterns) => Array.isArray(patterns) && patterns.length > 0,
+    ) && !disabledPackageFilters(entry)
+  );
+}
+
+function disablePackageEntry(entry: unknown, source: string): Record<string, unknown> {
+  if (isRecord(entry) && disabledPackageFilters(entry)) return entry;
+  const record = isRecord(entry) ? { ...entry, source } : { source };
+  const encoded = Buffer.from(JSON.stringify(record), "utf8").toString("base64url");
+  return {
+    source,
+    autoload: false,
+    extensions: [`${DISABLED_PACKAGE_FILTER_PREFIX}${encoded}`],
+  };
+}
+
+function enablePackageEntry(entry: unknown, source: string): unknown {
+  if (typeof entry === "string") return entry;
+  if (!isRecord(entry)) return source;
+  const restored = disabledPackageFilters(entry);
+  if (restored) return restored;
+  const record: Record<string, unknown> = { ...entry, source };
+  delete record.autoload;
+  return Object.keys(record).length === 1 ? source : record;
+}
+
+function normalizePackageSource(source: string): string {
+  return source.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+function findPackageEntry(
+  packages: unknown[],
+  source: string,
+): { index: number; entry: unknown } | undefined {
+  const needle = normalizePackageSource(source);
+  for (let index = 0; index < packages.length; index += 1) {
+    const entry = packages[index];
+    const candidate = normalizePackageSource(packageSourceString(entry));
+    if (
+      candidate &&
+      (candidate === needle || candidate.endsWith(needle) || needle.endsWith(candidate))
+    ) {
+      return { index, entry };
+    }
+  }
+  return undefined;
+}
+
+export function resolvePackageRemoveSource(
+  configured: Array<{ source: string; scope: string; installedPath?: string }>,
+  source: string,
+  scope: PackageScope,
+): string {
+  const expectedScope = scope === "project" ? "project" : "user";
+  const match = configured.find(
+    (entry) =>
+      entry.scope === expectedScope &&
+      (entry.source === source ||
+        entry.installedPath === source ||
+        entry.source.endsWith(source) ||
+        source.endsWith(entry.source)),
+  );
+  if (!match) return source;
+  return packageKindFromSource(match.source) === "local"
+    ? (match.installedPath ?? match.source)
+    : match.source;
+}
+
+function listPackagesFromManager(context: PackageContext): PackageSummary[] {
+  const globalPackages = context.settingsManager.getGlobalSettings().packages ?? [];
+  const projectPackages = context.settingsManager.getProjectSettings().packages ?? [];
+  return context.manager.listConfiguredPackages().map((entry) => {
+    const scope = entry.scope === "project" ? "project" : "global";
+    const match = findPackageEntry(scope === "project" ? projectPackages : globalPackages, entry.source);
+    return {
+      source: entry.source,
+      scope,
+      kind: packageKindFromSource(entry.source),
+      filtered: entry.filtered,
+      enabled: match ? packageEntryEnabled(match.entry) : true,
+      ...(entry.installedPath ? { installedPath: entry.installedPath } : {}),
+    };
+  });
+}
+
+function setPackageEnabledInSettings(
+  settingsManager: PiSettingsManagerLike,
+  source: string,
+  scope: PackageScope,
+  enabled: boolean,
+): void {
+  const isProject = scope === "project";
+  const current = [
+    ...((isProject
+      ? settingsManager.getProjectSettings().packages
+      : settingsManager.getGlobalSettings().packages) ?? []),
+  ];
+  const found = findPackageEntry(current, source);
+  if (!found) {
+    throw new RuntimeError("PACKAGE_NOT_FOUND", "插件未出现在对应范围的 Pi 配置中");
+  }
+  const sourceString = packageSourceString(found.entry) || source;
+  const next = [...current];
+  next[found.index] = enabled
+    ? enablePackageEntry(found.entry, sourceString)
+    : disablePackageEntry(found.entry, sourceString);
+  if (isProject) settingsManager.setProjectPackages(next);
+  else settingsManager.setPackages(next);
+}
+
+function listResourcesFromLoader(
+  loader: PiResourceLoaderLike,
+  cwd: string,
+  agentDir: string,
+): ResourceSummary[] {
+  const resources: ResourceSummary[] = [];
+  for (const extension of loader.getExtensions?.().extensions ?? []) {
+    resources.push({
+      kind: "extension",
+      name: basename(extension.path),
+      path: extension.path,
+      ...(extension.sourceInfo?.source ? { source: extension.sourceInfo.source } : {}),
+    });
+  }
+  for (const skill of loader.getSkills?.().skills ?? []) {
+    resources.push({
+      kind: "skill",
+      name: skill.name,
+      path: skill.filePath,
+      ...(skill.sourceInfo?.source ? { source: skill.sourceInfo.source } : {}),
+    });
+  }
+  for (const prompt of loader.getPrompts?.().prompts ?? []) {
+    resources.push({
+      kind: "prompt",
+      name: prompt.name,
+      path: prompt.filePath,
+      ...(prompt.sourceInfo?.source ? { source: prompt.sourceInfo.source } : {}),
+    });
+  }
+  for (const theme of loader.getThemes?.().themes ?? []) {
+    resources.push({ kind: "theme", name: theme.name ?? "theme", path: theme.path ?? "" });
+  }
+  for (const file of loader.getAgentsFiles?.().agentsFiles ?? []) {
+    resources.push({ kind: "context", name: basename(file.path), path: file.path });
+  }
+  for (const candidates of [
+    [
+      { path: join(cwd, ".pi", "SYSTEM.md"), source: "project" },
+      { path: join(agentDir, "SYSTEM.md"), source: "global" },
+    ],
+    [
+      { path: join(cwd, ".pi", "APPEND_SYSTEM.md"), source: "project" },
+      { path: join(agentDir, "APPEND_SYSTEM.md"), source: "global" },
+    ],
+  ]) {
+    const selected = candidates.find((candidate) => existsSync(candidate.path));
+    if (selected) {
+      resources.push({
+        kind: "system",
+        name: basename(selected.path),
+        path: selected.path,
+        source: selected.source,
+      });
+    }
+  }
+  return resources;
+}
+
+function normalizeRuntimePath(path: string): string {
+  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  return process.platform === "win32" ? normalized.toLocaleLowerCase("en-US") : normalized;
 }
 
 export class PiSessionRuntime implements SessionRuntime {
@@ -243,7 +569,7 @@ export class PiSessionRuntime implements SessionRuntime {
         sessionManager: this.sdk.SessionManager.create(cwd),
         ...(resourceLoader ? { resourceLoader } : {}),
       });
-      return this.activateSession(result, cwd);
+      return this.activateSession(result, cwd, resourceLoader);
     } catch (error) {
       throw mapRuntimeError(error, "SESSION_CREATE_FAILED", "无法创建 Pi 会话");
     }
@@ -286,7 +612,7 @@ export class PiSessionRuntime implements SessionRuntime {
         sessionManager,
         ...(resourceLoader ? { resourceLoader } : {}),
       });
-      return this.activateSession(result, cwd);
+      return this.activateSession(result, cwd, resourceLoader);
     } catch (error) {
       throw mapRuntimeError(error, "SESSION_OPEN_FAILED", "无法打开所选 Pi 会话");
     }
@@ -299,6 +625,116 @@ export class PiSessionRuntime implements SessionRuntime {
       return models.flatMap((model) => toAgentModel(model));
     } catch (error) {
       throw mapRuntimeError(error, "MODEL_LIST_FAILED", "无法读取已配置的 Pi 模型");
+    }
+  }
+
+  async listPackages(cwd: string): Promise<PackageSummary[]> {
+    this.ensureOpen();
+    try {
+      return listPackagesFromManager(this.createPackageContext(cwd));
+    } catch (error) {
+      throw mapRuntimeError(error, "PACKAGE_LIST_FAILED", "无法读取已配置的 Pi 插件");
+    }
+  }
+
+  async installPackage(
+    cwd: string,
+    source: string,
+    scope: PackageScope,
+  ): Promise<PackageSummary[]> {
+    this.ensureOpen();
+    try {
+      const context = this.createPackageContext(cwd);
+      await context.manager.installAndPersist(source, { local: scope === "project" });
+      await this.reloadManagedResources(scope === "global" ? undefined : cwd);
+      return listPackagesFromManager(context);
+    } catch (error) {
+      throw mapRuntimeError(error, "PACKAGE_INSTALL_FAILED", "无法安装所选 Pi 插件");
+    }
+  }
+
+  async setPackageEnabled(
+    cwd: string,
+    source: string,
+    scope: PackageScope,
+    enabled: boolean,
+  ): Promise<PackageSummary[]> {
+    this.ensureOpen();
+    try {
+      const context = this.createPackageContext(cwd);
+      setPackageEnabledInSettings(context.settingsManager, source, scope, enabled);
+      await this.reloadManagedResources(scope === "global" ? undefined : cwd);
+      return listPackagesFromManager(context);
+    } catch (error) {
+      throw mapRuntimeError(error, "PACKAGE_UPDATE_FAILED", "无法更新 Pi 插件启用状态");
+    }
+  }
+
+  async removePackage(
+    cwd: string,
+    source: string,
+    scope: PackageScope,
+  ): Promise<PackageSummary[]> {
+    this.ensureOpen();
+    try {
+      const context = this.createPackageContext(cwd);
+      const configured = context.manager.listConfiguredPackages();
+      const removeSource = resolvePackageRemoveSource(configured, source, scope);
+      const removed = await context.manager.removeAndPersist(removeSource, {
+        local: scope === "project",
+      });
+      if (!removed) {
+        throw new RuntimeError("PACKAGE_NOT_FOUND", "插件未出现在对应范围的 Pi 配置中");
+      }
+      await this.reloadManagedResources(scope === "global" ? undefined : cwd);
+      return listPackagesFromManager(context);
+    } catch (error) {
+      throw mapRuntimeError(error, "PACKAGE_REMOVE_FAILED", "无法移除所选 Pi 插件");
+    }
+  }
+
+  async updatePackage(cwd: string, source?: string): Promise<PackageSummary[]> {
+    this.ensureOpen();
+    try {
+      const context = this.createPackageContext(cwd);
+      await context.manager.update(source);
+      await this.reloadManagedResources();
+      return listPackagesFromManager(context);
+    } catch (error) {
+      throw mapRuntimeError(error, "PACKAGE_UPDATE_FAILED", "无法更新 Pi 插件");
+    }
+  }
+
+  async checkPackageUpdates(cwd: string): Promise<PackageUpdateInfo[]> {
+    this.ensureOpen();
+    try {
+      const updates = await this.createPackageContext(cwd).manager.checkForAvailableUpdates();
+      return updates.map((item) => ({
+        source: item.source,
+        displayName: item.displayName,
+        type: item.type,
+        scope: item.scope === "project" ? "project" : "global",
+      }));
+    } catch (error) {
+      throw mapRuntimeError(error, "PACKAGE_UPDATE_CHECK_FAILED", "无法检查 Pi 插件更新");
+    }
+  }
+
+  async listResources(cwd: string): Promise<ResourceSummary[]> {
+    this.ensureOpen();
+    try {
+      if (typeof this.sdk.DefaultResourceLoader !== "function") {
+        throw new RuntimeError("RESOURCE_LIST_UNSUPPORTED", "当前 Pi SDK 不支持资源清单");
+      }
+      const loader = new this.sdk.DefaultResourceLoader({
+        cwd,
+        agentDir: this.agentDir,
+        extensionFactories: [],
+      });
+      await loader.reload();
+      return listResourcesFromLoader(loader, cwd, this.agentDir);
+    } catch (error) {
+      throw mapRuntimeError(error, "RESOURCE_LIST_FAILED", "无法读取 Pi 资源与技能");
     }
   }
 
@@ -402,7 +838,7 @@ export class PiSessionRuntime implements SessionRuntime {
     return this.modelRuntimePromise;
   }
 
-  private async createResourceLoader(cwd: string): Promise<{ reload(): Promise<void> } | undefined> {
+  private async createResourceLoader(cwd: string): Promise<PiResourceLoaderLike | undefined> {
     if (typeof this.sdk.DefaultResourceLoader !== "function") {
       if (this.requestHeaderSettings.enabled) {
         throw new RuntimeError(
@@ -427,9 +863,42 @@ export class PiSessionRuntime implements SessionRuntime {
     return resourceLoader;
   }
 
+  private createPackageContext(cwd: string): PackageContext {
+    if (
+      typeof this.sdk.SettingsManager?.create !== "function" ||
+      typeof this.sdk.DefaultPackageManager !== "function"
+    ) {
+      throw new RuntimeError("PACKAGE_MANAGER_UNSUPPORTED", "当前 Pi SDK 不支持插件管理");
+    }
+    const settingsManager = this.sdk.SettingsManager.create(cwd, this.agentDir, {
+      projectTrusted: true,
+    });
+    return {
+      settingsManager,
+      manager: new this.sdk.DefaultPackageManager({
+        cwd,
+        agentDir: this.agentDir,
+        settingsManager,
+      }),
+    };
+  }
+
+  private async reloadManagedResources(cwd?: string): Promise<void> {
+    const normalized = cwd ? normalizeRuntimePath(cwd) : undefined;
+    for (const managed of this.sessions.values()) {
+      if (normalized && normalizeRuntimePath(managed.cwd) !== normalized) continue;
+      if (typeof managed.session.reload === "function") {
+        await managed.session.reload();
+      } else {
+        await managed.resourceLoader?.reload();
+      }
+    }
+  }
+
   private activateSession(
     result: { session: PiSessionLike; modelFallbackMessage?: string },
     cwd: string,
+    resourceLoader?: PiResourceLoaderLike,
   ): CreatedAgentSession {
     const { session } = result;
     if (!session.sessionId || this.sessions.has(session.sessionId)) {
@@ -446,7 +915,14 @@ export class PiSessionRuntime implements SessionRuntime {
     }
 
     const now = new Date().toISOString();
-    const managed = { cwd, session, unsubscribe, createdAt: now, lastActivityAt: now };
+    const managed = {
+      cwd,
+      session,
+      unsubscribe,
+      createdAt: now,
+      lastActivityAt: now,
+      ...(resourceLoader ? { resourceLoader } : {}),
+    };
     this.sessions.set(session.sessionId, managed);
 
     return {

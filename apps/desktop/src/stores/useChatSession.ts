@@ -317,6 +317,7 @@ export function useChatSession(): ChatSessionState {
       setWorkspaceState(await removeRecentWorkspace(cwd));
     } catch (error) {
       setCatalogError(formatError(error));
+      throw error;
     }
   }, []);
 

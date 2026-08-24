@@ -76,6 +76,43 @@ pub struct AgentModel {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PackageScope {
+    Global,
+    Project,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageSummary {
+    pub source: String,
+    pub scope: PackageScope,
+    pub kind: String,
+    pub installed_path: Option<String>,
+    pub filtered: bool,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageUpdateInfo {
+    pub source: String,
+    pub display_name: String,
+    #[serde(rename = "type")]
+    pub update_type: String,
+    pub scope: PackageScope,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceSummary {
+    pub kind: String,
+    pub name: String,
+    pub path: String,
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelSelection {
     pub provider: String,
@@ -195,6 +232,8 @@ pub fn validate_hello(hello: &BridgeHello) -> Result<(), AppError> {
         "thinking-stream",
         "queue",
         "request-header-profiles",
+        "packages",
+        "resources",
     ] {
         if !hello.capabilities.iter().any(|item| item == capability) {
             return Err(AppError::new(
@@ -518,6 +557,8 @@ mod tests {
         "thinking-stream",
         "queue",
         "request-header-profiles",
+        "packages",
+        "resources",
     ];
 
     fn hello(protocol_version: u16, capabilities: &[&str]) -> BridgeHello {
@@ -540,7 +581,7 @@ mod tests {
     #[test]
     fn deserializes_bridge_json_shape() {
         let value: BridgeHello = serde_json::from_str(
-            r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions","models","session-history","session-configuration","tool-status","background-sessions","thinking-stream","queue","request-header-profiles"]}"#,
+            r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions","models","session-history","session-configuration","tool-status","background-sessions","thinking-stream","queue","request-header-profiles","packages","resources"]}"#,
         )
         .expect("Bridge hello JSON 必须可反序列化");
 

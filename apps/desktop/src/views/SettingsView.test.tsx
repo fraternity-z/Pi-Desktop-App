@@ -1,5 +1,5 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_APP_PREFERENCES } from "../stores/useAppPreferences";
 import type { RequestHeaderSettingsController } from "../stores/useRequestHeaderSettings";
@@ -33,6 +33,8 @@ function readyRequestHeaders(
 }
 
 describe("SettingsView", () => {
+  beforeEach(() => window.localStorage.clear());
+
   it("常规设置通过可访问开关即时提交", () => {
     const onPreferencesChange = vi.fn();
     const onBack = vi.fn();
@@ -203,5 +205,57 @@ describe("SettingsView", () => {
 
     expect(onPreferencesChange).toHaveBeenNthCalledWith(1, { confirmRemoveWorkspace: false });
     expect(onPreferencesChange).toHaveBeenNthCalledWith(2, { closeSidebarOnNavigation: false });
+  });
+
+  it("已归档页面支持搜索、恢复和确认删除会话", async () => {
+    window.localStorage.setItem("pix.threads.archived", JSON.stringify(["saved", "remove"]));
+    window.localStorage.setItem(
+      "pix.threads.archivedMeta",
+      JSON.stringify({
+        saved: {
+          title: "等待恢复",
+          cwd: "C:\\projects\\alpha",
+          archivedAt: "2026-08-23T08:30:00.000Z",
+        },
+        remove: {
+          title: "等待删除",
+          cwd: "C:\\projects\\beta",
+          archivedAt: "2026-08-22T08:30:00.000Z",
+        },
+      }),
+    );
+    render(
+      <SettingsView
+        section="archived"
+        sidebarOpen
+        sidebarWidth={272}
+        preferences={DEFAULT_APP_PREFERENCES}
+        requestHeaders={readyRequestHeaders()}
+        runtime={readyRuntime}
+        eventConnection="ready"
+        onOpenSidebar={vi.fn()}
+        onBack={vi.fn()}
+        onSidebarWidthChange={vi.fn()}
+        onPreferencesChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("等待恢复")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("searchbox", { name: "搜索已归档会话" }), {
+      target: { value: "等待恢复" },
+    });
+    expect(screen.queryByText("等待删除")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "恢复等待恢复" }));
+    await waitFor(() => expect(screen.queryByText("等待恢复")).not.toBeInTheDocument());
+    expect(JSON.parse(window.localStorage.getItem("pix.threads.archived")!)).toEqual(["remove"]);
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "搜索已归档会话" }), {
+      target: { value: "" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "删除等待删除" }));
+    expect(screen.getByRole("dialog", { name: "删除已归档会话" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "删除" }));
+    await waitFor(() => expect(screen.queryByText("等待删除")).not.toBeInTheDocument());
+    expect(JSON.parse(window.localStorage.getItem("pix.threads.deleted")!)).toContain("remove");
   });
 });

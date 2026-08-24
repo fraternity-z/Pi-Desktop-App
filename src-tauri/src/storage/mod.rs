@@ -62,6 +62,7 @@ pub struct WorkspaceState {
 pub struct WorkspaceStore {
     settings_path: PathBuf,
     conversation_home: PathBuf,
+    worktrees_home: PathBuf,
     preferences: Mutex<WorkspacePreferences>,
 }
 
@@ -145,13 +146,20 @@ impl RequestHeaderSettingsStore {
 impl WorkspaceStore {
     pub fn new(config_dir: PathBuf, documents_dir: PathBuf) -> Self {
         let settings_path = config_dir.join("workspace-settings.json");
-        let conversation_home = documents_dir.join("Pix").join("conversations");
+        let pix_home = documents_dir.join("Pix");
+        let conversation_home = pix_home.join("conversations");
+        let worktrees_home = pix_home.join("worktrees");
         let preferences = read_workspace_preferences(&settings_path);
         Self {
             settings_path,
             conversation_home,
+            worktrees_home,
             preferences: Mutex::new(preferences),
         }
+    }
+
+    pub fn worktrees_home(&self) -> PathBuf {
+        self.worktrees_home.clone()
     }
 
     pub fn state(&self) -> WorkspaceState {
@@ -188,6 +196,30 @@ impl WorkspaceStore {
         }
         self.persist(&preferences)?;
         Ok(state_from(&preferences, &self.conversation_home))
+    }
+
+    pub fn authorize(&self, cwd: &str) -> Result<String, AppError> {
+        let canonical = canonical_workspace(Path::new(cwd.trim()))?;
+        let canonical_text = path_text(&canonical);
+        let conversation_home = path_text(&normalize_process_path(
+            self.conversation_home
+                .canonicalize()
+                .unwrap_or_else(|_| self.conversation_home.clone()),
+        ));
+        let preferences = self.lock_preferences()?;
+        let authorized = same_path(&canonical_text, &conversation_home)
+            || preferences
+                .recent_workspaces
+                .iter()
+                .any(|item| same_path(item, &canonical_text));
+        if authorized {
+            Ok(canonical_text)
+        } else {
+            Err(AppError::new(
+                "WORKSPACE_UNAUTHORIZED",
+                "该工作区尚未由用户授权，请先通过文件夹选择器添加项目",
+            ))
+        }
     }
 
     pub fn remove_recent(&self, cwd: &str) -> Result<WorkspaceState, AppError> {
@@ -365,6 +397,35 @@ mod tests {
 
         let reloaded = WorkspaceStore::new(config, documents);
         assert_eq!(reloaded.state().recent_workspaces.len(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn authorizes_only_remembered_or_conversation_workspaces() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-desktop-workspace-authorization-test-{}",
+            std::process::id()
+        ));
+        let config = root.join("config");
+        let documents = root.join("documents");
+        let project = root.join("project");
+        let untrusted = root.join("untrusted");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&untrusted).unwrap();
+        let store = WorkspaceStore::new(config, documents);
+
+        let error = store.authorize(&path_text(&untrusted)).unwrap_err();
+        assert_eq!(error.code, "WORKSPACE_UNAUTHORIZED");
+
+        store.remember(&path_text(&project)).unwrap();
+        let authorized_project = store.authorize(&path_text(&project)).unwrap();
+        assert!(same_path(&authorized_project, &path_text(&project)));
+
+        let conversation = store.ensure_conversation().unwrap();
+        assert!(same_path(
+            &store.authorize(&conversation).unwrap(),
+            &conversation
+        ));
         let _ = fs::remove_dir_all(root);
     }
 

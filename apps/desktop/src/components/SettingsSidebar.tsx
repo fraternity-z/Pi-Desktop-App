@@ -1,5 +1,6 @@
 import {
   Activity,
+  Archive,
   ArrowLeft,
   Gauge,
   Palette,
@@ -12,7 +13,7 @@ import { useMemo, useState } from "react";
 
 import { SidebarResizer } from "./AppSidebar";
 
-export type SettingsSectionId = "general" | "appearance" | "behavior" | "runtime";
+export type SettingsSectionId = "general" | "appearance" | "behavior" | "runtime" | "archived";
 
 interface SettingsSidebarProps {
   open: boolean;
@@ -49,6 +50,12 @@ const SETTINGS_GROUPS: Array<{ label: string; items: SettingsNavItem[] }> = [
         keywords: "node pi bridge 连接 版本 请求头 claude code codex 伪装",
         icon: Activity,
       },
+    ],
+  },
+  {
+    label: "数据",
+    items: [
+      { id: "archived", label: "已归档", keywords: "会话 恢复 删除 历史", icon: Archive },
     ],
   },
 ];

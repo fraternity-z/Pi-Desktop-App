@@ -3,38 +3,55 @@ import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 import {
   abortAgent,
+  checkAgentPackageUpdates,
   clearAgentQueue,
   configureAgentSession,
   createAgentSession,
+  installAgentPackage,
   listAgentModels,
+  listAgentPackages,
+  listAgentResources,
   listAgentSessions,
   listenToAgentEvents,
   openAgentSession,
   promptAgent,
+  removeAgentPackage,
+  setAgentPackageEnabled,
   type AgentEvent,
   type AgentSession,
+  updateAgentPackage,
 } from "../ipc/agent";
 import { selectProjectDirectory } from "../ipc/project";
 import { getRequestHeaderSettings, updateRequestHeaderSettings } from "../ipc/settings";
 import { getRuntimeStatus } from "../ipc/system";
 import {
+  createWorkspaceWorktree,
   ensureConversationWorkspace,
   getWorkspaceState,
+  getWorktreeOptions,
   rememberWorkspace,
   removeRecentWorkspace,
+  revealWorkspace,
 } from "../ipc/workspace";
 import { ChatWorkbenchView } from "./ChatWorkbenchView";
 
 vi.mock("../ipc/agent", () => ({
   abortAgent: vi.fn(),
+  checkAgentPackageUpdates: vi.fn(),
   clearAgentQueue: vi.fn(),
   configureAgentSession: vi.fn(),
   createAgentSession: vi.fn(),
+  installAgentPackage: vi.fn(),
   listAgentModels: vi.fn(),
+  listAgentPackages: vi.fn(),
+  listAgentResources: vi.fn(),
   listAgentSessions: vi.fn(),
   listenToAgentEvents: vi.fn(),
   openAgentSession: vi.fn(),
   promptAgent: vi.fn(),
+  removeAgentPackage: vi.fn(),
+  setAgentPackageEnabled: vi.fn(),
+  updateAgentPackage: vi.fn(),
 }));
 vi.mock("../ipc/project", () => ({ selectProjectDirectory: vi.fn() }));
 vi.mock("../ipc/settings", async (importOriginal) => ({
@@ -44,10 +61,13 @@ vi.mock("../ipc/settings", async (importOriginal) => ({
 }));
 vi.mock("../ipc/system", () => ({ getRuntimeStatus: vi.fn() }));
 vi.mock("../ipc/workspace", () => ({
+  createWorkspaceWorktree: vi.fn(),
   ensureConversationWorkspace: vi.fn(),
   getWorkspaceState: vi.fn(),
+  getWorktreeOptions: vi.fn(),
   rememberWorkspace: vi.fn(),
   removeRecentWorkspace: vi.fn(),
+  revealWorkspace: vi.fn(),
 }));
 
 const readyRuntime = {
@@ -105,6 +125,13 @@ describe("ChatWorkbenchView", () => {
     vi.mocked(promptAgent).mockReset().mockImplementation(() => new Promise<number>(() => {}));
     vi.mocked(abortAgent).mockReset().mockResolvedValue(undefined);
     vi.mocked(clearAgentQueue).mockReset().mockResolvedValue(undefined);
+    vi.mocked(listAgentPackages).mockReset().mockResolvedValue([]);
+    vi.mocked(listAgentResources).mockReset().mockResolvedValue([]);
+    vi.mocked(checkAgentPackageUpdates).mockReset().mockResolvedValue([]);
+    vi.mocked(installAgentPackage).mockReset().mockResolvedValue([]);
+    vi.mocked(setAgentPackageEnabled).mockReset().mockResolvedValue([]);
+    vi.mocked(removeAgentPackage).mockReset().mockResolvedValue([]);
+    vi.mocked(updateAgentPackage).mockReset().mockResolvedValue([]);
     vi.mocked(getWorkspaceState).mockReset().mockResolvedValue({
       recentWorkspaces: [],
       lastWorkspace: null,
@@ -123,6 +150,14 @@ describe("ChatWorkbenchView", () => {
     vi.mocked(ensureConversationWorkspace)
       .mockReset()
       .mockResolvedValue("C:\\Users\\me\\Documents\\Pix\\conversations");
+    vi.mocked(revealWorkspace).mockReset().mockResolvedValue(undefined);
+    vi.mocked(getWorktreeOptions).mockReset().mockResolvedValue({
+      branches: [{ name: "main", current: true, remote: false }],
+      suggestedName: "work-1",
+    });
+    vi.mocked(createWorkspaceWorktree)
+      .mockReset()
+      .mockResolvedValue({ path: "C:\\worktrees\\work-1" });
     vi.mocked(listenToAgentEvents)
       .mockReset()
       .mockImplementation(async (handler) => {
@@ -414,11 +449,47 @@ describe("ChatWorkbenchView", () => {
     expect(await screen.findByLabelText("发送给 Pi 的消息")).toBeInTheDocument();
   });
 
+  it("从侧栏进入插件与资源视图并保持数据计数同步", async () => {
+    vi.mocked(listAgentPackages).mockResolvedValue([
+      {
+        source: "npm:@example/pi-extension",
+        scope: "global",
+        kind: "npm",
+        filtered: false,
+        enabled: true,
+      },
+    ]);
+    vi.mocked(listAgentResources).mockResolvedValue([
+      {
+        kind: "skill",
+        name: "项目检查",
+        path: "C:\\agent\\skills\\project-check\\SKILL.md",
+        source: "npm:@example/pi-extension",
+      },
+    ]);
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    await waitFor(() => expect(listAgentPackages).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole("button", { name: "插件" }));
+    expect(screen.getByRole("heading", { name: "插件" })).toBeInTheDocument();
+    expect(screen.getByText("pi-extension")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "插件" })).toHaveTextContent("1");
+
+    fireEvent.click(screen.getByRole("button", { name: "资源" }));
+    expect(screen.getByRole("heading", { name: "资源" })).toBeInTheDocument();
+    expect(screen.getByText("项目检查")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "资源" })).toHaveTextContent("1");
+
+    fireEvent.click(screen.getByRole("button", { name: "返回对话" }));
+    expect(screen.getByRole("heading", { name: "会话工作台" })).toBeInTheDocument();
+  });
+
   it("从侧栏进入设置、切换分类、保存偏好并返回工作台", async () => {
     render(<ChatWorkbenchView />);
     await screen.findByRole("status", { name: "状态正常" });
 
-    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "系统设置" }));
     expect(screen.getByTestId("settings-general")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "外观" }));
@@ -449,23 +520,56 @@ describe("ChatWorkbenchView", () => {
     );
   });
 
-  it("按偏好在移除最近项目之前请求确认", async () => {
+  it("通过侧栏确认框保护最近项目移除操作", async () => {
     vi.mocked(getWorkspaceState).mockResolvedValueOnce({
       recentWorkspaces: ["C:\\work"],
       lastWorkspace: null,
       conversationHome: "C:\\Users\\me\\Documents\\Pix\\conversations",
     });
-    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
     render(<ChatWorkbenchView />);
 
-    const remove = await screen.findByRole("button", { name: "从列表移除work" });
-    fireEvent.click(remove);
+    fireEvent.click(await screen.findByRole("button", { name: "work更多操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "从列表移除" }));
+    expect(screen.getByRole("dialog", { name: "移除项目" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
     expect(removeRecentWorkspace).not.toHaveBeenCalled();
 
-    fireEvent.click(remove);
+    fireEvent.click(screen.getByRole("button", { name: "work更多操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "从列表移除" }));
+    fireEvent.click(screen.getByRole("button", { name: "移除" }));
     await waitFor(() => expect(removeRecentWorkspace).toHaveBeenCalledWith("C:\\work"));
-    expect(confirm).toHaveBeenCalledTimes(2);
-    confirm.mockRestore();
+  });
+
+  it("连接侧栏的文件夹显示与永久工作树命令，并打开创建结果", async () => {
+    vi.mocked(getWorkspaceState).mockResolvedValueOnce({
+      recentWorkspaces: ["C:\\work"],
+      lastWorkspace: null,
+      conversationHome: "C:\\Users\\me\\Documents\\Pix\\conversations",
+    });
+    vi.mocked(createAgentSession).mockResolvedValueOnce({
+      ...defaultSession,
+      cwd: "C:\\worktrees\\work-1",
+      sessionPath: "C:\\agent\\sessions\\worktree.jsonl",
+    });
+    render(<ChatWorkbenchView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "work更多操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "在文件夹中显示" }));
+    await waitFor(() => expect(revealWorkspace).toHaveBeenCalledWith("C:\\work"));
+
+    fireEvent.click(screen.getByRole("button", { name: "work更多操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "创建永久工作树" }));
+    await screen.findByDisplayValue("work-1");
+    fireEvent.click(screen.getByRole("button", { name: "创建并打开" }));
+
+    await waitFor(() =>
+      expect(createWorkspaceWorktree).toHaveBeenCalledWith({
+        cwd: "C:\\work",
+        base: "HEAD",
+        name: "work-1",
+      }),
+    );
+    await waitFor(() => expect(createAgentSession).toHaveBeenCalledWith("C:\\worktrees\\work-1"));
   });
 });
 

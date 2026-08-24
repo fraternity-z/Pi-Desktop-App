@@ -4,15 +4,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   abortAgent,
+  checkAgentPackageUpdates,
   clearAgentQueue,
   configureAgentSession,
   createAgentSession,
+  installAgentPackage,
   listAgentModels,
+  listAgentPackages,
+  listAgentResources,
   listAgentSessions,
   listenToAgentEvents,
   openAgentSession,
   parseAgentEvent,
   promptAgent,
+  removeAgentPackage,
+  setAgentPackageEnabled,
+  updateAgentPackage,
 } from "./agent";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -22,6 +29,46 @@ describe("agent IPC", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
     vi.mocked(listen).mockReset();
+  });
+
+  it("只调用固定、类型化的插件与资源命令", async () => {
+    vi.mocked(invoke).mockResolvedValue([]);
+
+    await listAgentPackages("C:\\work");
+    await installAgentPackage("C:\\work", "npm:pi-test", "global");
+    await setAgentPackageEnabled("C:\\work", "npm:pi-test", "global", false);
+    await removeAgentPackage("C:\\work", "npm:pi-test", "global");
+    await updateAgentPackage("C:\\work", "npm:pi-test");
+    await updateAgentPackage("C:\\work");
+    await checkAgentPackageUpdates("C:\\work");
+    await listAgentResources("C:\\work");
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "agent_list_packages", { cwd: "C:\\work" });
+    expect(invoke).toHaveBeenNthCalledWith(2, "agent_install_package", {
+      cwd: "C:\\work",
+      source: "npm:pi-test",
+      scope: "global",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(3, "agent_set_package_enabled", {
+      cwd: "C:\\work",
+      source: "npm:pi-test",
+      scope: "global",
+      enabled: false,
+    });
+    expect(invoke).toHaveBeenNthCalledWith(4, "agent_remove_package", {
+      cwd: "C:\\work",
+      source: "npm:pi-test",
+      scope: "global",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(5, "agent_update_package", {
+      cwd: "C:\\work",
+      source: "npm:pi-test",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(6, "agent_update_package", { cwd: "C:\\work" });
+    expect(invoke).toHaveBeenNthCalledWith(7, "agent_check_package_updates", {
+      cwd: "C:\\work",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(8, "agent_list_resources", { cwd: "C:\\work" });
   });
 
   it("只调用固定、类型化的会话命令", async () => {

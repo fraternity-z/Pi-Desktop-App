@@ -11,6 +11,13 @@ interface RuntimeMock {
   listSessions: ReturnType<typeof vi.fn>;
   openSession: ReturnType<typeof vi.fn>;
   listModels: ReturnType<typeof vi.fn>;
+  listPackages: ReturnType<typeof vi.fn>;
+  installPackage: ReturnType<typeof vi.fn>;
+  setPackageEnabled: ReturnType<typeof vi.fn>;
+  removePackage: ReturnType<typeof vi.fn>;
+  updatePackage: ReturnType<typeof vi.fn>;
+  checkPackageUpdates: ReturnType<typeof vi.fn>;
+  listResources: ReturnType<typeof vi.fn>;
   configureRequestHeaders: ReturnType<typeof vi.fn>;
   configureSession: ReturnType<typeof vi.fn>;
   prompt: ReturnType<typeof vi.fn>;
@@ -41,6 +48,13 @@ function createRuntimeMock(): RuntimeMock {
       streaming: false,
   }));
   const listModels = vi.fn(async () => []);
+  const listPackages = vi.fn(async () => []);
+  const installPackage = vi.fn(async () => []);
+  const setPackageEnabled = vi.fn(async () => []);
+  const removePackage = vi.fn(async () => []);
+  const updatePackage = vi.fn(async () => []);
+  const checkPackageUpdates = vi.fn(async () => []);
+  const listResources = vi.fn(async () => []);
   const configureRequestHeaders = vi.fn((settings) => settings);
   const configureSession = vi.fn(async () => ({
     model: null,
@@ -57,6 +71,13 @@ function createRuntimeMock(): RuntimeMock {
     listSessions,
     openSession,
     listModels,
+    listPackages,
+    installPackage,
+    setPackageEnabled,
+    removePackage,
+    updatePackage,
+    checkPackageUpdates,
+    listResources,
     configureSession,
     prompt,
     clearQueue,
@@ -74,6 +95,13 @@ function createRuntimeMock(): RuntimeMock {
     listSessions,
     openSession,
     listModels,
+    listPackages,
+    installPackage,
+    setPackageEnabled,
+    removePackage,
+    updatePackage,
+    checkPackageUpdates,
+    listResources,
     configureRequestHeaders,
     configureSession,
     prompt,
@@ -154,6 +182,75 @@ describe("BridgeServer", () => {
 
     expect(runtimeMock.prompt).toHaveBeenNthCalledWith(1, "s-1", "guide", "steer");
     expect(runtimeMock.prompt).toHaveBeenNthCalledWith(2, "s-1", "later", "followUp");
+  });
+
+  it("路由插件与资源管理请求", async () => {
+    const { server, frames, runtimeMock } = setup();
+    const requests = [
+      { v: 1, id: "packages", op: "package.list", cwd: "C:\\work" },
+      {
+        v: 1,
+        id: "install",
+        op: "package.install",
+        cwd: "C:\\work",
+        source: "npm:pi-test",
+        scope: "global",
+      },
+      {
+        v: 1,
+        id: "disable",
+        op: "package.set-enabled",
+        cwd: "C:\\work",
+        source: "npm:pi-test",
+        scope: "global",
+        enabled: false,
+      },
+      {
+        v: 1,
+        id: "remove",
+        op: "package.remove",
+        cwd: "C:\\work",
+        source: "npm:pi-test",
+        scope: "project",
+      },
+      {
+        v: 1,
+        id: "update",
+        op: "package.update",
+        cwd: "C:\\work",
+        source: "npm:pi-test",
+      },
+      { v: 1, id: "updates", op: "package.check-updates", cwd: "C:\\work" },
+      { v: 1, id: "resources", op: "resource.list", cwd: "C:\\work" },
+    ];
+
+    for (const request of requests) {
+      await server.handleLine(JSON.stringify(request));
+    }
+
+    expect(runtimeMock.listPackages).toHaveBeenCalledWith("C:\\work");
+    expect(runtimeMock.installPackage).toHaveBeenCalledWith(
+      "C:\\work",
+      "npm:pi-test",
+      "global",
+    );
+    expect(runtimeMock.setPackageEnabled).toHaveBeenCalledWith(
+      "C:\\work",
+      "npm:pi-test",
+      "global",
+      false,
+    );
+    expect(runtimeMock.removePackage).toHaveBeenCalledWith(
+      "C:\\work",
+      "npm:pi-test",
+      "project",
+    );
+    expect(runtimeMock.updatePackage).toHaveBeenCalledWith("C:\\work", "npm:pi-test");
+    expect(runtimeMock.checkPackageUpdates).toHaveBeenCalledWith("C:\\work");
+    expect(runtimeMock.listResources).toHaveBeenCalledWith("C:\\work");
+    for (const request of requests) {
+      expect(frames).toContainEqual(expect.objectContaining({ id: request.id, ok: true }));
+    }
   });
 
   it("给流事件分配单调序号", () => {

@@ -24,6 +24,8 @@ describe("SettingsSidebar", () => {
     expect(screen.getByRole("button", { name: "常规" })).toHaveAttribute("aria-current", "page");
     fireEvent.click(screen.getByRole("button", { name: "外观" }));
     expect(onSectionChange).toHaveBeenCalledWith("appearance");
+    fireEvent.click(screen.getByRole("button", { name: "已归档" }));
+    expect(onSectionChange).toHaveBeenCalledWith("archived");
 
     fireEvent.change(screen.getByRole("searchbox", { name: "搜索设置" }), {
       target: { value: "版本" },

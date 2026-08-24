@@ -17,8 +17,9 @@ use serde_json::{Value, json};
 use crate::{
     bridge::protocol::{
         AgentModel, AgentSessionSummary, BridgeEvent, BridgeHello, BridgeResponse, CreatedSession,
-        PROTOCOL_VERSION, PromptStreamingBehavior, RequestHeaderSettings, SessionConfiguration,
-        parse_hello_frame, validate_event, validate_frame_size,
+        PROTOCOL_VERSION, PackageScope, PackageSummary, PackageUpdateInfo, PromptStreamingBehavior,
+        RequestHeaderSettings, ResourceSummary, SessionConfiguration, parse_hello_frame,
+        validate_event, validate_frame_size,
     },
     error::AppError,
 };
@@ -26,6 +27,7 @@ use crate::{
 const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_PROMPT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const DEFAULT_PACKAGE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
@@ -248,6 +250,155 @@ impl BridgeSupervisor {
                 "Bridge model.list 响应字段无效",
             )
         })
+    }
+
+    pub fn list_packages(&self, cwd: &Path) -> Result<Vec<PackageSummary>, AppError> {
+        self.typed_list_request(
+            "package.list",
+            json!({"cwd": cwd}),
+            "BRIDGE_PACKAGE_LIST_INVALID",
+            "Bridge package.list 响应缺少插件数据",
+            "Bridge package.list 响应字段无效",
+            self.response_timeout,
+        )
+    }
+
+    pub fn install_package(
+        &self,
+        cwd: &Path,
+        source: &str,
+        scope: &PackageScope,
+    ) -> Result<Vec<PackageSummary>, AppError> {
+        self.package_mutation(
+            "package.install",
+            cwd,
+            source,
+            Some(scope),
+            None,
+            DEFAULT_PACKAGE_TIMEOUT,
+        )
+    }
+
+    pub fn set_package_enabled(
+        &self,
+        cwd: &Path,
+        source: &str,
+        scope: &PackageScope,
+        enabled: bool,
+    ) -> Result<Vec<PackageSummary>, AppError> {
+        self.package_mutation(
+            "package.set-enabled",
+            cwd,
+            source,
+            Some(scope),
+            Some(enabled),
+            self.response_timeout,
+        )
+    }
+
+    pub fn remove_package(
+        &self,
+        cwd: &Path,
+        source: &str,
+        scope: &PackageScope,
+    ) -> Result<Vec<PackageSummary>, AppError> {
+        self.package_mutation(
+            "package.remove",
+            cwd,
+            source,
+            Some(scope),
+            None,
+            DEFAULT_PACKAGE_TIMEOUT,
+        )
+    }
+
+    pub fn update_package(
+        &self,
+        cwd: &Path,
+        source: Option<&str>,
+    ) -> Result<Vec<PackageSummary>, AppError> {
+        let mut fields = serde_json::Map::from_iter([("cwd".to_owned(), json!(cwd))]);
+        if let Some(source) = source {
+            fields.insert("source".to_owned(), Value::String(source.to_owned()));
+        }
+        self.typed_list_request(
+            "package.update",
+            Value::Object(fields),
+            "BRIDGE_PACKAGE_LIST_INVALID",
+            "Bridge package.update 响应缺少插件数据",
+            "Bridge package.update 响应字段无效",
+            DEFAULT_PACKAGE_TIMEOUT,
+        )
+    }
+
+    pub fn check_package_updates(&self, cwd: &Path) -> Result<Vec<PackageUpdateInfo>, AppError> {
+        self.typed_list_request(
+            "package.check-updates",
+            json!({"cwd": cwd}),
+            "BRIDGE_PACKAGE_UPDATES_INVALID",
+            "Bridge package.check-updates 响应缺少更新数据",
+            "Bridge package.check-updates 响应字段无效",
+            DEFAULT_PACKAGE_TIMEOUT,
+        )
+    }
+
+    pub fn list_resources(&self, cwd: &Path) -> Result<Vec<ResourceSummary>, AppError> {
+        self.typed_list_request(
+            "resource.list",
+            json!({"cwd": cwd}),
+            "BRIDGE_RESOURCE_LIST_INVALID",
+            "Bridge resource.list 响应缺少资源数据",
+            "Bridge resource.list 响应字段无效",
+            self.response_timeout,
+        )
+    }
+
+    fn package_mutation(
+        &self,
+        operation: &'static str,
+        cwd: &Path,
+        source: &str,
+        scope: Option<&PackageScope>,
+        enabled: Option<bool>,
+        timeout: Duration,
+    ) -> Result<Vec<PackageSummary>, AppError> {
+        let mut fields = serde_json::Map::from_iter([
+            ("cwd".to_owned(), json!(cwd)),
+            ("source".to_owned(), Value::String(source.to_owned())),
+        ]);
+        if let Some(scope) = scope {
+            fields.insert(
+                "scope".to_owned(),
+                serde_json::to_value(scope)
+                    .map_err(|_| AppError::new("BRIDGE_REQUEST_INVALID", "无法序列化插件作用域"))?,
+            );
+        }
+        if let Some(enabled) = enabled {
+            fields.insert("enabled".to_owned(), Value::Bool(enabled));
+        }
+        self.typed_list_request(
+            operation,
+            Value::Object(fields),
+            "BRIDGE_PACKAGE_LIST_INVALID",
+            "Bridge 插件操作响应缺少插件数据",
+            "Bridge 插件操作响应字段无效",
+            timeout,
+        )
+    }
+
+    fn typed_list_request<T: serde::de::DeserializeOwned>(
+        &self,
+        operation: &'static str,
+        fields: Value,
+        code: &'static str,
+        missing_message: &'static str,
+        invalid_message: &'static str,
+        timeout: Duration,
+    ) -> Result<Vec<T>, AppError> {
+        let data = self
+            .request(operation, fields, timeout)?
+            .ok_or_else(|| AppError::new(code, missing_message))?;
+        serde_json::from_value(data).map_err(|_| AppError::new(code, invalid_message))
     }
 
     pub fn configure_session(
@@ -692,6 +843,15 @@ fn public_remote_error_code(code: &str) -> Option<&'static str> {
         "ABORT_FAILED" => "ABORT_FAILED",
         "RUNTIME_CLOSED" => "RUNTIME_CLOSED",
         "REQUEST_HEADERS_UNSUPPORTED" => "REQUEST_HEADERS_UNSUPPORTED",
+        "PACKAGE_MANAGER_UNSUPPORTED" => "PACKAGE_MANAGER_UNSUPPORTED",
+        "PACKAGE_LIST_FAILED" => "PACKAGE_LIST_FAILED",
+        "PACKAGE_INSTALL_FAILED" => "PACKAGE_INSTALL_FAILED",
+        "PACKAGE_UPDATE_FAILED" => "PACKAGE_UPDATE_FAILED",
+        "PACKAGE_UPDATE_CHECK_FAILED" => "PACKAGE_UPDATE_CHECK_FAILED",
+        "PACKAGE_REMOVE_FAILED" => "PACKAGE_REMOVE_FAILED",
+        "PACKAGE_NOT_FOUND" => "PACKAGE_NOT_FOUND",
+        "RESOURCE_LIST_UNSUPPORTED" => "RESOURCE_LIST_UNSUPPORTED",
+        "RESOURCE_LIST_FAILED" => "RESOURCE_LIST_FAILED",
         _ => return None,
     })
 }
@@ -964,7 +1124,7 @@ mod tests {
 
     use super::*;
 
-    const HELLO: &str = r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions","models","session-history","session-configuration","tool-status","background-sessions","thinking-stream","queue","request-header-profiles"]}"#;
+    const HELLO: &str = r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions","models","session-history","session-configuration","tool-status","background-sessions","thinking-stream","queue","request-header-profiles","packages","resources"]}"#;
 
     struct MockTransport {
         reads: Arc<Mutex<VecDeque<Result<String, AppError>>>>,
@@ -1283,6 +1443,75 @@ mod tests {
                 "model": {"provider": "openai", "id": "gpt"},
                 "thinkingLevel": "high"
             })
+        );
+    }
+
+    #[test]
+    fn sends_typed_package_and_resource_requests() {
+        let transport = MockTransport::new([
+            Ok(HELLO),
+            Ok(
+                r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":[{"source":"npm:pi-test","scope":"global","kind":"npm","installedPath":"C:\\agent\\pi-test","filtered":false,"enabled":true}]}"#,
+            ),
+            Ok(
+                r#"{"v":1,"kind":"response","id":"rust-2","ok":true,"data":[{"source":"npm:pi-test","scope":"global","kind":"npm","installedPath":"C:\\agent\\pi-test","filtered":false,"enabled":false}]}"#,
+            ),
+            Ok(
+                r#"{"v":1,"kind":"response","id":"rust-3","ok":true,"data":[{"source":"npm:pi-test","displayName":"Pi Test","type":"npm","scope":"global"}]}"#,
+            ),
+            Ok(
+                r#"{"v":1,"kind":"response","id":"rust-4","ok":true,"data":[{"kind":"skill","name":"review","path":"C:\\work\\.pi\\skills\\review\\SKILL.md","source":"npm:pi-test"}]}"#,
+            ),
+        ]);
+        let writes = transport.writes.clone();
+        let supervisor = connect(transport);
+
+        assert!(supervisor.list_packages(Path::new(r"C:\work")).unwrap()[0].enabled);
+        assert!(
+            !supervisor
+                .set_package_enabled(
+                    Path::new(r"C:\work"),
+                    "npm:pi-test",
+                    &PackageScope::Global,
+                    false,
+                )
+                .unwrap()[0]
+                .enabled
+        );
+        assert_eq!(
+            supervisor
+                .check_package_updates(Path::new(r"C:\work"))
+                .unwrap()[0]
+                .display_name,
+            "Pi Test"
+        );
+        assert_eq!(
+            supervisor.list_resources(Path::new(r"C:\work")).unwrap()[0].kind,
+            "skill"
+        );
+
+        let frames: Vec<Value> = writes
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|frame| serde_json::from_str(frame).unwrap())
+            .collect();
+        assert_eq!(
+            frames,
+            [
+                json!({"v": 1, "id": "rust-1", "op": "package.list", "cwd": r"C:\work"}),
+                json!({
+                    "v": 1,
+                    "id": "rust-2",
+                    "op": "package.set-enabled",
+                    "cwd": r"C:\work",
+                    "source": "npm:pi-test",
+                    "scope": "global",
+                    "enabled": false
+                }),
+                json!({"v": 1, "id": "rust-3", "op": "package.check-updates", "cwd": r"C:\work"}),
+                json!({"v": 1, "id": "rust-4", "op": "resource.list", "cwd": r"C:\work"}),
+            ]
         );
     }
 

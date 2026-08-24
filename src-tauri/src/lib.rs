@@ -57,6 +57,13 @@ pub fn run() {
             commands::runtime::agent_list_sessions,
             commands::runtime::agent_open_session,
             commands::runtime::agent_list_models,
+            commands::runtime::agent_list_packages,
+            commands::runtime::agent_install_package,
+            commands::runtime::agent_set_package_enabled,
+            commands::runtime::agent_remove_package,
+            commands::runtime::agent_update_package,
+            commands::runtime::agent_check_package_updates,
+            commands::runtime::agent_list_resources,
             commands::runtime::agent_configure_session,
             commands::runtime::agent_prompt,
             commands::runtime::agent_clear_queue,
@@ -66,7 +73,10 @@ pub fn run() {
             commands::workspace::workspace_get_state,
             commands::workspace::workspace_remember,
             commands::workspace::workspace_remove_recent,
-            commands::workspace::workspace_ensure_conversation
+            commands::workspace::workspace_ensure_conversation,
+            commands::workspace::workspace_reveal,
+            commands::workspace::workspace_get_worktree_options,
+            commands::workspace::workspace_create_worktree
         ])
         .run(tauri::generate_context!())
         .expect("启动 Pi Desktop 的 Tauri Runtime 失败");

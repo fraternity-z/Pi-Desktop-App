@@ -301,6 +301,131 @@ describe("PiSessionRuntime", () => {
     ).toThrowError(expect.objectContaining<Partial<RuntimeError>>({ code: "REQUEST_HEADERS_UNSUPPORTED" }));
   });
 
+  it("通过官方 SDK 管理插件、启用状态、更新与资源清单", async () => {
+    const sessionMock = createSessionMock();
+    const reloadSession = vi.fn(async () => undefined);
+    sessionMock.session.reload = reloadSession;
+    const sdk = sdkReturning(sessionMock);
+    let globalPackages: unknown[] = ["npm:pi-global"];
+    let projectPackages: unknown[] = ["./local-plugin"];
+    const settingsManager = {
+      getGlobalSettings: () => ({ packages: globalPackages }),
+      getProjectSettings: () => ({ packages: projectPackages }),
+      setPackages: vi.fn((packages: unknown[]) => {
+        globalPackages = packages;
+      }),
+      setProjectPackages: vi.fn((packages: unknown[]) => {
+        projectPackages = packages;
+      }),
+    };
+    const listConfiguredPackages = vi.fn(() => [
+      {
+        source: "npm:pi-global",
+        scope: "user",
+        installedPath: "C:\\agent\\git\\pi-global",
+        filtered: false,
+      },
+      {
+        source: "./local-plugin",
+        scope: "project",
+        installedPath: "C:\\work\\.pi\\local-plugin",
+        filtered: true,
+      },
+    ]);
+    const installAndPersist = vi.fn(async () => undefined);
+    const removeAndPersist = vi.fn(async () => true);
+    const update = vi.fn(async () => undefined);
+    const checkForAvailableUpdates = vi.fn(async () => [
+      {
+        source: "npm:pi-global",
+        displayName: "Pi Global",
+        type: "npm",
+        scope: "user",
+      },
+    ]);
+    sdk.SettingsManager = { create: vi.fn(() => settingsManager) };
+    sdk.DefaultPackageManager = class {
+      listConfiguredPackages = listConfiguredPackages;
+      installAndPersist = installAndPersist;
+      removeAndPersist = removeAndPersist;
+      update = update;
+      checkForAvailableUpdates = checkForAvailableUpdates;
+    };
+    const reloadResource = vi.fn(async () => undefined);
+    sdk.DefaultResourceLoader = class {
+      reload = reloadResource;
+      getExtensions = () => ({
+        extensions: [
+          {
+            path: "C:\\work\\.pi\\extensions\\review.ts",
+            sourceInfo: { source: "./local-plugin" },
+          },
+        ],
+      });
+      getSkills = () => ({
+        skills: [
+          {
+            name: "review",
+            filePath: "C:\\work\\.pi\\skills\\review\\SKILL.md",
+            sourceInfo: { source: "./local-plugin" },
+          },
+        ],
+      });
+      getPrompts = () => ({ prompts: [] });
+      getThemes = () => ({ themes: [{ name: "plain", path: "C:\\agent\\themes\\plain.json" }] });
+      getAgentsFiles = () => ({ agentsFiles: [{ path: "C:\\work\\AGENTS.md" }] });
+    };
+    const runtime = new PiSessionRuntime(sdk, "C:\\agent");
+    await runtime.createSession("C:\\work");
+
+    await expect(runtime.listPackages("C:\\work")).resolves.toEqual([
+      expect.objectContaining({ source: "npm:pi-global", scope: "global", kind: "npm", enabled: true }),
+      expect.objectContaining({ source: "./local-plugin", scope: "project", kind: "local", enabled: true }),
+    ]);
+    await runtime.setPackageEnabled("C:\\work", "npm:pi-global", "global", false);
+    expect(settingsManager.setPackages).toHaveBeenCalledWith([
+      expect.objectContaining({ source: "npm:pi-global", autoload: false }),
+    ]);
+    await expect(runtime.listPackages("C:\\work")).resolves.toEqual([
+      expect.objectContaining({ source: "npm:pi-global", enabled: false }),
+      expect.objectContaining({ source: "./local-plugin", enabled: true }),
+    ]);
+    await runtime.setPackageEnabled("C:\\work", "npm:pi-global", "global", true);
+    await runtime.installPackage("C:\\work", "npm:pi-extra", "project");
+    expect(installAndPersist).toHaveBeenCalledWith("npm:pi-extra", { local: true });
+    await runtime.removePackage("C:\\work", "./local-plugin", "project");
+    expect(removeAndPersist).toHaveBeenCalledWith("C:\\work\\.pi\\local-plugin", {
+      local: true,
+    });
+    await runtime.updatePackage("C:\\work", "npm:pi-global");
+    expect(update).toHaveBeenCalledWith("npm:pi-global");
+    await expect(runtime.checkPackageUpdates("C:\\work")).resolves.toEqual([
+      {
+        source: "npm:pi-global",
+        displayName: "Pi Global",
+        type: "npm",
+        scope: "global",
+      },
+    ]);
+    await expect(runtime.listResources("C:\\work")).resolves.toEqual([
+      {
+        kind: "extension",
+        name: "review.ts",
+        path: "C:\\work\\.pi\\extensions\\review.ts",
+        source: "./local-plugin",
+      },
+      {
+        kind: "skill",
+        name: "review",
+        path: "C:\\work\\.pi\\skills\\review\\SKILL.md",
+        source: "./local-plugin",
+      },
+      { kind: "theme", name: "plain", path: "C:\\agent\\themes\\plain.json" },
+      { kind: "context", name: "AGENTS.md", path: "C:\\work\\AGENTS.md" },
+    ]);
+    expect(reloadSession).toHaveBeenCalledTimes(5);
+  });
+
   it("打开持久会话、恢复富文本历史并保留此前会话", async () => {
     const first = createSessionMock("first");
     const opened = createSessionMock("opened", {

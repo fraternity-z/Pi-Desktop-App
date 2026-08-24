@@ -24,6 +24,13 @@ export const BRIDGE_OPERATIONS = [
   "ping",
   "health",
   "model.list",
+  "package.list",
+  "package.install",
+  "package.set-enabled",
+  "package.remove",
+  "package.update",
+  "package.check-updates",
+  "resource.list",
   "request-headers.configure",
   "session.create",
   "session.list",
@@ -48,12 +55,15 @@ export const BRIDGE_CAPABILITIES = [
   "thinking-stream",
   "queue",
   "request-header-profiles",
+  "packages",
+  "resources",
 ] as const;
 
 export type BridgeOperation = (typeof BRIDGE_OPERATIONS)[number];
 export type BridgeCapability = (typeof BRIDGE_CAPABILITIES)[number];
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export type PromptStreamingBehavior = "steer" | "followUp";
+export type PackageScope = "global" | "project";
 
 export interface ModelSelection {
   provider: string;
@@ -67,6 +77,21 @@ interface RequestBase {
 
 export type BridgeRequest =
   | (RequestBase & { op: "ping" | "health" | "model.list" | "session.list" | "shutdown" })
+  | (RequestBase & { op: "package.list" | "package.check-updates" | "resource.list"; cwd: string })
+  | (RequestBase & {
+      op: "package.install" | "package.remove";
+      cwd: string;
+      source: string;
+      scope: PackageScope;
+    })
+  | (RequestBase & {
+      op: "package.set-enabled";
+      cwd: string;
+      source: string;
+      scope: PackageScope;
+      enabled: boolean;
+    })
+  | (RequestBase & { op: "package.update"; cwd: string; source?: string })
   | (RequestBase & { op: "request-headers.configure" } & RequestHeaderSettings)
   | (RequestBase & { op: "session.create"; cwd: string })
   | (RequestBase & { op: "session.open"; sessionPath: string })
@@ -205,6 +230,21 @@ function readRequestHeaderSettings(value: Record<string, unknown>): RequestHeade
   return { enabled: value.enabled, client: value.client as RequestHeaderClient };
 }
 
+function requireAbsolutePath(value: Record<string, unknown>, field: string): string {
+  const path = requireString(value, field, 4096);
+  if (!isAbsolute(path)) {
+    throw new ProtocolError("INVALID_REQUEST", `${field} 必须为绝对路径`);
+  }
+  return path;
+}
+
+function readPackageScope(value: Record<string, unknown>): PackageScope {
+  if (value.scope !== "global" && value.scope !== "project") {
+    throw new ProtocolError("INVALID_REQUEST", "scope 必须为 global 或 project");
+  }
+  return value.scope;
+}
+
 export function parseRequest(line: string): BridgeRequest {
   if (Buffer.byteLength(line, "utf8") > MAX_FRAME_BYTES) {
     throw new ProtocolError("FRAME_TOO_LARGE", "协议帧超过 1 MiB 限制");
@@ -251,18 +291,57 @@ export function parseRequest(line: string): BridgeRequest {
         op: "request-headers.configure",
         ...readRequestHeaderSettings(value),
       };
-    case "session.create": {
-      const cwd = requireString(value, "cwd", 4096);
-      if (!isAbsolute(cwd)) {
-        throw new ProtocolError("INVALID_REQUEST", "cwd 必须为绝对路径");
+    case "package.list":
+    case "package.check-updates":
+    case "resource.list":
+      return {
+        v: PROTOCOL_VERSION,
+        id,
+        op: value.op as "package.list" | "package.check-updates" | "resource.list",
+        cwd: requireAbsolutePath(value, "cwd"),
+      };
+    case "package.install":
+    case "package.remove": {
+      return {
+        v: PROTOCOL_VERSION,
+        id,
+        op: value.op as "package.install" | "package.remove",
+        cwd: requireAbsolutePath(value, "cwd"),
+        source: requireString(value, "source", 4096),
+        scope: readPackageScope(value),
+      };
+    }
+    case "package.set-enabled": {
+      if (typeof value.enabled !== "boolean") {
+        throw new ProtocolError("INVALID_REQUEST", "enabled 必须为布尔值");
       }
+      return {
+        v: PROTOCOL_VERSION,
+        id,
+        op: "package.set-enabled",
+        cwd: requireAbsolutePath(value, "cwd"),
+        source: requireString(value, "source", 4096),
+        scope: readPackageScope(value),
+        enabled: value.enabled,
+      };
+    }
+    case "package.update": {
+      const source =
+        value.source === undefined ? undefined : requireString(value, "source", 4096);
+      return {
+        v: PROTOCOL_VERSION,
+        id,
+        op: "package.update",
+        cwd: requireAbsolutePath(value, "cwd"),
+        ...(source === undefined ? {} : { source }),
+      };
+    }
+    case "session.create": {
+      const cwd = requireAbsolutePath(value, "cwd");
       return { v: PROTOCOL_VERSION, id, op: "session.create", cwd };
     }
     case "session.open": {
-      const sessionPath = requireString(value, "sessionPath", 4096);
-      if (!isAbsolute(sessionPath)) {
-        throw new ProtocolError("INVALID_REQUEST", "sessionPath 必须为绝对路径");
-      }
+      const sessionPath = requireAbsolutePath(value, "sessionPath");
       return { v: PROTOCOL_VERSION, id, op: "session.open", sessionPath };
     }
     case "session.configure": {

@@ -134,8 +134,9 @@ pub async fn agent_prompt(
     session_id: String,
     text: String,
     streaming_behavior: Option<PromptStreamingBehavior>,
+    active_tools: Option<Vec<String>>,
 ) -> Result<u64, AppError> {
-    runtime.prompt(session_id, text, streaming_behavior)
+    runtime.prompt(session_id, text, streaming_behavior, active_tools)
 }
 
 #[tauri::command]

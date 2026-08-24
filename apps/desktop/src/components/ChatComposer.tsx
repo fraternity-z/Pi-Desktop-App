@@ -1,4 +1,15 @@
-import { ArrowUp, Check, ChevronDown, Folder, LoaderCircle, Square } from "lucide-react";
+import {
+  ArrowUp,
+  Check,
+  ChevronDown,
+  Folder,
+  LoaderCircle,
+  Shield,
+  ShieldAlert,
+  ShieldCheck,
+  ShieldOff,
+  Square,
+} from "lucide-react";
 import {
   useEffect,
   useLayoutEffect,
@@ -15,12 +26,14 @@ import { createPortal } from "react-dom";
 
 import type {
   AgentModel,
+  AgentTool,
   PromptStreamingBehavior,
   QueuedMessages,
   SessionConfiguration,
   ThinkingLevel,
 } from "../ipc/agent";
 import type { AgentEventConnection, ChatPhase } from "../stores/useChatSession";
+import type { ToolPermissionMode } from "../stores/useToolPermissions";
 import { ComposerQueueCard } from "./ComposerQueueCard";
 
 interface ChatComposerProps {
@@ -34,9 +47,15 @@ interface ChatComposerProps {
   canSend: boolean;
   queuedMessages: QueuedMessages;
   queuePaused: boolean;
+  permissionMode: ToolPermissionMode;
+  availableTools: AgentTool[];
+  selectedToolNames: string[];
+  defaultToolNames: string[];
   onDraftChange: (value: string) => void;
   onModelChange: (provider: string, id: string) => void;
   onThinkingLevelChange: (level: ThinkingLevel) => void;
+  onUseDefaultTools: () => void;
+  onToolSelectionChange: (toolNames: string[]) => void;
   onSend: (event?: FormEvent, behavior?: PromptStreamingBehavior) => void;
   onClearQueue: () => void;
   onAbort: () => void;
@@ -53,9 +72,15 @@ export function ChatComposer({
   canSend,
   queuedMessages,
   queuePaused,
+  permissionMode,
+  availableTools,
+  selectedToolNames,
+  defaultToolNames,
   onDraftChange,
   onModelChange,
   onThinkingLevelChange,
+  onUseDefaultTools,
+  onToolSelectionChange,
   onSend,
   onClearQueue,
   onAbort,
@@ -63,9 +88,10 @@ export function ChatComposer({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const menuRootRef = useRef<HTMLDivElement>(null);
   const floatingMenuRef = useRef<HTMLDivElement>(null);
+  const permissionTriggerRef = useRef<HTMLButtonElement>(null);
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const thinkingTriggerRef = useRef<HTMLButtonElement>(null);
-  const [openMenu, setOpenMenu] = useState<"model" | "thinking" | null>(null);
+  const [openMenu, setOpenMenu] = useState<"permission" | "model" | "thinking" | null>(null);
   const streaming = phase === "streaming";
   const disabled = eventConnection !== "ready";
   const modelDisabled = disabled || streaming || configuring || models.length === 0 || !configuration;
@@ -75,7 +101,17 @@ export function ChatComposer({
     configuring ||
     !configuration ||
     configuration.availableThinkingLevels.length <= 1;
+  const permissionDisabled = disabled || streaming || configuring || availableTools.length === 0;
   const modelGroups = useMemo(() => groupModelsByProvider(models), [models]);
+  const selectedToolSet = useMemo(() => new Set(selectedToolNames), [selectedToolNames]);
+  const allToolsSelected =
+    availableTools.length > 0 && availableTools.every((tool) => selectedToolSet.has(tool.name));
+  const noToolsSelected = selectedToolNames.length === 0;
+  const permissionState = getPermissionState(
+    permissionMode,
+    availableTools.length,
+    selectedToolNames.length,
+  );
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -124,10 +160,22 @@ export function ChatComposer({
   }, [openMenu]);
 
   useEffect(() => {
-    if (disabled || configuring) {
+    if (disabled || configuring || streaming) {
       setOpenMenu(null);
     }
-  }, [configuring, disabled]);
+  }, [configuring, disabled, streaming]);
+
+  function toggleTool(toolName: string) {
+    const nextSelection = new Set(selectedToolNames);
+    if (nextSelection.has(toolName)) {
+      nextSelection.delete(toolName);
+    } else {
+      nextSelection.add(toolName);
+    }
+    onToolSelectionChange(
+      availableTools.map((tool) => tool.name).filter((name) => nextSelection.has(name)),
+    );
+  }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (isImeCompositionEvent(event.nativeEvent)) {
@@ -162,24 +210,149 @@ export function ChatComposer({
           rows={1}
         />
 
-        <div className="composer-actions">
-          <div className="composer-context" aria-live="polite">
-            {streaming ? (
-              <>
-                <LoaderCircle className="spin" size={14} />
-                <span>Pi 正在处理</span>
-              </>
-            ) : configuring ? (
-              <>
-                <LoaderCircle className="spin" size={14} />
-                <span>正在应用配置</span>
-              </>
-            ) : (
-              <span>{eventConnection === "ready" ? "完全访问" : "正在连接"}</span>
-            )}
+        <div className="composer-actions" ref={menuRootRef}>
+          <div className="composer-context">
+            <div className="composer-picker composer-permission-picker">
+              <button
+                ref={permissionTriggerRef}
+                className="composer-access-trigger"
+                data-mode={permissionState.tone}
+                type="button"
+                disabled={permissionDisabled}
+                aria-label="选择工具权限"
+                aria-haspopup="menu"
+                aria-expanded={openMenu === "permission"}
+                aria-controls={openMenu === "permission" ? "composer-permission-menu" : undefined}
+                onClick={() =>
+                  setOpenMenu((current) => (current === "permission" ? null : "permission"))
+                }
+              >
+                {permissionState.tone === "full" ? (
+                  <ShieldAlert size={14} aria-hidden="true" />
+                ) : permissionState.tone === "none" ? (
+                  <ShieldOff size={14} aria-hidden="true" />
+                ) : permissionState.tone === "default" ? (
+                  <ShieldCheck size={14} aria-hidden="true" />
+                ) : (
+                  <Shield size={14} aria-hidden="true" />
+                )}
+                <span>{permissionState.label}</span>
+                <ChevronDown size={13} aria-hidden="true" />
+              </button>
+              {openMenu === "permission" && (
+                <AnchoredComposerMenu
+                  id="composer-permission-menu"
+                  anchor={permissionTriggerRef.current}
+                  menuRef={floatingMenuRef}
+                  className="composer-permission-menu"
+                  ariaLabel="工具权限"
+                >
+                  <p className="composer-menu-title">权限预设</p>
+                  <button
+                    className="composer-permission-row"
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={permissionMode === "default"}
+                    onClick={() => {
+                      setOpenMenu(null);
+                      onUseDefaultTools();
+                    }}
+                  >
+                    <ShieldCheck size={15} aria-hidden="true" />
+                    <span className="composer-permission-copy">
+                      <strong>默认权限</strong>
+                      <small>{formatToolCount(defaultToolNames.length)} · Pi SDK 默认</small>
+                    </span>
+                    {permissionMode === "default" && <Check size={14} aria-hidden="true" />}
+                  </button>
+                  <button
+                    className="composer-permission-row"
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={permissionMode === "custom" && allToolsSelected}
+                    onClick={() => {
+                      setOpenMenu(null);
+                      onToolSelectionChange(availableTools.map((tool) => tool.name));
+                    }}
+                  >
+                    <ShieldAlert size={15} aria-hidden="true" />
+                    <span className="composer-permission-copy">
+                      <strong>完全访问</strong>
+                      <small>{formatToolCount(availableTools.length)}</small>
+                    </span>
+                    {permissionMode === "custom" && allToolsSelected && (
+                      <Check size={14} aria-hidden="true" />
+                    )}
+                  </button>
+                  <button
+                    className="composer-permission-row"
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={permissionMode === "custom" && noToolsSelected}
+                    onClick={() => {
+                      setOpenMenu(null);
+                      onToolSelectionChange([]);
+                    }}
+                  >
+                    <ShieldOff size={15} aria-hidden="true" />
+                    <span className="composer-permission-copy">
+                      <strong>禁止工具</strong>
+                      <small>0 项工具</small>
+                    </span>
+                    {permissionMode === "custom" && noToolsSelected && (
+                      <Check size={14} aria-hidden="true" />
+                    )}
+                  </button>
+
+                  <div className="composer-menu-divider" role="separator" />
+                  <p className="composer-menu-title">工具权限</p>
+                  {availableTools.map((tool) => {
+                    const checked = selectedToolSet.has(tool.name);
+                    const toolLabel = getToolLabel(tool.name);
+                    return (
+                      <button
+                        className="composer-permission-row composer-tool-row"
+                        type="button"
+                        role="menuitemcheckbox"
+                        aria-checked={checked}
+                        key={tool.name}
+                        onClick={() => toggleTool(tool.name)}
+                      >
+                        <span className="composer-tool-check" aria-hidden="true">
+                          {checked && <Check size={12} />}
+                        </span>
+                        <span className="composer-permission-copy">
+                          <strong>{toolLabel}</strong>
+                          <small title={tool.description || tool.name}>
+                            {tool.name}
+                            {tool.description ? ` · ${tool.description}` : ""}
+                          </small>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </AnchoredComposerMenu>
+              )}
+            </div>
+
+            <div className="composer-operation-status" aria-live="polite">
+              {streaming ? (
+                <>
+                  <LoaderCircle className="spin" size={14} />
+                  <span>Pi 正在处理</span>
+                </>
+              ) : configuring ? (
+                <>
+                  <LoaderCircle className="spin" size={14} />
+                  <span>正在应用配置</span>
+                </>
+              ) : eventConnection !== "ready" ? (
+                <span>正在连接</span>
+              ) : null}
+            </div>
           </div>
 
-          <div className="composer-controls" ref={menuRootRef}>
+          <div className="composer-controls">
             <div className="composer-picker">
               <button
                 ref={modelTriggerRef}
@@ -410,6 +583,40 @@ function groupModelsByProvider(models: AgentModel[]): [string, AgentModel[]][] {
     groups.set(model.provider, [...(groups.get(model.provider) ?? []), model]);
   }
   return [...groups.entries()];
+}
+
+function getPermissionState(
+  mode: ToolPermissionMode,
+  availableCount: number,
+  selectedCount: number,
+): { label: string; tone: "default" | "full" | "none" | "custom" } {
+  if (mode === "default") {
+    return { label: "默认权限", tone: "default" };
+  }
+  if (selectedCount === 0) {
+    return { label: "禁止工具", tone: "none" };
+  }
+  if (availableCount > 0 && selectedCount === availableCount) {
+    return { label: "完全访问", tone: "full" };
+  }
+  return { label: `${selectedCount} 项工具`, tone: "custom" };
+}
+
+function formatToolCount(count: number): string {
+  return `${count} 项工具`;
+}
+
+function getToolLabel(name: string): string {
+  const labels: Record<string, string> = {
+    read: "读取文件",
+    bash: "运行命令",
+    edit: "编辑文件",
+    write: "写入文件",
+    grep: "搜索内容",
+    find: "查找文件",
+    ls: "浏览目录",
+  };
+  return labels[name] ?? name;
 }
 
 function thinkingLevelLabel(level: ThinkingLevel): string {

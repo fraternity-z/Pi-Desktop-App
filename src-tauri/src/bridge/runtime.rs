@@ -258,11 +258,18 @@ impl BridgeRuntime {
         session_id: String,
         text: String,
         streaming_behavior: Option<PromptStreamingBehavior>,
+        active_tools: Option<Vec<String>>,
     ) -> Result<u64, AppError> {
         ensure_valid_prompt(&text)?;
+        validate_active_tools(active_tools.as_deref())?;
         self.ensure_known_session(&session_id)?;
         self.with_supervisor(|supervisor| {
-            supervisor.prompt(&session_id, &text, streaming_behavior.as_ref())
+            supervisor.prompt(
+                &session_id,
+                &text,
+                streaming_behavior.as_ref(),
+                active_tools.as_deref(),
+            )
         })
     }
 
@@ -521,6 +528,31 @@ fn ensure_valid_prompt(text: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+fn validate_active_tools(active_tools: Option<&[String]>) -> Result<(), AppError> {
+    let Some(active_tools) = active_tools else {
+        return Ok(());
+    };
+    if active_tools.len() > 256 {
+        return Err(AppError::new(
+            "TOOL_SELECTION_INVALID",
+            "工具权限最多包含 256 个工具",
+        ));
+    }
+    let mut names = std::collections::HashSet::new();
+    if active_tools.iter().any(|name| {
+        name.trim().is_empty()
+            || name.chars().count() > 128
+            || name.contains(['\r', '\n', '\0'])
+            || !names.insert(name)
+    }) {
+        return Err(AppError::new(
+            "TOOL_SELECTION_INVALID",
+            "工具权限包含无效或重复的工具名称",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_package_source(source: &str) -> Result<&str, AppError> {
     let source = source.trim();
     if source.is_empty() || source.chars().count() > 4096 || source.contains(['\r', '\n', '\0']) {
@@ -693,6 +725,27 @@ mod tests {
     }
 
     #[test]
+    fn validates_active_tool_boundaries() {
+        assert_eq!(validate_active_tools(Some(&[])), Ok(()));
+        assert_eq!(
+            validate_active_tools(Some(&["read".to_owned(), "edit".to_owned()])),
+            Ok(())
+        );
+        assert_eq!(
+            validate_active_tools(Some(&["read".to_owned(), "read".to_owned()]))
+                .expect_err("重复工具必须被拒绝")
+                .code,
+            "TOOL_SELECTION_INVALID"
+        );
+        assert_eq!(
+            validate_active_tools(Some(&["bad\nname".to_owned()]))
+                .expect_err("换行工具名必须被拒绝")
+                .code,
+            "TOOL_SELECTION_INVALID"
+        );
+    }
+
+    #[test]
     fn validates_package_source_boundaries() {
         assert_eq!(validate_package_source("npm:pi-test"), Ok("npm:pi-test"));
         assert_eq!(
@@ -754,6 +807,22 @@ mod tests {
                 .code,
             "SESSION_PATH_INVALID"
         );
+    }
+
+    #[test]
+    fn reports_missing_formal_session_file() {
+        let missing = std::env::temp_dir().join(format!(
+            "pi-desktop-missing-session-{}-{}.jsonl",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("系统时间必须有效")
+                .as_nanos()
+        ));
+        let error = canonical_session_path(&missing).expect_err("缺失的正式会话文件必须被拒绝");
+
+        assert_eq!(error.code, "SESSION_PATH_INVALID");
+        assert_eq!(error.message, "会话文件不存在或无法访问");
     }
 
     #[test]

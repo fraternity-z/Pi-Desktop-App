@@ -33,6 +33,17 @@ describe("parseRequest", () => {
       },
     ],
     [
+      '{"v":1,"id":"r-3-tools","op":"prompt","sessionId":"s-1","text":"safe","activeTools":["read","edit"]}',
+      {
+        v: 1,
+        id: "r-3-tools",
+        op: "prompt",
+        sessionId: "s-1",
+        text: "safe",
+        activeTools: ["read", "edit"],
+      },
+    ],
+    [
       '{"v":1,"id":"r-3c","op":"queue.clear","sessionId":"s-1"}',
       { v: 1, id: "r-3c", op: "queue.clear", sessionId: "s-1" },
     ],
@@ -144,6 +155,14 @@ describe("parseRequest", () => {
       "INVALID_REQUEST",
       '{"v":1,"id":"r-1","op":"prompt","sessionId":"s-1","text":"hello","streamingBehavior":"later"}',
     ],
+    [
+      "INVALID_REQUEST",
+      '{"v":1,"id":"r-1","op":"prompt","sessionId":"s-1","text":"hello","activeTools":["read","read"]}',
+    ],
+    [
+      "INVALID_REQUEST",
+      '{"v":1,"id":"r-1","op":"prompt","sessionId":"s-1","text":"hello","activeTools":"read"}',
+    ],
     ["INVALID_REQUEST", '{"v":1,"id":"r-1","op":"session.open","sessionPath":"relative"}'],
     ["INVALID_REQUEST", '{"v":1,"id":"r-1","op":"session.configure","sessionId":"s-1"}'],
     [
@@ -213,6 +232,7 @@ describe("outbound frames", () => {
         "session-history",
         "session-configuration",
         "tool-status",
+        "tool-permissions",
         "background-sessions",
         "thinking-stream",
         "queue",

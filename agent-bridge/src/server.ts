@@ -102,7 +102,12 @@ export class BridgeServer {
           });
           break;
         case "prompt":
-          await this.runtime.prompt(request.sessionId, request.text, request.streamingBehavior);
+          await this.runtime.prompt(
+            request.sessionId,
+            request.text,
+            request.streamingBehavior,
+            request.activeTools,
+          );
           data = { finalSeq: this.sequence };
           break;
         case "queue.clear":

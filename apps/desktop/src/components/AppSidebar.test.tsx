@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
 
-import type { AgentSessionSummary } from "../ipc/agent";
+import type { SessionListItem } from "../stores/useChatSession";
 import type { RuntimeStatusController } from "../stores/useRuntimeStatus";
 import { AppSidebar, clampSidebarWidth, threadTitle } from "./AppSidebar";
 
@@ -18,7 +18,7 @@ const readyRuntime: RuntimeStatusController = {
   refresh: vi.fn(),
 };
 
-const savedSession: AgentSessionSummary = {
+const savedSession: SessionListItem = {
   id: "saved",
   path: "C:\\agent\\sessions\\saved.jsonl",
   cwd: "C:\\projects\\alpha",
@@ -27,6 +27,7 @@ const savedSession: AgentSessionSummary = {
   modified: "2026-08-20T09:00:00.000Z",
   messageCount: 2,
   firstMessage: "检查类型错误",
+  lifecycle: "persisted",
 };
 
 type SidebarProps = ComponentProps<typeof AppSidebar>;
@@ -36,7 +37,7 @@ function sidebarProps(overrides: Partial<SidebarProps> = {}): SidebarProps {
     open: true,
     width: 300,
     activeCwd: "C:\\projects\\alpha",
-    activeSessionPath: savedSession.path,
+    activeSessionId: savedSession.id,
     activeView: "chat",
     sessions: [savedSession],
     recentWorkspaces: ["C:\\projects\\alpha"],
@@ -200,7 +201,7 @@ describe("AppSidebar", () => {
       <AppSidebar
         {...sidebarProps({
           activeCwd: "C:\\projects\\empty",
-          activeSessionPath: null,
+          activeSessionId: null,
           sessions: [],
           recentWorkspaces: ["C:\\projects\\empty"],
           runningSessionIds: [],
@@ -216,7 +217,7 @@ describe("AppSidebar", () => {
       <AppSidebar
         {...sidebarProps({
           activeCwd: "",
-          activeSessionPath: null,
+          activeSessionId: null,
           sessions: [],
           recentWorkspaces: [],
           runningSessionIds: [],
@@ -240,7 +241,7 @@ describe("AppSidebar", () => {
       firstMessage: `会话 ${index}`,
       modified: `2026-08-2${index}T09:00:00.000Z`,
     }));
-    const props = sidebarProps({ sessions, activeSessionPath: sessions[0].path });
+    const props = sidebarProps({ sessions, activeSessionId: sessions[0].id });
     render(<AppSidebar {...props} />);
 
     fireEvent.click(screen.getByRole("button", { name: "搜索" }));
@@ -386,5 +387,33 @@ describe("AppSidebar", () => {
     expect(
       threadTitle({ ...savedSession, id: "empty", name: null, firstMessage: "" }, {}),
     ).toBe("未命名会话");
+  });
+
+  it("正常展示并选择未绑定项目和文件路径的草稿会话", async () => {
+    const draft: SessionListItem = {
+      id: "draft:1",
+      path: null,
+      cwd: "",
+      name: null,
+      created: "2026-08-24T08:00:00.000Z",
+      modified: "2026-08-24T08:00:00.000Z",
+      messageCount: 0,
+      firstMessage: "",
+      lifecycle: "draft",
+    };
+    const props = sidebarProps({
+      activeCwd: "",
+      activeSessionId: draft.id,
+      sessions: [draft],
+      recentWorkspaces: [],
+      runningSessionIds: [],
+    });
+
+    render(<AppSidebar {...props} />);
+
+    const row = await screen.findByTitle("未命名会话");
+    expect(row).toHaveAttribute("aria-current", "page");
+    fireEvent.click(row);
+    expect(props.onSelectSession).toHaveBeenCalledWith(draft);
   });
 });

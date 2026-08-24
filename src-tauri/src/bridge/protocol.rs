@@ -76,6 +76,13 @@ pub struct AgentModel {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTool {
+    pub name: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum PackageScope {
     Global,
@@ -161,6 +168,12 @@ pub struct SessionConfiguration {
     pub model: Option<AgentModel>,
     pub thinking_level: String,
     pub available_thinking_levels: Vec<String>,
+    #[serde(default)]
+    pub available_tools: Vec<AgentTool>,
+    #[serde(default)]
+    pub active_tool_names: Vec<String>,
+    #[serde(default)]
+    pub default_tool_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -228,6 +241,7 @@ pub fn validate_hello(hello: &BridgeHello) -> Result<(), AppError> {
         "session-history",
         "session-configuration",
         "tool-status",
+        "tool-permissions",
         "background-sessions",
         "thinking-stream",
         "queue",
@@ -401,11 +415,15 @@ pub fn validate_event(event: &BridgeEvent) -> Result<(), AppError> {
                 .as_ref()
                 .and_then(serde_json::Value::as_object)
                 .filter(|data| {
-                    data.len() == 3
+                    (data.len() == 3 || data.len() == 6)
                         && data.contains_key("model")
                         && data.contains_key("thinkingLevel")
                         && data.contains_key("availableThinkingLevels")
                         && valid_model_value(data.get("model"))
+                        && (data.len() == 3
+                            || (data.contains_key("availableTools")
+                                && data.contains_key("activeToolNames")
+                                && data.contains_key("defaultToolNames")))
                 });
             let configuration = event
                 .data
@@ -450,6 +468,17 @@ fn valid_session_configuration(configuration: &SessionConfiguration) -> bool {
             && !model.name.trim().is_empty()
             && model.name.len() <= 256
     });
+    let available_names: std::collections::HashSet<&str> = configuration
+        .available_tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect();
+    let tools_valid = configuration.available_tools.len() <= 256
+        && available_names.len() == configuration.available_tools.len()
+        && configuration
+            .available_tools
+            .iter()
+            .all(|tool| valid_tool_name(&tool.name) && tool.description.chars().count() <= 1_024);
     model_valid
         && THINKING_LEVELS.contains(&configuration.thinking_level.as_str())
         && !configuration.available_thinking_levels.is_empty()
@@ -457,6 +486,26 @@ fn valid_session_configuration(configuration: &SessionConfiguration) -> bool {
             .available_thinking_levels
             .iter()
             .all(|level| THINKING_LEVELS.contains(&level.as_str()))
+        && tools_valid
+        && valid_tool_selection(&configuration.active_tool_names, &available_names)
+        && valid_tool_selection(&configuration.default_tool_names, &available_names)
+}
+
+fn valid_tool_selection(
+    names: &[String],
+    available_names: &std::collections::HashSet<&str>,
+) -> bool {
+    if names.len() > 256 {
+        return false;
+    }
+    let mut unique = std::collections::HashSet::new();
+    names.iter().all(|name| {
+        valid_tool_name(name) && available_names.contains(name.as_str()) && unique.insert(name)
+    })
+}
+
+fn valid_tool_name(name: &str) -> bool {
+    !name.trim().is_empty() && name.chars().count() <= 128 && !name.contains(['\r', '\n', '\0'])
 }
 
 fn valid_bounded_text(value: Option<&serde_json::Value>, maximum_length: usize) -> bool {
@@ -553,6 +602,7 @@ mod tests {
         "session-history",
         "session-configuration",
         "tool-status",
+        "tool-permissions",
         "background-sessions",
         "thinking-stream",
         "queue",
@@ -581,7 +631,7 @@ mod tests {
     #[test]
     fn deserializes_bridge_json_shape() {
         let value: BridgeHello = serde_json::from_str(
-            r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions","models","session-history","session-configuration","tool-status","background-sessions","thinking-stream","queue","request-header-profiles","packages","resources"]}"#,
+            r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions","models","session-history","session-configuration","tool-status","tool-permissions","background-sessions","thinking-stream","queue","request-header-profiles","packages","resources"]}"#,
         )
         .expect("Bridge hello JSON 必须可反序列化");
 
@@ -732,6 +782,32 @@ mod tests {
         assert_eq!(
             validate_event(&invalid_configuration)
                 .expect_err("无效会话配置事件必须失败")
+                .code,
+            "BRIDGE_EVENT_INVALID"
+        );
+    }
+
+    #[test]
+    fn validates_sdk_tool_configuration_and_legacy_payloads() {
+        let current: BridgeEvent = serde_json::from_str(
+            r#"{"v":1,"kind":"event","seq":1,"sessionId":"s-1","name":"session.configurationChanged","data":{"model":null,"thinkingLevel":"off","availableThinkingLevels":["off"],"availableTools":[{"name":"read","description":"Read files"},{"name":"bash","description":"Run commands"}],"activeToolNames":["read"],"defaultToolNames":["read","bash"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(validate_event(&current), Ok(()));
+
+        let legacy: BridgeEvent = serde_json::from_str(
+            r#"{"v":1,"kind":"event","seq":1,"sessionId":"s-1","name":"session.configurationChanged","data":{"model":null,"thinkingLevel":"off","availableThinkingLevels":["off"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(validate_event(&legacy), Ok(()));
+
+        let invalid: BridgeEvent = serde_json::from_str(
+            r#"{"v":1,"kind":"event","seq":1,"sessionId":"s-1","name":"session.configurationChanged","data":{"model":null,"thinkingLevel":"off","availableThinkingLevels":["off"],"availableTools":[{"name":"read","description":"Read files"}],"activeToolNames":["bash"],"defaultToolNames":["read"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            validate_event(&invalid)
+                .expect_err("未知活动工具必须失败")
                 .code,
             "BRIDGE_EVENT_INVALID"
         );

@@ -445,6 +445,7 @@ impl BridgeSupervisor {
         session_id: &str,
         text: &str,
         streaming_behavior: Option<&PromptStreamingBehavior>,
+        active_tools: Option<&[String]>,
     ) -> Result<u64, AppError> {
         let mut fields = serde_json::Map::from_iter([
             ("sessionId".to_owned(), Value::String(session_id.to_owned())),
@@ -456,6 +457,13 @@ impl BridgeSupervisor {
                 serde_json::to_value(streaming_behavior).map_err(|_| {
                     AppError::new("BRIDGE_REQUEST_INVALID", "无法序列化流式消息行为")
                 })?,
+            );
+        }
+        if let Some(active_tools) = active_tools {
+            fields.insert(
+                "activeTools".to_owned(),
+                serde_json::to_value(active_tools)
+                    .map_err(|_| AppError::new("BRIDGE_REQUEST_INVALID", "无法序列化工具权限"))?,
             );
         }
         self.request("prompt", Value::Object(fields), DEFAULT_PROMPT_TIMEOUT)?
@@ -838,6 +846,9 @@ fn public_remote_error_code(code: &str) -> Option<&'static str> {
         "MODEL_NOT_FOUND" => "MODEL_NOT_FOUND",
         "MODEL_UPDATE_FAILED" => "MODEL_UPDATE_FAILED",
         "THINKING_LEVEL_UPDATE_FAILED" => "THINKING_LEVEL_UPDATE_FAILED",
+        "TOOL_PERMISSIONS_UNSUPPORTED" => "TOOL_PERMISSIONS_UNSUPPORTED",
+        "TOOL_SELECTION_INVALID" => "TOOL_SELECTION_INVALID",
+        "TOOL_PERMISSION_UPDATE_FAILED" => "TOOL_PERMISSION_UPDATE_FAILED",
         "PROMPT_FAILED" => "PROMPT_FAILED",
         "QUEUE_CLEAR_FAILED" => "QUEUE_CLEAR_FAILED",
         "ABORT_FAILED" => "ABORT_FAILED",
@@ -1124,7 +1135,7 @@ mod tests {
 
     use super::*;
 
-    const HELLO: &str = r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions","models","session-history","session-configuration","tool-status","background-sessions","thinking-stream","queue","request-header-profiles","packages","resources"]}"#;
+    const HELLO: &str = r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions","models","session-history","session-configuration","tool-status","tool-permissions","background-sessions","thinking-stream","queue","request-header-profiles","packages","resources"]}"#;
 
     struct MockTransport {
         reads: Arc<Mutex<VecDeque<Result<String, AppError>>>>,
@@ -1386,10 +1397,37 @@ mod tests {
         let supervisor = connect(transport);
 
         let error = supervisor
-            .prompt("s-1", "hello", None)
+            .prompt("s-1", "hello", None, None)
             .expect_err("prompt 响应必须包含最终事件序号");
 
         assert_eq!(error.code, "BRIDGE_PROMPT_RESPONSE_INVALID");
+    }
+
+    #[test]
+    fn sends_active_tools_with_prompt() {
+        let transport = MockTransport::new([
+            Ok(HELLO),
+            Ok(r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":{"finalSeq":0}}"#),
+        ]);
+        let writes = transport.writes.clone();
+        let supervisor = connect(transport);
+        let tools = vec!["read".to_owned(), "edit".to_owned()];
+
+        supervisor
+            .prompt("s-1", "inspect", None, Some(&tools))
+            .expect("prompt 应携带工具权限");
+
+        assert_eq!(
+            serde_json::from_str::<Value>(&writes.lock().unwrap()[0]).unwrap(),
+            json!({
+                "v": 1,
+                "id": "rust-1",
+                "op": "prompt",
+                "sessionId": "s-1",
+                "text": "inspect",
+                "activeTools": ["read", "edit"]
+            })
+        );
     }
 
     #[test]
@@ -1551,7 +1589,8 @@ mod tests {
         let supervisor = Arc::new(connect(transport));
 
         let prompt_supervisor = supervisor.clone();
-        let prompt = thread::spawn(move || prompt_supervisor.prompt("s-1", "slow task", None));
+        let prompt =
+            thread::spawn(move || prompt_supervisor.prompt("s-1", "slow task", None, None));
         wait_for_writes(&writes, 1);
 
         let abort_supervisor = supervisor.clone();

@@ -9,6 +9,8 @@ import {
 export const PROTOCOL_VERSION = 1 as const;
 export const MAX_FRAME_BYTES = 1024 * 1024;
 export const MAX_PROMPT_CHARS = 200_000;
+export const MAX_ACTIVE_TOOLS = 256;
+export const MAX_TOOL_NAME_CHARS = 128;
 
 export const THINKING_LEVELS = [
   "off",
@@ -51,6 +53,7 @@ export const BRIDGE_CAPABILITIES = [
   "session-history",
   "session-configuration",
   "tool-status",
+  "tool-permissions",
   "background-sessions",
   "thinking-stream",
   "queue",
@@ -106,6 +109,7 @@ export type BridgeRequest =
       sessionId: string;
       text: string;
       streamingBehavior?: PromptStreamingBehavior;
+      activeTools?: string[];
     })
   | (RequestBase & { op: "queue.clear"; sessionId: string })
   | (RequestBase & { op: "abort"; sessionId: string });
@@ -215,6 +219,31 @@ function readStreamingBehavior(
     throw new ProtocolError("INVALID_REQUEST", "streamingBehavior 必须为 steer 或 followUp");
   }
   return value.streamingBehavior;
+}
+
+function readActiveTools(value: Record<string, unknown>): string[] | undefined {
+  if (value.activeTools === undefined) return undefined;
+  if (!Array.isArray(value.activeTools) || value.activeTools.length > MAX_ACTIVE_TOOLS) {
+    throw new ProtocolError(
+      "INVALID_REQUEST",
+      `activeTools 必须为不超过 ${MAX_ACTIVE_TOOLS} 项的数组`,
+    );
+  }
+
+  const names = new Set<string>();
+  for (const item of value.activeTools) {
+    if (
+      typeof item !== "string" ||
+      item.length === 0 ||
+      item.length > MAX_TOOL_NAME_CHARS ||
+      /[\r\n\0]/.test(item) ||
+      names.has(item)
+    ) {
+      throw new ProtocolError("INVALID_REQUEST", "activeTools 包含无效或重复的工具名称");
+    }
+    names.add(item);
+  }
+  return [...names];
 }
 
 function readRequestHeaderSettings(value: Record<string, unknown>): RequestHeaderSettings {
@@ -361,6 +390,7 @@ export function parseRequest(line: string): BridgeRequest {
     }
     case "prompt": {
       const streamingBehavior = readStreamingBehavior(value);
+      const activeTools = readActiveTools(value);
       return {
         v: PROTOCOL_VERSION,
         id,
@@ -368,6 +398,7 @@ export function parseRequest(line: string): BridgeRequest {
         sessionId: requireString(value, "sessionId"),
         text: requireString(value, "text", MAX_PROMPT_CHARS),
         ...(streamingBehavior === undefined ? {} : { streamingBehavior }),
+        ...(activeTools === undefined ? {} : { activeTools }),
       };
     }
     case "queue.clear":

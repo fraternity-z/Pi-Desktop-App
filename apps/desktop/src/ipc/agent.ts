@@ -17,6 +17,11 @@ export interface AgentModel {
   reasoning: boolean;
 }
 
+export interface AgentTool {
+  name: string;
+  description: string;
+}
+
 export interface AgentMessageSummary {
   role: "user" | "assistant" | "thinking" | "tool" | "system";
   content: string;
@@ -30,6 +35,9 @@ export interface SessionConfiguration {
   model: AgentModel | null;
   thinkingLevel: ThinkingLevel;
   availableThinkingLevels: ThinkingLevel[];
+  availableTools: AgentTool[];
+  activeToolNames: string[];
+  defaultToolNames: string[];
 }
 
 export interface AgentSession {
@@ -202,11 +210,13 @@ export async function promptAgent(
   sessionId: string,
   text: string,
   streamingBehavior?: PromptStreamingBehavior,
+  activeTools?: string[],
 ): Promise<number> {
   return invoke<number>("agent_prompt", {
     sessionId,
     text,
     ...(streamingBehavior === undefined ? {} : { streamingBehavior }),
+    ...(activeTools === undefined ? {} : { activeTools }),
   });
 }
 
@@ -298,15 +308,56 @@ function hasValidEventData(name: AgentEventName, data: unknown): boolean {
     );
   }
   if (name === "session.configurationChanged") {
+    const keys = isRecord(data) ? Object.keys(data) : [];
     return (
       isRecord(data) &&
-      Object.keys(data).length === 3 &&
+      (keys.length === 3 || keys.length === 6) &&
       "model" in data &&
       "thinkingLevel" in data &&
-      "availableThinkingLevels" in data
+      "availableThinkingLevels" in data &&
+      (keys.length === 3 ||
+        (isAgentToolList(data.availableTools) &&
+          isToolNameList(data.activeToolNames) &&
+          isToolNameList(data.defaultToolNames)))
     );
   }
   return data === undefined || data === null;
+}
+
+function isAgentToolList(value: unknown): value is AgentTool[] {
+  if (!Array.isArray(value) || value.length > 256) return false;
+  const names = new Set<string>();
+  for (const tool of value) {
+    if (
+      !isRecord(tool) ||
+      Object.keys(tool).length !== 2 ||
+      !isBoundedText(tool.name, MAX_TOOL_NAME_CHARS) ||
+      /[\r\n\0]/.test(tool.name) ||
+      names.has(tool.name) ||
+      typeof tool.description !== "string" ||
+      tool.description.length > 1_024
+    ) {
+      return false;
+    }
+    names.add(tool.name);
+  }
+  return true;
+}
+
+function isToolNameList(value: unknown): value is string[] {
+  if (!Array.isArray(value) || value.length > 256) return false;
+  const names = new Set<string>();
+  for (const name of value) {
+    if (
+      !isBoundedText(name, MAX_TOOL_NAME_CHARS) ||
+      /[\r\n\0]/.test(name) ||
+      names.has(name)
+    ) {
+      return false;
+    }
+    names.add(name);
+  }
+  return true;
 }
 
 function isQueuedMessageList(value: unknown): value is string[] {

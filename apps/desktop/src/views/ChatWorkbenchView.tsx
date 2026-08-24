@@ -16,7 +16,7 @@ import { ChatComposer } from "../components/ChatComposer";
 import { ConversationTimeline } from "../components/ConversationTimeline";
 import { RuntimeStatusControl } from "../components/RuntimeStatusControl";
 import { SettingsSidebar, type SettingsSectionId } from "../components/SettingsSidebar";
-import type { AgentSessionSummary, PromptStreamingBehavior } from "../ipc/agent";
+import type { PromptStreamingBehavior } from "../ipc/agent";
 import { selectProjectDirectory } from "../ipc/project";
 import {
   createWorkspaceWorktree,
@@ -25,10 +25,11 @@ import {
 } from "../ipc/workspace";
 import { useAppPreferences } from "../stores/useAppPreferences";
 import { useAgentEcosystem } from "../stores/useAgentEcosystem";
-import { useChatSession } from "../stores/useChatSession";
+import { useChatSession, type SessionListItem } from "../stores/useChatSession";
 import { useRequestHeaderSettings } from "../stores/useRequestHeaderSettings";
 import { useRuntimeStatus } from "../stores/useRuntimeStatus";
 import { useSidebarPreferences } from "../stores/useSidebarPreferences";
+import { useToolPermissions } from "../stores/useToolPermissions";
 import { PackageManagerView, ResourcesView } from "./EcosystemViews";
 import { SettingsView } from "./SettingsView";
 import appIconUrl from "../../../../src-tauri/icons/64x64.png";
@@ -36,6 +37,7 @@ import appIconUrl from "../../../../src-tauri/icons/64x64.png";
 export function ChatWorkbenchView() {
   const runtime = useRuntimeStatus();
   const session = useChatSession();
+  const toolPermissions = useToolPermissions(session.configuration);
   const ecosystem = useAgentEcosystem();
   const sidebarPreferences = useSidebarPreferences();
   const requestHeaders = useRequestHeaderSettings();
@@ -62,7 +64,7 @@ export function ChatWorkbenchView() {
   const eventChannelReady = session.eventConnection === "ready";
   const hasSession = session.sessionId !== null;
   const workspaceName = getWorkspaceName(session.cwd);
-  const activeSession = session.sessions.find((item) => item.path === session.sessionPath);
+  const activeSession = session.sessions.find((item) => item.id === session.sessionId);
   const conversationTitle = activeSession
     ? threadTitle(activeSession, sidebarPreferences.preferences.threadAliases)
     : workspaceName;
@@ -171,8 +173,8 @@ export function ChatWorkbenchView() {
     }
   }
 
-  async function openSession(selected: AgentSessionSummary) {
-    if (await session.openSession(selected.path)) {
+  async function openSession(selected: SessionListItem) {
+    if (await session.openSession(selected)) {
       closeSidebarAfterNavigation();
     }
   }
@@ -239,7 +241,7 @@ export function ChatWorkbenchView() {
     shouldStickToBottom.current = true;
     setAtConversationBottom(true);
     setDraft("");
-    void session.sendPrompt(prompt, behavior).then((sent) => {
+    void session.sendPrompt(prompt, behavior, toolPermissions.promptToolNames).then((sent) => {
       if (!sent) setDraft((current) => current || prompt);
     });
   }
@@ -271,7 +273,7 @@ export function ChatWorkbenchView() {
           open={sidebarOpen}
           width={sidebarWidth}
           activeCwd={session.cwd}
-          activeSessionPath={session.sessionPath}
+          activeSessionId={session.sessionId}
           activeView={activeView === "packages" || activeView === "resources" ? activeView : "chat"}
           sessions={session.sessions}
           recentWorkspaces={session.recentWorkspaces}
@@ -439,7 +441,11 @@ export function ChatWorkbenchView() {
                     <img className="empty-product-logo" src={appIconUrl} alt="" aria-hidden="true" />
                     <h2>开始对话</h2>
                     {preferences.showSuggestions && (
-                      <p>直接输入即可，Pi 会在 {workspaceName} 的项目上下文中执行。</p>
+                      <p>
+                        {session.cwd
+                          ? `直接输入即可，Pi 会在 ${workspaceName} 的项目上下文中执行。`
+                          : "直接输入即可开始对话。"}
+                      </p>
                     )}
                   </div>
                 ) : (
@@ -465,9 +471,15 @@ export function ChatWorkbenchView() {
                   canSend={canSend}
                   queuedMessages={session.queuedMessages}
                   queuePaused={session.queuePaused}
+                  permissionMode={toolPermissions.mode}
+                  availableTools={toolPermissions.availableTools}
+                  selectedToolNames={toolPermissions.selectedToolNames}
+                  defaultToolNames={toolPermissions.defaultToolNames}
                   onDraftChange={setDraft}
                   onModelChange={(provider, id) => void session.updateModel(provider, id)}
                   onThinkingLevelChange={(level) => void session.updateThinkingLevel(level)}
+                  onUseDefaultTools={toolPermissions.useDefaultTools}
+                  onToolSelectionChange={toolPermissions.setCustomTools}
                   onSend={sendPrompt}
                   onClearQueue={() => void session.clearQueue()}
                   onAbort={() => void session.abort()}
@@ -681,7 +693,7 @@ function ProjectDialog({
 function getWorkspaceName(path: string): string {
   const normalized = path.trim().replace(/[\\/]+$/, "");
   if (!normalized) {
-    return "未选择项目";
+    return "未绑定项目";
   }
   return normalized.split(/[\\/]/).at(-1) || normalized;
 }

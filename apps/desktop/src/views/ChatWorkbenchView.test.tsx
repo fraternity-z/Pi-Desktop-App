@@ -78,6 +78,9 @@ const readyRuntime = {
   error: null,
 };
 
+const defaultToolNames = ["read", "bash", "edit", "write"];
+const availableTools = defaultToolNames.map((name) => ({ name, description: `${name} tool` }));
+
 const defaultSession: AgentSession = {
   sessionId: "s-1",
   cwd: "C:\\work",
@@ -87,6 +90,9 @@ const defaultSession: AgentSession = {
     model: { provider: "openai", id: "gpt", name: "GPT", reasoning: true },
     thinkingLevel: "medium",
     availableThinkingLevels: ["off", "medium", "high"],
+    availableTools,
+    activeToolNames: defaultToolNames,
+    defaultToolNames,
   },
   messages: [],
   queuedMessages: { steering: [], followUp: [] },
@@ -172,14 +178,17 @@ describe("ChatWorkbenchView", () => {
     await addProject("C:\\work");
 
     expect(await screen.findByLabelText("发送给 Pi 的消息")).toBeInTheDocument();
-    expect(createAgentSession).toHaveBeenCalledWith("C:\\work");
+    expect(createAgentSession).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText("发送给 Pi 的消息"), {
       target: { value: "检查项目" },
     });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
 
-    expect(await screen.findByText("检查项目")).toBeInTheDocument();
-    expect(promptAgent).toHaveBeenCalledWith("s-1", "检查项目", undefined);
+    await waitFor(() => expect(createAgentSession).toHaveBeenCalledWith("C:\\work"));
+    await waitFor(() =>
+      expect(promptAgent).toHaveBeenCalledWith("s-1", "检查项目", undefined, defaultToolNames),
+    );
+    expect(await screen.findAllByText("检查项目")).not.toHaveLength(0);
     act(() => {
       emitAgentEvent?.(
         agentEvent("tool.started", { toolCallId: "tool-1", toolName: "read_file" }, 1),
@@ -214,6 +223,9 @@ describe("ChatWorkbenchView", () => {
     const composer = await screen.findByLabelText("发送给 Pi 的消息");
     fireEvent.change(composer, { target: { value: "长任务" } });
     fireEvent.keyDown(composer, { key: "Enter", shiftKey: false });
+    await waitFor(() =>
+      expect(promptAgent).toHaveBeenCalledWith("s-1", "长任务", undefined, defaultToolNames),
+    );
     act(() => {
       emitAgentEvent?.(
         agentEvent("tool.started", { toolCallId: "tool-1", toolName: "bash" }, 1),
@@ -232,14 +244,29 @@ describe("ChatWorkbenchView", () => {
 
     fireEvent.change(composer, { target: { value: "开始任务" } });
     fireEvent.keyDown(composer, { key: "Enter" });
+    await waitFor(() =>
+      expect(promptAgent).toHaveBeenCalledWith("s-1", "开始任务", undefined, defaultToolNames),
+    );
     fireEvent.change(composer, { target: { value: "调整方向" } });
     fireEvent.keyDown(composer, { key: "Enter" });
     fireEvent.change(composer, { target: { value: "完成后总结" } });
     fireEvent.keyDown(composer, { key: "Enter", altKey: true });
 
-    expect(promptAgent).toHaveBeenNthCalledWith(1, "s-1", "开始任务", undefined);
-    expect(promptAgent).toHaveBeenNthCalledWith(2, "s-1", "调整方向", "steer");
-    expect(promptAgent).toHaveBeenNthCalledWith(3, "s-1", "完成后总结", "followUp");
+    expect(promptAgent).toHaveBeenNthCalledWith(
+      1,
+      "s-1",
+      "开始任务",
+      undefined,
+      defaultToolNames,
+    );
+    expect(promptAgent).toHaveBeenNthCalledWith(2, "s-1", "调整方向", "steer", undefined);
+    expect(promptAgent).toHaveBeenNthCalledWith(
+      3,
+      "s-1",
+      "完成后总结",
+      "followUp",
+      undefined,
+    );
     expect(screen.getByText("2 条排队")).toBeInTheDocument();
     expect(screen.getByText("调整方向")).toBeInTheDocument();
     expect(screen.getByText("完成后总结")).toBeInTheDocument();
@@ -281,6 +308,9 @@ describe("ChatWorkbenchView", () => {
     const { unmount } = render(<ChatWorkbenchView />);
     await screen.findByRole("status", { name: "状态正常" });
     await addProject("C:\\missing");
+    const composer = await screen.findByLabelText("发送给 Pi 的消息");
+    fireEvent.change(composer, { target: { value: "触发创建" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "WORKSPACE_PATH_INVALID: 工作区不存在",
@@ -412,6 +442,47 @@ describe("ChatWorkbenchView", () => {
     );
   });
 
+  it("将用户选择的 SDK 工具权限随提示提交并持久化", async () => {
+    vi.mocked(getWorkspaceState).mockResolvedValueOnce({
+      recentWorkspaces: ["C:\\work"],
+      lastWorkspace: null,
+      conversationHome: "C:\\Users\\me\\Documents\\Pix\\conversations",
+    });
+    vi.mocked(listAgentSessions).mockResolvedValueOnce([
+      {
+        id: "saved",
+        path: "C:\\agent\\sessions\\saved.jsonl",
+        cwd: "C:\\work",
+        name: "权限任务",
+        created: "2026-08-20T08:00:00.000Z",
+        modified: "2026-08-20T09:00:00.000Z",
+        messageCount: 1,
+        firstMessage: "saved prompt",
+      },
+    ]);
+    render(<ChatWorkbenchView />);
+
+    fireEvent.click(await screen.findByTitle("权限任务"));
+    await screen.findByText("saved prompt");
+    fireEvent.click(screen.getByRole("button", { name: "选择工具权限" }));
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /运行命令/ }));
+    fireEvent.change(screen.getByLabelText("发送给 Pi 的消息"), {
+      target: { value: "只读检查" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() =>
+      expect(promptAgent).toHaveBeenCalledWith("saved", "只读检查", undefined, [
+        "read",
+        "edit",
+        "write",
+      ]),
+    );
+    expect(window.localStorage.getItem("pi-desktop.tool-permissions.v1")).toContain(
+      '"mode":"custom"',
+    );
+  });
+
   it("任务完成但没有文本时展示明确空结果", async () => {
     vi.mocked(promptAgent).mockResolvedValue(0);
     render(<ChatWorkbenchView />);
@@ -440,13 +511,18 @@ describe("ChatWorkbenchView", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "新建对话" }));
 
+    const emptyTitle = await screen.findByRole("heading", { name: "开始对话" });
+    expect(emptyTitle.closest(".thread-body-empty")).not.toBeNull();
+    const composer = await screen.findByLabelText("发送给 Pi 的消息");
+    expect(ensureConversationWorkspace).not.toHaveBeenCalled();
+    expect(createAgentSession).not.toHaveBeenCalled();
+    fireEvent.change(composer, { target: { value: "开始纯对话" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
     await waitFor(() => expect(ensureConversationWorkspace).toHaveBeenCalledOnce());
     expect(createAgentSession).toHaveBeenCalledWith(
       "C:\\Users\\me\\Documents\\Pix\\conversations",
     );
-    const emptyTitle = await screen.findByRole("heading", { name: "开始对话" });
-    expect(emptyTitle.closest(".thread-body-empty")).not.toBeNull();
-    expect(await screen.findByLabelText("发送给 Pi 的消息")).toBeInTheDocument();
   });
 
   it("从侧栏进入插件与资源视图并保持数据计数同步", async () => {
@@ -569,6 +645,10 @@ describe("ChatWorkbenchView", () => {
         name: "work-1",
       }),
     );
+    expect(createAgentSession).not.toHaveBeenCalled();
+    const composer = await screen.findByLabelText("发送给 Pi 的消息");
+    fireEvent.change(composer, { target: { value: "检查工作树" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() => expect(createAgentSession).toHaveBeenCalledWith("C:\\worktrees\\work-1"));
   });
 });

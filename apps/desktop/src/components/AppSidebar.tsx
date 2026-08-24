@@ -39,7 +39,6 @@ import {
   type ReactNode,
 } from "react";
 
-import type { AgentSessionSummary } from "../ipc/agent";
 import type {
   CreatedWorktree,
   CreateWorktreeInput,
@@ -51,7 +50,7 @@ import {
   useSidebarPreferences,
   type SidebarSortMode,
 } from "../stores/useSidebarPreferences";
-import type { CatalogPhase, ChatPhase } from "../stores/useChatSession";
+import type { CatalogPhase, ChatPhase, SessionListItem } from "../stores/useChatSession";
 import type { RuntimeStatusController } from "../stores/useRuntimeStatus";
 import {
   FloatingMenu,
@@ -73,9 +72,9 @@ interface AppSidebarProps {
   open: boolean;
   width: number;
   activeCwd: string;
-  activeSessionPath: string | null;
+  activeSessionId: string | null;
   activeView: "chat" | "packages" | "resources";
-  sessions: AgentSessionSummary[];
+  sessions: SessionListItem[];
   recentWorkspaces: string[];
   conversationHome: string;
   runningSessionIds: string[];
@@ -93,7 +92,7 @@ interface AppSidebarProps {
   onLoadWorktreeOptions: (cwd: string) => Promise<WorktreeOptions>;
   onCreateWorktree: (input: CreateWorktreeInput) => Promise<CreatedWorktree>;
   onOpenCreatedWorktree: (cwd: string) => void | Promise<void>;
-  onSelectSession: (session: AgentSessionSummary) => void;
+  onSelectSession: (session: SessionListItem) => void;
   onRefresh: () => void;
   onOpenPackages: () => void;
   onOpenResources: () => void;
@@ -106,37 +105,37 @@ interface ProjectGroup {
   cwd: string;
   key: string;
   name: string;
-  sessions: AgentSessionSummary[];
+  sessions: SessionListItem[];
 }
 
 type SidebarMenu =
   | { kind: "organize"; point: MenuPoint }
   | { kind: "project"; point: MenuPoint; cwd: string }
-  | { kind: "thread"; point: MenuPoint; session: AgentSessionSummary }
-  | { kind: "move"; point: MenuPoint; session: AgentSessionSummary };
+  | { kind: "thread"; point: MenuPoint; session: SessionListItem }
+  | { kind: "move"; point: MenuPoint; session: SessionListItem };
 
 type SidebarMenuTarget =
   | { kind: "organize" }
   | { kind: "project"; cwd: string }
-  | { kind: "thread"; session: AgentSessionSummary }
-  | { kind: "move"; session: AgentSessionSummary };
+  | { kind: "thread"; session: SessionListItem }
+  | { kind: "move"; session: SessionListItem };
 
 type RenameTarget =
   | { kind: "project"; cwd: string; value: string }
-  | { kind: "thread"; session: AgentSessionSummary; value: string };
+  | { kind: "thread"; session: SessionListItem; value: string };
 
 type ConfirmTarget =
   | { kind: "archive-project"; cwd: string; name: string }
   | { kind: "remove-project"; cwd: string; name: string }
-  | { kind: "archive-thread"; session: AgentSessionSummary; name: string }
-  | { kind: "delete-thread"; session: AgentSessionSummary; name: string };
+  | { kind: "archive-thread"; session: SessionListItem; name: string }
+  | { kind: "delete-thread"; session: SessionListItem; name: string };
 
 export function AppSidebar(props: AppSidebarProps) {
   const {
     open,
     width,
     activeCwd,
-    activeSessionPath,
+    activeSessionId,
     activeView,
     sessions,
     recentWorkspaces,
@@ -198,8 +197,18 @@ export function AppSidebar(props: AppSidebarProps) {
     [preferences.archivedThreads, preferences.deletedThreads, sessions],
   );
   const allProjectPaths = useMemo(
-    () => collectProjectPaths(recentWorkspaces, activeCwd, conversationHome),
-    [activeCwd, conversationHome, recentWorkspaces],
+    () =>
+      collectProjectPaths(
+        [
+          ...recentWorkspaces,
+          ...sessions
+            .filter((session) => session.lifecycle !== "persisted")
+            .map((session) => session.cwd),
+        ],
+        activeCwd,
+        conversationHome,
+      ),
+    [activeCwd, conversationHome, recentWorkspaces, sessions],
   );
   const projectGroups = useMemo(
     () =>
@@ -322,7 +331,7 @@ export function AppSidebar(props: AppSidebarProps) {
     setMenu({ ...target, point: { x: event.clientX + 200, y: event.clientY } } as SidebarMenu);
   }
 
-  function chooseSession(session: AgentSessionSummary) {
+  function chooseSession(session: SessionListItem) {
     sidebar.markThreadUnread(threadKey(session), false);
     onSelectSession(session);
   }
@@ -518,17 +527,17 @@ export function AppSidebar(props: AppSidebarProps) {
   }
 
   function renderSession(
-    session: AgentSessionSummary,
+    session: SessionListItem,
     options: { indent: boolean; manual: boolean },
   ) {
     const id = threadKey(session);
     const pinned = preferences.pinnedThreads.includes(id);
     return (
       <SessionRow
-        key={session.path}
+        key={session.id}
         session={session}
         title={threadTitle(session, preferences.threadAliases)}
-        active={session.path === activeSessionPath && activeView === "chat"}
+        active={session.id === activeSessionId && activeView === "chat"}
         running={runningIds.has(session.id)}
         unread={preferences.unreadThreads.includes(id)}
         pinned={pinned}
@@ -1172,7 +1181,7 @@ function SessionRow({
   onDragEnd,
   onDrop,
 }: {
-  session: AgentSessionSummary;
+  session: SessionListItem;
   title: string;
   active: boolean;
   running: boolean;
@@ -1310,14 +1319,14 @@ function collectProjectPaths(
 
 function buildProjectGroups(
   paths: string[],
-  sessions: AgentSessionSummary[],
+  sessions: SessionListItem[],
   aliases: Record<string, string>,
   overrides: Record<string, string>,
 ): ProjectGroup[] {
   const groups = new Map(
     paths.map((cwd) => {
       const key = normalizeSidebarPath(cwd);
-      return [key, { cwd, key, name: aliases[key] || workspaceName(cwd), sessions: [] as AgentSessionSummary[] }];
+      return [key, { cwd, key, name: aliases[key] || workspaceName(cwd), sessions: [] as SessionListItem[] }];
     }),
   );
   for (const session of sessions) {
@@ -1345,11 +1354,11 @@ function sortProjects(
 }
 
 function sortThreads(
-  sessions: AgentSessionSummary[],
+  sessions: SessionListItem[],
   mode: SidebarSortMode,
   pinned: string[],
   manual: string[],
-): AgentSessionSummary[] {
+): SessionListItem[] {
   const pinRank = new Map(pinned.map((id, index) => [id, index]));
   const manualRank = new Map(manual.map((id, index) => [id, index]));
   return [...sessions].sort((left, right) => {
@@ -1384,7 +1393,7 @@ function filterProjects(
 }
 
 function sessionMatches(
-  session: AgentSessionSummary,
+  session: SessionListItem,
   needle: string,
   aliases: Record<string, string>,
 ): boolean {
@@ -1395,12 +1404,12 @@ function sessionMatches(
   );
 }
 
-function threadKey(session: AgentSessionSummary): string {
-  return session.id || session.path;
+function threadKey(session: SessionListItem): string {
+  return session.id;
 }
 
 export function threadTitle(
-  session: AgentSessionSummary,
+  session: SessionListItem,
   aliases: Record<string, string>,
 ): string {
   return aliases[threadKey(session)] || session.name || session.firstMessage || "未命名会话";

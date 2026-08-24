@@ -33,6 +33,7 @@ interface SessionMock {
   clearQueue: ReturnType<typeof vi.fn>;
   setModel: ReturnType<typeof vi.fn>;
   setThinkingLevel: ReturnType<typeof vi.fn>;
+  setActiveToolsByName: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
   unsubscribe: ReturnType<typeof vi.fn>;
   setStreaming(streaming: boolean): void;
@@ -48,12 +49,23 @@ function createSessionMock(
     streaming?: boolean;
     steering?: string[];
     followUp?: string[];
+    tools?: Array<{ name: string; description?: string }>;
+    activeTools?: string[];
   } = {},
 ): SessionMock {
   let listener: (event: unknown) => void = () => undefined;
   let currentModel = options.model ?? reasoningModel;
   let thinkingLevel = options.thinkingLevel ?? "medium";
   let isStreaming = options.streaming ?? false;
+  const tools =
+    options.tools ??
+    [
+      { name: "read", description: "Read files" },
+      { name: "bash", description: "Run shell commands" },
+      { name: "edit", description: "Edit files" },
+      { name: "write", description: "Write files" },
+    ];
+  let activeTools = options.activeTools ?? tools.map((tool) => tool.name);
   const prompt = vi.fn(async () => undefined);
   const abort = vi.fn(async () => undefined);
   const clearQueue = vi.fn();
@@ -64,6 +76,10 @@ function createSessionMock(
   });
   const setThinkingLevel = vi.fn((level: PiSessionLike["thinkingLevel"]) => {
     thinkingLevel = currentModel.reasoning ? level : "off";
+  });
+  const setActiveToolsByName = vi.fn((names: string[]) => {
+    const available = new Set(tools.map((tool) => tool.name));
+    activeTools = names.filter((name) => available.has(name));
   });
   const session: PiSessionLike = {
     sessionId,
@@ -87,6 +103,9 @@ function createSessionMock(
     setThinkingLevel,
     getAvailableThinkingLevels: () =>
       currentModel.reasoning ? ["off", "low", "medium", "high"] : ["off"],
+    getAllTools: () => tools,
+    getActiveToolNames: () => activeTools,
+    setActiveToolsByName,
     dispose,
     subscribe: vi.fn((nextListener: (event: unknown) => void) => {
       listener = nextListener;
@@ -101,6 +120,7 @@ function createSessionMock(
     clearQueue,
     setModel,
     setThinkingLevel,
+    setActiveToolsByName,
     dispose,
     unsubscribe,
     setStreaming: (streaming) => {
@@ -168,7 +188,15 @@ describe("PiSessionRuntime", () => {
         sessionId: "s-1",
         cwd: "C:\\work",
         modelFallbackMessage: "fallback",
-        configuration: expect.objectContaining({ thinkingLevel: "medium" }),
+        configuration: expect.objectContaining({
+          thinkingLevel: "medium",
+          availableTools: expect.arrayContaining([
+            { name: "read", description: "Read files" },
+            { name: "bash", description: "Run shell commands" },
+          ]),
+          activeToolNames: ["read", "bash", "edit", "write"],
+          defaultToolNames: ["read", "bash", "edit", "write"],
+        }),
       }),
     );
     expect(sdk.createAgentSession).toHaveBeenCalledWith(
@@ -243,6 +271,116 @@ describe("PiSessionRuntime", () => {
       { sessionId: "s-1", name: "agent.settled" },
     ]);
     expect(JSON.stringify(events)).not.toContain("secret");
+  });
+
+  it("在首条非排队提示前应用 SDK 工具权限并广播有效配置", async () => {
+    const sessionMock = createSessionMock();
+    const runtime = new PiSessionRuntime(sdkReturning(sessionMock), "C:\\agent");
+    const events: RuntimeEvent[] = [];
+    runtime.subscribe((event) => events.push(event));
+    await runtime.createSession("C:\\work");
+
+    await runtime.prompt("s-1", "inspect", undefined, ["read", "edit"]);
+
+    expect(sessionMock.setActiveToolsByName).toHaveBeenCalledWith(["read", "edit"]);
+    expect(sessionMock.prompt).toHaveBeenCalledWith("inspect", undefined);
+    expect(events).toContainEqual({
+      sessionId: "s-1",
+      name: "session.configurationChanged",
+      data: expect.objectContaining({
+        activeToolNames: ["read", "edit"],
+        defaultToolNames: ["read", "bash", "edit", "write"],
+      }),
+    });
+  });
+
+  it("拒绝未知工具、流式期间改权和不支持权限 API 的 SDK", async () => {
+    const regular = createSessionMock("regular");
+    const streaming = createSessionMock("streaming", { streaming: true });
+    const unsupported = createSessionMock("unsupported");
+    delete unsupported.session.getAllTools;
+    delete unsupported.session.getActiveToolNames;
+    delete unsupported.session.setActiveToolsByName;
+    const runtime = new PiSessionRuntime(
+      sdkReturning(regular, streaming, unsupported),
+      "C:\\agent",
+    );
+    await runtime.createSession("C:\\one");
+    await runtime.createSession("C:\\two");
+    await runtime.createSession("C:\\three");
+
+    await expect(runtime.prompt("regular", "hello", undefined, ["unknown"])).rejects.toEqual(
+      expect.objectContaining<Partial<RuntimeError>>({ code: "TOOL_SELECTION_INVALID" }),
+    );
+    await expect(runtime.prompt("streaming", "hello", "steer", ["read"])).rejects.toEqual(
+      expect.objectContaining<Partial<RuntimeError>>({ code: "SESSION_BUSY" }),
+    );
+    await expect(runtime.prompt("unsupported", "hello", undefined, [])).rejects.toEqual(
+      expect.objectContaining<Partial<RuntimeError>>({ code: "TOOL_PERMISSIONS_UNSUPPORTED" }),
+    );
+    expect(regular.prompt).not.toHaveBeenCalled();
+  });
+
+  it("SDK 工具清单读取异常时降级展示并返回稳定错误", async () => {
+    const failing = createSessionMock("tool-read-failure");
+    failing.session.getAllTools = () => {
+      throw new Error("token=secret");
+    };
+    const runtime = new PiSessionRuntime(sdkReturning(failing), "C:\\agent");
+
+    await expect(runtime.createSession("C:\\work")).resolves.toEqual(
+      expect.objectContaining({
+        configuration: expect.objectContaining({
+          availableTools: [],
+          activeToolNames: [],
+          defaultToolNames: [],
+        }),
+      }),
+    );
+    await expect(runtime.prompt("tool-read-failure", "hello", undefined, [])).rejects.toEqual(
+      expect.objectContaining<Partial<RuntimeError>>({
+        code: "TOOL_PERMISSION_UPDATE_FAILED",
+        message: "无法读取当前 Pi SDK 工具权限",
+      }),
+    );
+  });
+
+  it("不把仅分配预期路径但尚未落盘的活动会话暴露为正式目录项", async () => {
+    const sessionPath = "C:\\agent\\sessions\\work\\pending.jsonl";
+    const pending = createSessionMock("pending", { sessionFile: sessionPath });
+    const sdk = sdkReturning(pending);
+    const runtime = new PiSessionRuntime(sdk, "C:\\agent");
+    await runtime.createSession("C:\\work");
+
+    sdk.listAll.mockResolvedValueOnce([
+      {
+        id: "saved-other",
+        path: "C:\\agent\\sessions\\other\\saved.jsonl",
+        cwd: "C:\\other",
+        created: "2026-08-23T08:00:00.000Z",
+        modified: "2026-08-23T08:01:00.000Z",
+        messageCount: 2,
+        firstMessage: "saved",
+      },
+    ]);
+    await expect(runtime.listSessions()).resolves.toEqual([
+      expect.objectContaining({ id: "saved-other", cwd: "C:\\other" }),
+    ]);
+
+    sdk.listAll.mockResolvedValueOnce([
+      {
+        id: "pending",
+        path: sessionPath,
+        cwd: "C:\\work",
+        created: "2026-08-24T08:00:00.000Z",
+        modified: "2026-08-24T08:01:00.000Z",
+        messageCount: 1,
+        firstMessage: "hello",
+      },
+    ]);
+    await expect(runtime.listSessions()).resolves.toEqual([
+      expect.objectContaining({ id: "pending", path: sessionPath, firstMessage: "hello" }),
+    ]);
   });
 
   it("通过隐藏内联扩展将最新请求头配置应用到既有会话", async () => {
@@ -495,6 +633,14 @@ describe("PiSessionRuntime", () => {
       model: { ...plainModel, name: "plain" },
       thinkingLevel: "off",
       availableThinkingLevels: ["off"],
+      availableTools: [
+        { name: "read", description: "Read files" },
+        { name: "bash", description: "Run shell commands" },
+        { name: "edit", description: "Edit files" },
+        { name: "write", description: "Write files" },
+      ],
+      activeToolNames: ["read", "bash", "edit", "write"],
+      defaultToolNames: ["read", "bash", "edit", "write"],
     });
     expect(sessionMock.setModel).toHaveBeenCalledWith(plainModel);
     expect(sessionMock.setThinkingLevel).toHaveBeenCalledWith("high");
@@ -686,6 +832,14 @@ describe("PiSessionRuntime", () => {
           model: null,
           thinkingLevel: "off",
           availableThinkingLevels: ["off"],
+          availableTools: [
+            { name: "read", description: "Read files" },
+            { name: "bash", description: "Run shell commands" },
+            { name: "edit", description: "Edit files" },
+            { name: "write", description: "Write files" },
+          ],
+          activeToolNames: ["read", "bash", "edit", "write"],
+          defaultToolNames: ["read", "bash", "edit", "write"],
         },
       }),
     );

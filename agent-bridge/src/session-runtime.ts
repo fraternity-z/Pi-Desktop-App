@@ -124,8 +124,16 @@ export interface PiSessionLike {
   setModel(model: PiModelLike): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): void;
   getAvailableThinkingLevels(): ThinkingLevel[];
+  getActiveToolNames?(): string[];
+  getAllTools?(): PiToolLike[];
+  setActiveToolsByName?(toolNames: string[]): void;
   reload?(): Promise<void>;
   dispose(): void;
+}
+
+interface PiToolLike {
+  name: string;
+  description?: string;
 }
 
 export interface PiSdkLike {
@@ -190,6 +198,14 @@ export interface SessionConfiguration {
   model: AgentModel | null;
   thinkingLevel: ThinkingLevel;
   availableThinkingLevels: ThinkingLevel[];
+  availableTools: AgentTool[];
+  activeToolNames: string[];
+  defaultToolNames: string[];
+}
+
+export interface AgentTool {
+  name: string;
+  description: string;
 }
 
 export interface CreatedAgentSession {
@@ -263,6 +279,7 @@ export interface SessionRuntime {
     sessionId: string,
     text: string,
     streamingBehavior?: PromptStreamingBehavior,
+    activeTools?: string[],
   ): Promise<void>;
   clearQueue(sessionId: string): Promise<void>;
   abort(sessionId: string): Promise<void>;
@@ -287,6 +304,7 @@ interface ManagedSession {
   unsubscribe: () => void;
   createdAt: string;
   lastActivityAt: string;
+  defaultToolNames: string[];
 }
 
 const MAX_HISTORY_MESSAGES = 200;
@@ -294,6 +312,8 @@ const MAX_HISTORY_CHARS = 400_000;
 const MAX_SUMMARY_CHARS = 240;
 const MAX_TOOL_CALL_ID_CHARS = 256;
 const MAX_TOOL_NAME_CHARS = 128;
+const MAX_TOOL_DESCRIPTION_CHARS = 1_024;
+const MAX_AVAILABLE_TOOLS = 256;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -767,17 +787,21 @@ export class PiSessionRuntime implements SessionRuntime {
         throw new RuntimeError("THINKING_LEVEL_UPDATE_FAILED", "无法更新思考强度");
       }
     }
-    return describeConfiguration(managed.session);
+    return describeConfiguration(managed.session, managed.defaultToolNames);
   }
 
   async prompt(
     sessionId: string,
     text: string,
     streamingBehavior?: PromptStreamingBehavior,
+    activeTools?: string[],
   ): Promise<void> {
     this.ensureOpen();
     try {
       const managed = this.requireSession(sessionId);
+      if (activeTools !== undefined) {
+        this.applyActiveTools(managed, activeTools);
+      }
       managed.lastActivityAt = new Date().toISOString();
       await managed.session.prompt(
         text,
@@ -915,12 +939,14 @@ export class PiSessionRuntime implements SessionRuntime {
     }
 
     const now = new Date().toISOString();
+    const defaultToolNames = readActiveToolNames(session);
     const managed = {
       cwd,
       session,
       unsubscribe,
       createdAt: now,
       lastActivityAt: now,
+      defaultToolNames,
       ...(resourceLoader ? { resourceLoader } : {}),
     };
     this.sessions.set(session.sessionId, managed);
@@ -945,6 +971,55 @@ export class PiSessionRuntime implements SessionRuntime {
       throw new RuntimeError("SESSION_NOT_FOUND", `找不到会话 ${sessionId}`);
     }
     return managed;
+  }
+
+  private applyActiveTools(managed: ManagedSession, requested: string[]): void {
+    const { session } = managed;
+    if (session.isStreaming) {
+      throw new RuntimeError("SESSION_BUSY", "Pi 正在处理任务，暂时无法更改工具权限");
+    }
+    if (
+      typeof session.getAllTools !== "function" ||
+      typeof session.getActiveToolNames !== "function" ||
+      typeof session.setActiveToolsByName !== "function"
+    ) {
+      throw new RuntimeError(
+        "TOOL_PERMISSIONS_UNSUPPORTED",
+        "当前 Pi SDK 不支持工具权限控制，请升级后重试",
+      );
+    }
+
+    let available: AgentTool[];
+    let current: string[];
+    try {
+      available = normalizeAvailableTools(session.getAllTools());
+      current = normalizeActiveToolNames(session.getActiveToolNames());
+    } catch {
+      throw new RuntimeError(
+        "TOOL_PERMISSION_UPDATE_FAILED",
+        "无法读取当前 Pi SDK 工具权限",
+      );
+    }
+    const availableNames = new Set(available.map((tool) => tool.name));
+    if (requested.some((name) => !availableNames.has(name))) {
+      throw new RuntimeError("TOOL_SELECTION_INVALID", "所选工具不在当前 Pi SDK 工具清单中");
+    }
+
+    if (sameStringSet(current, requested)) return;
+    try {
+      session.setActiveToolsByName(requested);
+      if (!sameStringSet(normalizeActiveToolNames(session.getActiveToolNames()), requested)) {
+        throw new Error("Pi SDK returned an incomplete tool selection");
+      }
+    } catch {
+      throw new RuntimeError("TOOL_PERMISSION_UPDATE_FAILED", "无法应用所选工具权限");
+    }
+    const event: RuntimeEvent = {
+      sessionId: session.sessionId,
+      name: "session.configurationChanged",
+      data: describeConfiguration(session, managed.defaultToolNames),
+    };
+    for (const listener of this.listeners) listener(event);
   }
 
   private forwardSdkEvent(session: PiSessionLike, event: unknown): void {
@@ -978,7 +1053,7 @@ export class PiSessionRuntime implements SessionRuntime {
       runtimeEvent = {
         sessionId: session.sessionId,
         name: "session.configurationChanged",
-        data: describeConfiguration(session),
+        data: describeConfiguration(session, managed?.defaultToolNames ?? readActiveToolNames(session)),
       };
     } else if (event.type === "message_update" && isRecord(event.assistantMessageEvent)) {
       const update = event.assistantMessageEvent;
@@ -1027,7 +1102,7 @@ function describeManagedSession(managed: ManagedSession): CreatedAgentSession {
     sessionId: managed.session.sessionId,
     cwd: managed.cwd,
     sessionPath: managed.session.sessionFile ?? null,
-    configuration: describeConfiguration(managed.session),
+    configuration: describeConfiguration(managed.session, managed.defaultToolNames),
     messages: summarizeMessages(managed.session.messages),
     queuedMessages: describeQueue(managed.session),
     streaming: managed.session.isStreaming,
@@ -1039,18 +1114,18 @@ function toLiveSessionSummary(
   disk: AgentSessionSummary | undefined,
 ): AgentSessionSummary | null {
   const path = managed.session.sessionFile;
-  if (!path) return null;
+  if (!path || !disk) return null;
   const messages = summarizeMessages(managed.session.messages);
   const firstMessage = messages.find((message) => message.role === "user")?.content ?? "";
   return {
     id: managed.session.sessionId,
     path,
     cwd: managed.cwd,
-    name: disk?.name ?? null,
-    created: disk?.created ?? managed.createdAt,
-    modified: managed.lastActivityAt > (disk?.modified ?? "") ? managed.lastActivityAt : disk!.modified,
-    messageCount: Math.max(disk?.messageCount ?? 0, messages.filter(isConversationMessage).length),
-    firstMessage: clipText(firstMessage || disk?.firstMessage, MAX_SUMMARY_CHARS),
+    name: disk.name,
+    created: disk.created,
+    modified: managed.lastActivityAt > disk.modified ? managed.lastActivityAt : disk.modified,
+    messageCount: Math.max(disk.messageCount, messages.filter(isConversationMessage).length),
+    firstMessage: clipText(firstMessage || disk.firstMessage, MAX_SUMMARY_CHARS),
   };
 }
 
@@ -1130,15 +1205,71 @@ function releaseSession(managed: ManagedSession): void {
   }
 }
 
-function describeConfiguration(session: PiSessionLike): SessionConfiguration {
+function describeConfiguration(
+  session: PiSessionLike,
+  defaultToolNames: string[],
+): SessionConfiguration {
   const available = session
     .getAvailableThinkingLevels()
     .filter((level): level is ThinkingLevel => THINKING_LEVELS.includes(level));
+  const availableTools = readAvailableTools(session);
+  const availableToolNames = new Set(availableTools.map((tool) => tool.name));
   return {
     model: session.model ? (toAgentModel(session.model)[0] ?? null) : null,
     thinkingLevel: THINKING_LEVELS.includes(session.thinkingLevel) ? session.thinkingLevel : "off",
     availableThinkingLevels: available.length > 0 ? available : ["off"],
+    availableTools,
+    activeToolNames: readActiveToolNames(session).filter((name) => availableToolNames.has(name)),
+    defaultToolNames: defaultToolNames.filter((name) => availableToolNames.has(name)),
   };
+}
+
+function readAvailableTools(session: PiSessionLike): AgentTool[] {
+  if (typeof session.getAllTools !== "function") return [];
+  try {
+    return normalizeAvailableTools(session.getAllTools());
+  } catch {
+    return [];
+  }
+}
+
+function normalizeAvailableTools(candidates: PiToolLike[]): AgentTool[] {
+  const tools: AgentTool[] = [];
+  const names = new Set<string>();
+  for (const candidate of candidates) {
+    if (tools.length >= MAX_AVAILABLE_TOOLS) break;
+    const name = readBoundedText(candidate?.name, MAX_TOOL_NAME_CHARS);
+    if (!name || names.has(name)) continue;
+    names.add(name);
+    const description =
+      typeof candidate.description === "string"
+        ? candidate.description.trim().slice(0, MAX_TOOL_DESCRIPTION_CHARS)
+        : "";
+    tools.push({ name, description });
+  }
+  return tools;
+}
+
+function readActiveToolNames(session: PiSessionLike): string[] {
+  if (typeof session.getActiveToolNames !== "function") return [];
+  try {
+    return normalizeActiveToolNames(session.getActiveToolNames());
+  } catch {
+    return [];
+  }
+}
+
+function normalizeActiveToolNames(candidates: string[]): string[] {
+  const names = new Set<string>();
+  for (const candidate of candidates) {
+    const name = readBoundedText(candidate, MAX_TOOL_NAME_CHARS);
+    if (name) names.add(name);
+  }
+  return [...names];
+}
+
+function sameStringSet(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value) => right.includes(value));
 }
 
 function toAgentModel(model: PiModelLike): AgentModel[] {

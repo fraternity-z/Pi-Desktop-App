@@ -32,7 +32,14 @@ function createRuntimeMock(): RuntimeMock {
     sessionId: "s-1",
     cwd: "C:\\work",
     sessionPath: null,
-    configuration: { model: null, thinkingLevel: "off" as const, availableThinkingLevels: ["off" as const] },
+    configuration: {
+      model: null,
+      thinkingLevel: "off" as const,
+      availableThinkingLevels: ["off" as const],
+      availableTools: [],
+      activeToolNames: [],
+      defaultToolNames: [],
+    },
       messages: [],
       queuedMessages: { steering: [], followUp: [] },
       streaming: false,
@@ -42,7 +49,14 @@ function createRuntimeMock(): RuntimeMock {
     sessionId: "s-2",
     cwd: "C:\\work",
     sessionPath: "C:\\agent\\sessions\\s.jsonl",
-    configuration: { model: null, thinkingLevel: "off" as const, availableThinkingLevels: ["off" as const] },
+    configuration: {
+      model: null,
+      thinkingLevel: "off" as const,
+      availableThinkingLevels: ["off" as const],
+      availableTools: [],
+      activeToolNames: [],
+      defaultToolNames: [],
+    },
       messages: [],
       queuedMessages: { steering: [], followUp: [] },
       streaming: false,
@@ -60,6 +74,9 @@ function createRuntimeMock(): RuntimeMock {
     model: null,
     thinkingLevel: "off" as const,
     availableThinkingLevels: ["off" as const],
+    availableTools: [],
+    activeToolNames: [],
+    defaultToolNames: [],
   }));
   const prompt = vi.fn(async () => undefined);
   const clearQueue = vi.fn(async () => undefined);
@@ -154,7 +171,7 @@ describe("BridgeServer", () => {
       expect.objectContaining({ id: "2", ok: true, data: { status: "ok", protocolVersion: 1 } }),
     );
     expect(runtimeMock.createSession).toHaveBeenCalledWith("C:\\work");
-    expect(runtimeMock.prompt).toHaveBeenCalledWith("s-1", "hello", undefined);
+    expect(runtimeMock.prompt).toHaveBeenCalledWith("s-1", "hello", undefined, undefined);
     expect(frames).toContainEqual(
       expect.objectContaining({ id: "4", ok: true, data: { finalSeq: 0 } }),
     );
@@ -180,8 +197,22 @@ describe("BridgeServer", () => {
       '{"v":1,"id":"follow","op":"prompt","sessionId":"s-1","text":"later","streamingBehavior":"followUp"}',
     );
 
-    expect(runtimeMock.prompt).toHaveBeenNthCalledWith(1, "s-1", "guide", "steer");
-    expect(runtimeMock.prompt).toHaveBeenNthCalledWith(2, "s-1", "later", "followUp");
+    expect(runtimeMock.prompt).toHaveBeenNthCalledWith(1, "s-1", "guide", "steer", undefined);
+    expect(runtimeMock.prompt).toHaveBeenNthCalledWith(2, "s-1", "later", "followUp", undefined);
+  });
+
+  it("将工具权限选择传递给运行时", async () => {
+    const { server, runtimeMock } = setup();
+    await server.handleLine(
+      '{"v":1,"id":"tools","op":"prompt","sessionId":"s-1","text":"inspect","activeTools":["read","edit"]}',
+    );
+
+    expect(runtimeMock.prompt).toHaveBeenCalledWith(
+      "s-1",
+      "inspect",
+      undefined,
+      ["read", "edit"],
+    );
   });
 
   it("路由插件与资源管理请求", async () => {

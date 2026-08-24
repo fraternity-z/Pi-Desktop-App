@@ -12,6 +12,8 @@ import {
   openAgentSession,
   promptAgent,
   type AgentEvent,
+  type AgentSession,
+  type AgentSessionSummary,
 } from "../ipc/agent";
 import {
   ensureConversationWorkspace,
@@ -40,6 +42,40 @@ vi.mock("../ipc/workspace", () => ({
 }));
 
 let nextSequence = 1;
+const defaultToolNames = ["read", "bash", "edit", "write"];
+const availableTools = defaultToolNames.map((name) => ({ name, description: `${name} tool` }));
+
+const savedSummary: AgentSessionSummary = {
+  id: "saved",
+  path: "C:\\agent\\sessions\\saved.jsonl",
+  cwd: "C:\\work",
+  name: null,
+  created: "2026-08-20T08:00:00.000Z",
+  modified: "2026-08-20T09:00:00.000Z",
+  messageCount: 1,
+  firstMessage: "saved prompt",
+};
+
+function agentSession(overrides: Partial<AgentSession> = {}): AgentSession {
+  return {
+    sessionId: "s-1",
+    cwd: "C:\\work",
+    sessionPath: "C:\\agent\\sessions\\s-1.jsonl",
+    modelFallbackMessage: "已切换到可用模型",
+    configuration: {
+      model: { provider: "openai", id: "gpt", name: "GPT", reasoning: true },
+      thinkingLevel: "medium",
+      availableThinkingLevels: ["off", "medium", "high"],
+      availableTools,
+      activeToolNames: defaultToolNames,
+      defaultToolNames,
+    },
+    messages: [],
+    queuedMessages: { steering: [], followUp: [] },
+    streaming: false,
+    ...overrides,
+  };
+}
 
 describe("useChatSession", () => {
   let emit: ((event: AgentEvent) => void) | undefined;
@@ -49,34 +85,23 @@ describe("useChatSession", () => {
     emit = undefined;
     nextSequence = 1;
     unlisten.mockReset();
-    vi.mocked(createAgentSession).mockReset().mockResolvedValue({
-      sessionId: "s-1",
-      cwd: "C:\\work",
-      sessionPath: "C:\\agent\\sessions\\s-1.jsonl",
-      modelFallbackMessage: "已切换到可用模型",
-      configuration: {
-        model: { provider: "openai", id: "gpt", name: "GPT", reasoning: true },
-        thinkingLevel: "medium",
-        availableThinkingLevels: ["off", "medium", "high"],
-      },
-      messages: [],
-      queuedMessages: { steering: [], followUp: [] },
-      streaming: false,
-    });
-    vi.mocked(openAgentSession).mockReset().mockResolvedValue({
-      sessionId: "saved",
-      cwd: "C:\\work",
-      sessionPath: "C:\\agent\\sessions\\saved.jsonl",
-      modelFallbackMessage: null,
-      configuration: {
-        model: { provider: "openai", id: "gpt", name: "GPT", reasoning: true },
-        thinkingLevel: "high",
-        availableThinkingLevels: ["off", "medium", "high"],
-      },
-      messages: [{ role: "user", content: "saved prompt" }],
-      queuedMessages: { steering: [], followUp: [] },
-      streaming: false,
-    });
+    vi.mocked(createAgentSession).mockReset().mockResolvedValue(agentSession());
+    vi.mocked(openAgentSession).mockReset().mockResolvedValue(
+      agentSession({
+        sessionId: "saved",
+        sessionPath: savedSummary.path,
+        modelFallbackMessage: null,
+        configuration: {
+          model: { provider: "openai", id: "gpt", name: "GPT", reasoning: true },
+          thinkingLevel: "high",
+          availableThinkingLevels: ["off", "medium", "high"],
+          availableTools,
+          activeToolNames: defaultToolNames,
+          defaultToolNames,
+        },
+        messages: [{ role: "user", content: "saved prompt" }],
+      }),
+    );
     vi.mocked(listAgentSessions).mockReset().mockResolvedValue([]);
     vi.mocked(listAgentModels).mockReset().mockResolvedValue([
       { provider: "openai", id: "gpt", name: "GPT", reasoning: true },
@@ -85,6 +110,9 @@ describe("useChatSession", () => {
       model: { provider: "openai", id: "gpt", name: "GPT", reasoning: true },
       thinkingLevel: "high",
       availableThinkingLevels: ["off", "medium", "high"],
+      availableTools,
+      activeToolNames: defaultToolNames,
+      defaultToolNames,
     });
     vi.mocked(promptAgent).mockReset().mockResolvedValue(0);
     vi.mocked(abortAgent).mockReset().mockResolvedValue(undefined);
@@ -115,7 +143,7 @@ describe("useChatSession", () => {
       });
   });
 
-  it("覆盖空输入、无会话和有效会话状态", async () => {
+  it("创建草稿时不触发后端或工作区绑定，并在首次发送时实体化", async () => {
     const { result } = renderHook(() => useChatSession());
     await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
 
@@ -126,33 +154,112 @@ describe("useChatSession", () => {
 
     await act(() => result.current.createSession(" C:\\work "));
     expect(result.current.phase).toBe("ready");
-    expect(result.current.modelFallbackMessage).toBe("已切换到可用模型");
     expect(result.current.cwd).toBe("C:\\work");
-    expect(result.current.configuration?.thinkingLevel).toBe("medium");
-    expect(createAgentSession).toHaveBeenCalledWith("C:\\work");
+    expect(result.current.sessionPath).toBeNull();
+    expect(result.current.configuration).toBeNull();
+    expect(result.current.sessions).toEqual([
+      expect.objectContaining({ id: expect.stringMatching(/^draft:/), lifecycle: "draft", path: null }),
+    ]);
+    expect(createAgentSession).not.toHaveBeenCalled();
+    expect(rememberWorkspace).not.toHaveBeenCalled();
 
     await act(() => result.current.sendPrompt("   "));
+    expect(createAgentSession).not.toHaveBeenCalled();
     await act(() => result.current.sendPrompt(" hello "));
-    expect(promptAgent).toHaveBeenCalledWith("s-1", "hello", undefined);
+    expect(createAgentSession).toHaveBeenCalledWith("C:\\work");
+    expect(promptAgent).toHaveBeenCalledWith("s-1", "hello", undefined, defaultToolNames);
+    expect(result.current.sessionId).toBe("s-1");
+    expect(result.current.sessionPath).toBe("C:\\agent\\sessions\\s-1.jsonl");
+    expect(result.current.modelFallbackMessage).toBe("已切换到可用模型");
+    expect(result.current.configuration?.thinkingLevel).toBe("medium");
     expect(result.current.messages).toHaveLength(1);
+    await waitFor(() => expect(rememberWorkspace).toHaveBeenCalledWith("C:\\work"));
 
     await act(() => result.current.abort());
     expect(abortAgent).toHaveBeenCalledWith("s-1");
   });
 
+  it("SDK 工具清单不可用时仍显式提交自定义禁止工具选择", async () => {
+    vi.mocked(createAgentSession).mockResolvedValueOnce(
+      agentSession({
+        configuration: {
+          model: null,
+          thinkingLevel: "off",
+          availableThinkingLevels: ["off"],
+          availableTools: [],
+          activeToolNames: [],
+          defaultToolNames: [],
+        },
+      }),
+    );
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:\\work"));
+
+    await act(() => result.current.sendPrompt("locked", undefined, []));
+
+    expect(promptAgent).toHaveBeenCalledWith("s-1", "locked", undefined, []);
+  });
+
+  it("草稿首次实体化期间拒绝重复发送且只创建一个后端会话", async () => {
+    let resolveCreate: ((session: AgentSession) => void) | undefined;
+    vi.mocked(createAgentSession).mockImplementationOnce(
+      () =>
+        new Promise<AgentSession>((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:\\work"));
+
+    let firstSend: Promise<boolean> | undefined;
+    act(() => {
+      firstSend = result.current.sendPrompt("first");
+    });
+    await waitFor(() => expect(result.current.phase).toBe("creating"));
+
+    let secondSent = true;
+    await act(async () => {
+      secondSent = await result.current.sendPrompt("second");
+    });
+    expect(secondSent).toBe(false);
+    expect(createAgentSession).toHaveBeenCalledTimes(1);
+    expect(promptAgent).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveCreate?.(agentSession());
+      await firstSend;
+    });
+    expect(promptAgent).toHaveBeenCalledOnce();
+    expect(promptAgent).toHaveBeenCalledWith("s-1", "first", undefined, defaultToolNames);
+  });
+
+  it("目录确认落盘后将活动会话升级为单一正式条目", async () => {
+    const persisted: AgentSessionSummary = {
+      ...savedSummary,
+      id: "s-1",
+      path: "C:\\agent\\sessions\\s-1.jsonl",
+      firstMessage: "hello",
+    };
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:\\work"));
+    vi.mocked(listAgentSessions).mockResolvedValueOnce([persisted]);
+
+    await act(() => result.current.sendPrompt("hello"));
+    await waitFor(() =>
+      expect(result.current.sessions).toEqual([
+        expect.objectContaining({ id: "s-1", path: persisted.path, lifecycle: "persisted" }),
+      ]),
+    );
+
+    await act(() => result.current.openSession(result.current.sessions[0]!));
+    expect(openAgentSession).toHaveBeenCalledWith(persisted.path);
+  });
+
   it("加载 SDK 目录、恢复会话并同步模型与思考强度", async () => {
-    vi.mocked(listAgentSessions).mockResolvedValueOnce([
-      {
-        id: "saved",
-        path: "C:\\agent\\sessions\\saved.jsonl",
-        cwd: "C:\\work",
-        name: null,
-        created: "2026-08-20T08:00:00.000Z",
-        modified: "2026-08-20T09:00:00.000Z",
-        messageCount: 1,
-        firstMessage: "saved prompt",
-      },
-    ]);
+    vi.mocked(listAgentSessions).mockResolvedValueOnce([savedSummary]);
     const { result } = renderHook(() => useChatSession());
     await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
 
@@ -161,7 +268,7 @@ describe("useChatSession", () => {
     expect(result.current.sessions).toHaveLength(1);
     expect(result.current.models[0]?.name).toBe("GPT");
 
-    await act(() => result.current.openSession("C:\\agent\\sessions\\saved.jsonl"));
+    await act(() => result.current.openSession(result.current.sessions[0]!));
     expect(result.current.sessionId).toBe("saved");
     expect(result.current.messages).toEqual([
       expect.objectContaining({ role: "user", content: "saved prompt" }),
@@ -215,6 +322,9 @@ describe("useChatSession", () => {
     act(() => {
       void result.current.sendPrompt("stream");
     });
+    await waitFor(() =>
+      expect(promptAgent).toHaveBeenCalledWith("s-1", "stream", undefined, defaultToolNames),
+    );
     act(() => {
       emit?.(event("agent.started"));
       emit?.(event("user.message", { content: "stream" }));
@@ -251,6 +361,9 @@ describe("useChatSession", () => {
     act(() => {
       void result.current.sendPrompt("fail");
     });
+    await waitFor(() =>
+      expect(promptAgent).toHaveBeenCalledWith("s-1", "fail", undefined, defaultToolNames),
+    );
     act(() => emit?.(event("tool.started", { toolCallId: "tool-1", toolName: "bash" })));
     act(() => emit?.(event("message.delta", { delta: "partial" })));
     await act(async () => rejectPrompt?.(new Error("model failed")));
@@ -280,6 +393,9 @@ describe("useChatSession", () => {
     act(() => {
       void result.current.sendPrompt("race");
     });
+    await waitFor(() =>
+      expect(promptAgent).toHaveBeenCalledWith("s-1", "race", undefined, defaultToolNames),
+    );
 
     await act(async () => resolvePrompt?.(0));
     expect(result.current.phase).toBe("streaming");
@@ -301,6 +417,8 @@ describe("useChatSession", () => {
     const { result } = renderHook(() => useChatSession());
     await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
     await act(() => result.current.createSession("C:\\work"));
+    await act(() => result.current.sendPrompt("materialize"));
+    act(() => emit?.(event("agent.settled")));
 
     act(() => {
       emit?.(
@@ -315,6 +433,9 @@ describe("useChatSession", () => {
       model: null,
       thinkingLevel: "off",
       availableThinkingLevels: ["off"],
+      availableTools: [],
+      activeToolNames: [],
+      defaultToolNames: [],
     });
 
     act(() => {
@@ -398,23 +519,13 @@ describe("useChatSession", () => {
     act(() => {
       void result.current.sendPrompt("后台任务");
     });
+    await waitFor(() => expect(result.current.phase).toBe("streaming"));
+    const running = result.current.sessions.find((session) => session.id === "s-1")!;
 
-    vi.mocked(createAgentSession).mockResolvedValueOnce({
-      sessionId: "s-2",
-      cwd: "C:\\other",
-      sessionPath: "C:\\agent\\sessions\\s-2.jsonl",
-      modelFallbackMessage: null,
-      configuration: {
-        model: { provider: "openai", id: "gpt", name: "GPT", reasoning: true },
-        thinkingLevel: "medium",
-        availableThinkingLevels: ["off", "medium", "high"],
-      },
-      messages: [],
-      queuedMessages: { steering: [], followUp: [] },
-      streaming: false,
-    });
     await act(() => result.current.createSession("C:\\other"));
-    expect(result.current.sessionId).toBe("s-2");
+    const draft = result.current.sessions.find((session) => session.lifecycle === "draft")!;
+    expect(result.current.sessionId).toBe(draft.id);
+    expect(createAgentSession).toHaveBeenCalledTimes(1);
     expect(result.current.runningSessionIds).toContain("s-1");
 
     act(() => {
@@ -423,29 +534,21 @@ describe("useChatSession", () => {
       emit?.(event("message.delta", { delta: "后台完成" }, "s-1"));
       emit?.(event("agent.settled", undefined, "s-1"));
     });
-    expect(result.current.sessionId).toBe("s-2");
+    expect(result.current.sessionId).toBe(draft.id);
 
-    vi.mocked(openAgentSession).mockResolvedValueOnce({
-      sessionId: "s-1",
-      cwd: "C:\\work",
-      sessionPath: "C:\\agent\\sessions\\s-1.jsonl",
-      modelFallbackMessage: null,
-      configuration: {
-        model: { provider: "openai", id: "gpt", name: "GPT", reasoning: true },
-        thinkingLevel: "medium",
-        availableThinkingLevels: ["off", "medium", "high"],
-      },
-      messages: [],
-      queuedMessages: { steering: [], followUp: [] },
-      streaming: false,
-    });
-    await act(() => result.current.openSession("C:\\agent\\sessions\\s-1.jsonl"));
+    await act(() => result.current.openSession(running));
+    expect(openAgentSession).not.toHaveBeenCalled();
     expect(result.current.messages).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ role: "thinking", content: "分析中" }),
         expect.objectContaining({ role: "assistant", content: "后台完成" }),
       ]),
     );
+
+    await act(() => result.current.openSession(draft));
+    expect(result.current.sessionId).toBe(draft.id);
+    expect(result.current.messages).toEqual([]);
+    expect(openAgentSession).not.toHaveBeenCalled();
   });
 
   it("流式期间区分引导与后续队列，并以 SDK 队列事件为准", async () => {
@@ -457,9 +560,21 @@ describe("useChatSession", () => {
     await act(() => result.current.sendPrompt("调整方向", "steer"));
     await act(() => result.current.sendPrompt("完成后总结", "followUp"));
 
-    expect(promptAgent).toHaveBeenNthCalledWith(1, "s-1", "开始任务", undefined);
-    expect(promptAgent).toHaveBeenNthCalledWith(2, "s-1", "调整方向", "steer");
-    expect(promptAgent).toHaveBeenNthCalledWith(3, "s-1", "完成后总结", "followUp");
+    expect(promptAgent).toHaveBeenNthCalledWith(
+      1,
+      "s-1",
+      "开始任务",
+      undefined,
+      defaultToolNames,
+    );
+    expect(promptAgent).toHaveBeenNthCalledWith(2, "s-1", "调整方向", "steer", undefined);
+    expect(promptAgent).toHaveBeenNthCalledWith(
+      3,
+      "s-1",
+      "完成后总结",
+      "followUp",
+      undefined,
+    );
     expect(result.current.messages.filter((item) => item.role === "user")).toHaveLength(1);
     expect(result.current.queuedMessages).toEqual({
       steering: ["调整方向"],
@@ -515,7 +630,10 @@ describe("useChatSession", () => {
   });
 
   it("恢复带队列的非流式会话时展示暂停状态，并忽略畸形队列事件", async () => {
-    vi.mocked(createAgentSession).mockResolvedValueOnce({
+    vi.mocked(listAgentSessions).mockResolvedValueOnce([
+      { ...savedSummary, id: "queued", path: "C:\\agent\\sessions\\queued.jsonl" },
+    ]);
+    vi.mocked(openAgentSession).mockResolvedValueOnce({
       sessionId: "queued",
       cwd: "C:\\work",
       sessionPath: "C:\\agent\\sessions\\queued.jsonl",
@@ -524,6 +642,9 @@ describe("useChatSession", () => {
         model: { provider: "openai", id: "gpt", name: "GPT", reasoning: true },
         thinkingLevel: "medium",
         availableThinkingLevels: ["off", "medium", "high"],
+        availableTools,
+        activeToolNames: defaultToolNames,
+        defaultToolNames,
       },
       messages: [],
       queuedMessages: { steering: ["待继续"], followUp: [] },
@@ -531,7 +652,8 @@ describe("useChatSession", () => {
     });
     const { result } = renderHook(() => useChatSession());
     await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
-    await act(() => result.current.createSession("C:\\work"));
+    await act(() => result.current.loadCatalogs());
+    await act(() => result.current.openSession(result.current.sessions[0]!));
 
     expect(result.current.queuePaused).toBe(true);
     act(() => emit?.(event("queue.updated", { steering: [1], followUp: [] }, "queued")));
@@ -540,16 +662,122 @@ describe("useChatSession", () => {
     expect(result.current.queuePaused).toBe(false);
   });
 
-  it("创建纯对话工作区并持久化最近项目", async () => {
+  it("切换到正式会话后可直接恢复未绑定草稿且不读取会话文件", async () => {
+    vi.mocked(listAgentSessions).mockResolvedValueOnce([savedSummary]);
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.loadCatalogs());
+
+    await act(() => result.current.createConversation());
+    const draft = result.current.sessions.find((session) => session.lifecycle === "draft")!;
+    expect(draft).toEqual(expect.objectContaining({ path: null, cwd: "" }));
+    expect(createAgentSession).not.toHaveBeenCalled();
+    expect(ensureConversationWorkspace).not.toHaveBeenCalled();
+
+    const persisted = result.current.sessions.find((session) => session.lifecycle === "persisted")!;
+    await act(() => result.current.openSession(persisted));
+    expect(openAgentSession).toHaveBeenCalledWith(savedSummary.path);
+    await act(() => result.current.openSession(draft));
+
+    expect(result.current.sessionId).toBe(draft.id);
+    expect(result.current.sessionPath).toBeNull();
+    expect(result.current.configuration).toBeNull();
+    expect(result.current.error).toBeNull();
+    expect(openAgentSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("正式会话文件缺失时保留稳定异常处理", async () => {
+    vi.mocked(listAgentSessions).mockResolvedValueOnce([savedSummary]);
+    vi.mocked(openAgentSession).mockRejectedValueOnce({
+      code: "SESSION_PATH_INVALID",
+      message: "会话文件不存在或无法访问",
+    });
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.loadCatalogs());
+
+    let opened = true;
+    await act(async () => {
+      opened = await result.current.openSession(result.current.sessions[0]!);
+    });
+
+    expect(opened).toBe(false);
+    expect(result.current.error).toBe("SESSION_PATH_INVALID: 会话文件不存在或无法访问");
+  });
+
+  it("保持已有正式会话之间的正常切换和加载", async () => {
+    const secondSummary: AgentSessionSummary = {
+      ...savedSummary,
+      id: "second",
+      path: "C:\\agent\\sessions\\second.jsonl",
+      firstMessage: "second prompt",
+      modified: "2026-08-21T09:00:00.000Z",
+    };
+    vi.mocked(listAgentSessions).mockResolvedValueOnce([savedSummary, secondSummary]);
+    vi.mocked(openAgentSession)
+      .mockResolvedValueOnce(
+        agentSession({
+          sessionId: "saved",
+          sessionPath: savedSummary.path,
+          messages: [{ role: "user", content: savedSummary.firstMessage }],
+        }),
+      )
+      .mockResolvedValueOnce(
+        agentSession({
+          sessionId: "second",
+          sessionPath: secondSummary.path,
+          messages: [{ role: "user", content: secondSummary.firstMessage }],
+        }),
+      );
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.loadCatalogs());
+
+    await act(() =>
+      result.current.openSession(result.current.sessions.find((session) => session.id === "saved")!),
+    );
+    await act(() =>
+      result.current.openSession(result.current.sessions.find((session) => session.id === "second")!),
+    );
+
+    expect(openAgentSession).toHaveBeenNthCalledWith(1, savedSummary.path);
+    expect(openAgentSession).toHaveBeenNthCalledWith(2, secondSummary.path);
+    expect(result.current.sessionId).toBe("second");
+    expect(result.current.messages).toEqual([
+      expect.objectContaining({ role: "user", content: "second prompt" }),
+    ]);
+  });
+
+  it("未绑定项目的草稿在首次发送后创建纯对话工作区并持久化", async () => {
+    vi.mocked(createAgentSession).mockImplementationOnce(async (cwd) =>
+      agentSession({
+        cwd,
+        sessionPath: "C:\\agent\\sessions\\conversation.jsonl",
+      }),
+    );
     const { result } = renderHook(() => useChatSession());
     await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
 
     await act(() => result.current.createConversation());
+    expect(result.current.cwd).toBe("");
+    expect(result.current.sessionPath).toBeNull();
+    expect(result.current.sessions[0]).toEqual(
+      expect.objectContaining({ lifecycle: "draft", cwd: "", path: null }),
+    );
+    expect(ensureConversationWorkspace).not.toHaveBeenCalled();
+    expect(createAgentSession).not.toHaveBeenCalled();
+    expect(rememberWorkspace).not.toHaveBeenCalled();
+
+    await act(() => result.current.sendPrompt("开始"));
     expect(ensureConversationWorkspace).toHaveBeenCalledOnce();
     expect(createAgentSession).toHaveBeenCalledWith(
       "C:\\Users\\me\\Documents\\Pix\\conversations",
     );
-    await waitFor(() => expect(rememberWorkspace).toHaveBeenCalledWith("C:\\work"));
+    await waitFor(() =>
+      expect(rememberWorkspace).toHaveBeenCalledWith(
+        "C:\\Users\\me\\Documents\\Pix\\conversations",
+      ),
+    );
 
     await act(() => result.current.removeWorkspace("C:\\work"));
     expect(removeRecentWorkspace).toHaveBeenCalledWith("C:\\work");

@@ -2063,10 +2063,76 @@ body {
 }
 
 .composer-context {
+  flex: 1 1 auto;
   gap: 7px;
   color: var(--muted);
   font-size: 12px;
   font-weight: 550;
+}
+
+.composer-permission-picker {
+  flex: 0 0 auto;
+}
+
+.composer-access-trigger {
+  display: inline-flex;
+  max-width: 154px;
+  min-width: 0;
+  height: 30px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: 1px solid #45474a;
+  border-radius: 6px;
+  background: #303133;
+  color: #c7c8ca;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 580;
+}
+
+.composer-access-trigger > svg {
+  flex: 0 0 auto;
+}
+
+.composer-access-trigger > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-access-trigger:not(:disabled):hover,
+.composer-access-trigger[aria-expanded="true"] {
+  border-color: #5c5e61;
+  background: #393a3d;
+  color: #ffffff;
+}
+
+.composer-access-trigger[data-mode="full"] {
+  border-color: color-mix(in srgb, #ff5c1a 62%, #45474a);
+  background: color-mix(in srgb, #ff5c1a 13%, #303133);
+  color: #ff8a5c;
+}
+
+.composer-access-trigger[data-mode="none"] {
+  border-color: #5a4240;
+  background: #382928;
+  color: #ec918a;
+}
+
+.composer-access-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.composer-operation-status {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  color: #78c8eb;
+  white-space: nowrap;
 }
 
 .composer-frame[aria-busy="true"] .composer-context {
@@ -2166,6 +2232,80 @@ body {
 .composer-menu button[aria-checked="true"] {
   background: #37393c;
   color: #ffffff;
+}
+
+.composer-permission-menu {
+  width: min(336px, calc(100vw - 32px));
+}
+
+.composer-menu .composer-permission-row {
+  display: grid;
+  min-height: 44px;
+  grid-template-columns: 18px minmax(0, 1fr) 16px;
+  align-items: center;
+  justify-content: stretch;
+  gap: 9px;
+  padding: 6px 9px;
+}
+
+.composer-permission-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.composer-permission-copy strong,
+.composer-permission-copy small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-permission-copy strong {
+  color: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.composer-permission-copy small {
+  color: #8f9195;
+  font-size: 10.5px;
+  font-weight: 450;
+}
+
+.composer-menu-divider {
+  height: 1px;
+  margin: 5px 5px 3px;
+  background: #414346;
+}
+
+.composer-menu .composer-tool-row {
+  min-height: 42px;
+}
+
+.composer-menu .composer-tool-row[aria-checked="true"] {
+  background: transparent;
+}
+
+.composer-menu .composer-tool-row:hover,
+.composer-menu .composer-tool-row[aria-checked="true"]:hover {
+  background: #37393c;
+}
+
+.composer-tool-check {
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  border: 1px solid #5b5d60;
+  border-radius: 4px;
+  color: #ffffff;
+}
+
+.composer-tool-row[aria-checked="true"] .composer-tool-check {
+  border-color: #6f91ff;
+  background: #5678e8;
 }
 
 .composer-submit {
@@ -2318,6 +2458,15 @@ body {
     display: inline;
   }
 
+  .composer-operation-status {
+    display: none;
+  }
+
+  .composer-access-trigger {
+    max-width: 118px;
+    padding-inline: 7px;
+  }
+
   .composer-picker-trigger {
     max-width: 112px;
     padding-inline: 6px;
@@ -2327,8 +2476,28 @@ body {
     width: min(280px, calc(100vw - 32px));
   }
 
+  .composer-permission-menu {
+    width: min(336px, calc(100vw - 16px));
+  }
+
   .project-dialog {
     width: min(100%, 480px);
+  }
+}
+
+@media (max-width: 380px) {
+  .composer-actions {
+    gap: 4px;
+  }
+
+  .composer-access-trigger {
+    max-width: 90px;
+    padding-inline: 6px;
+  }
+
+  .composer-picker-trigger {
+    max-width: 70px;
+    padding-inline: 5px;
   }
 }
 

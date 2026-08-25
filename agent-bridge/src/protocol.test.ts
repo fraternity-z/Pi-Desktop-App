@@ -239,6 +239,7 @@ describe("outbound frames", () => {
         "request-header-profiles",
         "packages",
         "resources",
+        "context-usage",
       ],
     });
   });

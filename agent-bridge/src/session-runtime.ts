@@ -22,7 +22,8 @@ export interface PiModelLike {
 }
 
 export interface PiModelRuntimeLike {
-  getAvailable(): Promise<PiModelLike[]>;
+  getAvailable?(): Promise<PiModelLike[]>;
+  getModels?(): PiModelLike[];
   getModel(provider: string, id: string): PiModelLike | undefined;
 }
 
@@ -126,6 +127,8 @@ export interface PiSessionLike {
   getAvailableThinkingLevels(): ThinkingLevel[];
   getActiveToolNames?(): string[];
   getAllTools?(): PiToolLike[];
+  getContextUsage?(): unknown;
+  getSessionStats?(): unknown;
   setActiveToolsByName?(toolNames: string[]): void;
   reload?(): Promise<void>;
   dispose(): void;
@@ -208,6 +211,12 @@ export interface AgentTool {
   description: string;
 }
 
+export interface ContextUsage {
+  tokens: number;
+  contextWindow: number;
+  percent: number;
+}
+
 export interface CreatedAgentSession {
   sessionId: string;
   cwd: string;
@@ -217,6 +226,7 @@ export interface CreatedAgentSession {
   messages: AgentMessageSummary[];
   queuedMessages: QueuedMessages;
   streaming: boolean;
+  contextUsage?: ContextUsage | null;
 }
 
 export interface QueuedMessages {
@@ -249,7 +259,8 @@ export interface RuntimeEvent {
     | "tool.failed"
     | "queue.updated"
     | "agent.settled"
-    | "session.configurationChanged";
+    | "session.configurationChanged"
+    | "session.usageChanged";
   data?: unknown;
 }
 
@@ -305,6 +316,7 @@ interface ManagedSession {
   createdAt: string;
   lastActivityAt: string;
   defaultToolNames: string[];
+  contextUsageKey: string;
 }
 
 const MAX_HISTORY_MESSAGES = 200;
@@ -641,8 +653,19 @@ export class PiSessionRuntime implements SessionRuntime {
   async listModels(): Promise<AgentModel[]> {
     this.ensureOpen();
     try {
-      const models = await (await this.getModelRuntime()).getAvailable();
-      return models.flatMap((model) => toAgentModel(model));
+      const runtime = await this.getModelRuntime();
+      let models: PiModelLike[] = [];
+      if (typeof runtime.getAvailable === "function") {
+        try {
+          models = await runtime.getAvailable();
+        } catch {
+          // Older/custom runtimes can expose the catalog while availability probing fails.
+        }
+      }
+      if (models.length === 0 && typeof runtime.getModels === "function") {
+        models = runtime.getModels();
+      }
+      return uniqueAgentModels(models);
     } catch (error) {
       throw mapRuntimeError(error, "MODEL_LIST_FAILED", "无法读取已配置的 Pi 模型");
     }
@@ -940,6 +963,7 @@ export class PiSessionRuntime implements SessionRuntime {
 
     const now = new Date().toISOString();
     const defaultToolNames = readActiveToolNames(session);
+    const contextUsage = readContextUsage(session);
     const managed = {
       cwd,
       session,
@@ -947,6 +971,7 @@ export class PiSessionRuntime implements SessionRuntime {
       createdAt: now,
       lastActivityAt: now,
       defaultToolNames,
+      contextUsageKey: JSON.stringify(contextUsage),
       ...(resourceLoader ? { resourceLoader } : {}),
     };
     this.sessions.set(session.sessionId, managed);
@@ -1094,6 +1119,20 @@ export class PiSessionRuntime implements SessionRuntime {
         listener(runtimeEvent);
       }
     }
+    if (managed) this.emitContextUsageIfChanged(managed);
+  }
+
+  private emitContextUsageIfChanged(managed: ManagedSession): void {
+    const contextUsage = readContextUsage(managed.session);
+    const key = JSON.stringify(contextUsage);
+    if (key === managed.contextUsageKey) return;
+    managed.contextUsageKey = key;
+    const event: RuntimeEvent = {
+      sessionId: managed.session.sessionId,
+      name: "session.usageChanged",
+      data: contextUsage,
+    };
+    for (const listener of this.listeners) listener(event);
   }
 }
 
@@ -1106,6 +1145,7 @@ function describeManagedSession(managed: ManagedSession): CreatedAgentSession {
     messages: summarizeMessages(managed.session.messages),
     queuedMessages: describeQueue(managed.session),
     streaming: managed.session.isStreaming,
+    contextUsage: readContextUsage(managed.session),
   };
 }
 
@@ -1284,6 +1324,47 @@ function toAgentModel(model: PiModelLike): AgentModel[] {
       reasoning: Boolean(model.reasoning),
     },
   ];
+}
+
+function uniqueAgentModels(models: PiModelLike[]): AgentModel[] {
+  const unique = new Map<string, AgentModel>();
+  for (const model of models.flatMap((candidate) => toAgentModel(candidate))) {
+    const key = `${model.provider}\u0000${model.id}`;
+    if (!unique.has(key)) unique.set(key, model);
+  }
+  return [...unique.values()];
+}
+
+export function readContextUsage(session: PiSessionLike): ContextUsage | null {
+  let candidate: unknown;
+  try {
+    candidate = session.getContextUsage?.();
+    if (candidate === undefined || candidate === null) {
+      const stats = session.getSessionStats?.();
+      candidate = isRecord(stats) ? stats.contextUsage : undefined;
+    }
+  } catch {
+    return null;
+  }
+  if (!isRecord(candidate)) return null;
+  const tokens = Number(candidate.tokens);
+  const contextWindow = Number(candidate.contextWindow);
+  const suppliedPercent = Number(candidate.percent);
+  if (
+    !Number.isFinite(tokens) ||
+    !Number.isFinite(contextWindow) ||
+    tokens < 0 ||
+    contextWindow <= 0
+  ) {
+    return null;
+  }
+  const computedPercent = (tokens / contextWindow) * 100;
+  const percent = Number.isFinite(suppliedPercent) ? suppliedPercent : computedPercent;
+  return {
+    tokens: Math.round(tokens),
+    contextWindow: Math.round(contextWindow),
+    percent: Math.min(100, Math.max(0, percent)),
+  };
 }
 
 function toSessionSummary(session: PiSessionInfoLike): AgentSessionSummary[] {

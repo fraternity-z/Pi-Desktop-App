@@ -75,6 +75,7 @@ pub fn run() {
             commands::workspace::workspace_remove_recent,
             commands::workspace::workspace_ensure_conversation,
             commands::workspace::workspace_reveal,
+            commands::workspace::workspace_search_paths,
             commands::workspace::workspace_get_worktree_options,
             commands::workspace::workspace_create_worktree
         ])

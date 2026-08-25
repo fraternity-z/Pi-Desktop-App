@@ -4419,3 +4419,697 @@ body {
     opacity: 1;
   }
 }
+
+/* Pix composer and project controls */
+.composer-dock {
+  position: sticky;
+  bottom: 0;
+  z-index: 12;
+  width: min(1068px, calc(100% - 110px));
+  margin: auto auto 0;
+  padding: 0 0 10px;
+  background: transparent;
+  color: #425052;
+}
+
+.composer-queue-card {
+  margin: 0 26px 8px;
+  border-color: #cbd8d7;
+  background: rgb(250 255 254 / 96%);
+  color: #657173;
+  box-shadow: 0 8px 24px rgb(37 68 64 / 10%);
+}
+
+.composer-queue-list {
+  border-top-color: #d8e2e1;
+}
+
+.composer-queue-row,
+.composer-queue-text {
+  color: #526062;
+}
+
+.composer-project-bar {
+  display: flex;
+  min-width: 0;
+  min-height: 40px;
+  align-items: center;
+  gap: 8px;
+  margin: 0 26px -1px;
+  padding: 0 17px;
+  border: 1px solid #c7d5d3;
+  border-bottom: 0;
+  border-radius: 20px 20px 0 0;
+  background: rgb(250 252 251 / 94%);
+  color: #42494a;
+  backdrop-filter: blur(18px) saturate(110%);
+}
+
+.composer-project-picker,
+.composer-picker {
+  position: relative;
+  min-width: 0;
+}
+
+.composer-project-trigger,
+.composer-environment-chip {
+  display: inline-flex;
+  min-width: 0;
+  height: 30px;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #42494a;
+  font-size: 15px;
+}
+
+.composer-project-trigger {
+  max-width: 320px;
+  padding: 0 9px;
+  cursor: pointer;
+}
+
+.composer-project-trigger:hover,
+.composer-project-trigger[aria-expanded="true"] {
+  background: #edf2f1;
+  color: #202627;
+}
+
+.composer-project-trigger span,
+.composer-environment-chip {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-project-trigger span {
+  min-width: 0;
+}
+
+.composer-environment-chip {
+  max-width: 180px;
+  padding: 0 8px;
+  color: #4d5556;
+}
+
+.composer-frame {
+  width: 100%;
+  overflow: visible;
+  border: 1px solid #bfcfcd;
+  border-radius: 20px;
+  background: rgb(249 255 254 / 96%);
+  box-shadow: 0 18px 48px rgb(36 72 68 / 14%);
+  color: #4b5556;
+  backdrop-filter: blur(22px) saturate(110%);
+}
+
+.composer-frame:focus-within {
+  border-color: #9fb9b6;
+  box-shadow: 0 18px 48px rgb(36 72 68 / 14%), 0 0 0 2px rgb(87 143 136 / 9%);
+}
+
+.composer-frame textarea,
+.composer-frame textarea:disabled {
+  min-height: 60px;
+  max-height: 220px;
+  padding: 14px 14px 5px;
+  background: transparent;
+  color: #3f4b4c;
+  font-size: 16px;
+  line-height: 1.55;
+}
+
+.composer-frame textarea::placeholder {
+  color: #899394;
+}
+
+.composer-frame textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.composer-attachment-region {
+  display: grid;
+  gap: 6px;
+  padding: 0 14px 4px;
+}
+
+.composer-attachment-list {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.composer-attachment-chip {
+  display: inline-grid;
+  max-width: min(240px, 100%);
+  min-height: 28px;
+  grid-template-columns: 14px minmax(0, 1fr) 22px;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 3px 2px 8px;
+  border: 1px solid #cbdad8;
+  border-radius: 6px;
+  background: #edf6f4;
+  color: #526160;
+  font-size: 12px;
+}
+
+.composer-attachment-chip > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-attachment-chip button {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #74817f;
+  cursor: pointer;
+}
+
+.composer-attachment-chip button:hover {
+  background: #dce9e7;
+  color: #32403f;
+}
+
+.composer-attachment-error {
+  margin: 0;
+  color: #b3463d;
+  font-size: 11px;
+}
+
+.composer-actions {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 8px 6px 10px;
+}
+
+.composer-context,
+.composer-controls {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.composer-context {
+  flex: 1 1 auto;
+  gap: 5px;
+  color: #6f7a7b;
+  font-size: 13px;
+}
+
+.composer-controls {
+  flex: 0 1 auto;
+  justify-content: flex-end;
+  gap: 1px;
+}
+
+.composer-icon-trigger,
+.composer-access-trigger,
+.composer-picker-trigger {
+  display: inline-flex;
+  min-width: 0;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #727d7e;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.composer-icon-trigger {
+  width: 30px;
+  padding: 0;
+}
+
+.composer-access-trigger {
+  max-width: 164px;
+  padding-inline: 7px 9px;
+  font-weight: 450;
+}
+
+.composer-access-trigger > span,
+.composer-picker-trigger > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-icon-trigger:not(:disabled):hover,
+.composer-icon-trigger[aria-expanded="true"],
+.composer-access-trigger:not(:disabled):hover,
+.composer-access-trigger[aria-expanded="true"],
+.composer-picker-trigger:not(:disabled):hover,
+.composer-picker-trigger[aria-expanded="true"] {
+  background: #eaf1ef;
+  color: #364342;
+}
+
+.composer-access-trigger[data-mode="full"] {
+  border: 0;
+  background: transparent;
+  color: #ef5b2a;
+}
+
+.composer-access-trigger[data-mode="none"] {
+  border: 0;
+  background: transparent;
+  color: #b24c45;
+}
+
+.composer-icon-trigger:disabled,
+.composer-access-trigger:disabled,
+.composer-picker-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.composer-operation-status {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  margin-left: 4px;
+  color: #4b8a84;
+  white-space: nowrap;
+}
+
+.composer-context-meter {
+  display: inline-flex;
+  width: 48px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: #7b8888;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.composer-context-meter[data-empty="true"] {
+  color: #b6c1c0;
+}
+
+.composer-model-trigger {
+  max-width: 190px;
+}
+
+.composer-thinking-trigger {
+  max-width: 86px;
+}
+
+.composer-submit {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  place-items: center;
+  margin-left: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: #aeb5b6;
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.composer-submit:not(:disabled):hover {
+  border: 0;
+  background: #7f8a8b;
+  color: #ffffff;
+}
+
+.composer-submit:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.composer-stop,
+.composer-stop:hover {
+  border: 0;
+  background: #ca5b52;
+  color: #ffffff;
+}
+
+.composer-menu {
+  position: fixed;
+  z-index: 10000;
+  width: min(280px, calc(100vw - 16px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 7px;
+  border: 1px solid #bfd0cd;
+  border-radius: 17px;
+  background: rgb(248 255 253 / 96%);
+  color: #3e4d4e;
+  box-shadow: 0 20px 54px rgb(44 75 71 / 18%);
+  backdrop-filter: blur(20px) saturate(110%);
+}
+
+.composer-project-menu {
+  width: min(340px, calc(100vw - 16px));
+}
+
+.composer-model-menu {
+  width: min(330px, calc(100vw - 16px));
+}
+
+.composer-thinking-menu {
+  width: min(240px, calc(100vw - 16px));
+}
+
+.composer-permission-menu {
+  width: min(324px, calc(100vw - 16px));
+  padding: 10px;
+}
+
+.composer-resources-menu {
+  width: min(680px, calc(100vw - 16px));
+  padding: 11px;
+}
+
+.composer-menu-group + .composer-menu-group {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top-color: #d7e1e0;
+}
+
+.composer-menu-group > p,
+.composer-menu-title,
+.composer-resources-title {
+  margin: 0;
+  padding: 7px 9px 5px;
+  color: #899493;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.composer-resources-title {
+  padding: 3px 2px 5px;
+  font-size: 15px;
+  font-weight: 450;
+}
+
+.composer-menu button {
+  display: flex;
+  width: 100%;
+  min-height: 36px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 9px;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #405052;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+}
+
+.composer-menu button > span:first-of-type:not(.composer-permission-copy):not(.composer-project-copy) {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-menu button:not(:disabled):hover,
+.composer-menu button[aria-checked="true"] {
+  background: #e4f3f0;
+  color: #253332;
+}
+
+.composer-menu button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.composer-menu-divider {
+  height: 1px;
+  margin: 6px 5px;
+  background: #d5e1df;
+}
+
+.composer-menu .composer-project-row {
+  display: grid;
+  min-height: 48px;
+  grid-template-columns: 18px minmax(0, 1fr) 16px;
+}
+
+.composer-project-copy,
+.composer-permission-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+}
+
+.composer-project-copy strong,
+.composer-project-copy small,
+.composer-permission-copy strong,
+.composer-permission-copy small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-project-copy strong,
+.composer-permission-copy strong {
+  color: inherit;
+  font-size: 13px;
+  font-weight: 520;
+}
+
+.composer-project-copy small,
+.composer-permission-copy small {
+  color: #80908f;
+  font-size: 11px;
+}
+
+.composer-menu .composer-permission-row {
+  display: grid;
+  min-height: 54px;
+  grid-template-columns: 22px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+}
+
+.composer-permission-copy strong {
+  font-size: 12px;
+}
+
+.composer-permission-copy small {
+  font-size: 10px;
+}
+
+.composer-menu .composer-permission-row-full,
+.composer-menu .composer-permission-row-full strong,
+.composer-menu .composer-permission-row-full small {
+  color: #f05a2c;
+}
+
+.composer-menu .composer-permission-row-full[aria-checked="true"],
+.composer-menu .composer-permission-row-full:not(:disabled):hover {
+  background: #fff0ea;
+}
+
+.composer-resource-actions {
+  display: grid;
+  gap: 1px;
+}
+
+.composer-resource-actions button {
+  min-height: 30px;
+}
+
+.composer-resource-actions small {
+  margin-left: auto;
+  color: #9eaaaa;
+  font-size: 11px;
+}
+
+.composer-resource-results {
+  margin-top: 4px;
+  max-height: 320px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: #a8b6b4 transparent;
+  scrollbar-width: thin;
+}
+
+.composer-resource-results::-webkit-scrollbar {
+  width: 8px;
+}
+
+.composer-resource-results::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.composer-resource-results::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: #a8b6b4;
+  background-clip: padding-box;
+}
+
+.composer-menu .composer-resource-row {
+  display: grid;
+  min-height: 30px;
+  grid-template-columns: 18px minmax(120px, 0.8fr) minmax(120px, 1.2fr) 16px;
+  align-items: center;
+}
+
+.composer-resource-row > span,
+.composer-resource-row > small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-resource-row > small {
+  color: #9aa9a7;
+  font-size: 11px;
+  text-align: right;
+}
+
+.composer-menu-state {
+  display: flex;
+  min-height: 76px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin: 0;
+  color: #899694;
+  font-size: 12px;
+}
+
+.composer-menu-state-error {
+  color: #ad4b43;
+}
+
+.composer-model-empty {
+  display: grid;
+  gap: 8px;
+  padding: 14px 10px;
+}
+
+.composer-model-empty p {
+  margin: 0;
+  color: #7e8b89;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.composer-model-empty button {
+  width: auto;
+  justify-self: start;
+}
+
+@media (max-width: 760px) {
+  .composer-dock {
+    width: 100%;
+    padding: 0 8px 8px;
+  }
+
+  .composer-project-bar {
+    min-height: 50px;
+    margin-inline: 10px;
+    padding-inline: 9px;
+    border-radius: 17px 17px 0 0;
+  }
+
+  .composer-project-trigger {
+    max-width: min(220px, 52vw);
+  }
+
+  .composer-environment-chip:last-child {
+    display: none;
+  }
+
+  .composer-frame {
+    border-radius: 18px;
+  }
+
+  .composer-frame textarea,
+  .composer-frame textarea:disabled {
+    min-height: 86px;
+    padding-inline: 16px;
+    font-size: 15px;
+  }
+
+  .composer-actions {
+    gap: 5px;
+    padding-inline: 8px;
+  }
+
+  .composer-operation-status,
+  .composer-context-meter > span,
+  .composer-picker-trigger > svg {
+    display: none;
+  }
+
+  .composer-context-meter {
+    width: 30px;
+  }
+
+  .composer-model-trigger {
+    max-width: 112px;
+  }
+
+  .composer-thinking-trigger {
+    max-width: 52px;
+  }
+
+  .composer-menu .composer-resource-row {
+    grid-template-columns: 18px minmax(0, 1fr) 16px;
+  }
+
+  .composer-resource-row > small {
+    display: none;
+  }
+}
+
+@media (max-width: 430px) {
+  .composer-environment-chip {
+    display: none;
+  }
+
+  .composer-access-trigger {
+    max-width: 104px;
+  }
+
+  .composer-model-trigger {
+    max-width: 82px;
+  }
+
+  .composer-submit {
+    width: 38px;
+    height: 38px;
+    flex-basis: 38px;
+  }
+}

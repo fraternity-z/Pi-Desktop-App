@@ -186,7 +186,7 @@ describe("agent IPC", () => {
     ).toBeNull();
   });
 
-  it("接受合法文本、空数据和会话配置事件", () => {
+  it("接受合法文本、空数据、会话配置和上下文事件", () => {
     expect(
       parseAgentEvent({
         v: 1,
@@ -217,6 +217,26 @@ describe("agent IPC", () => {
         data: { model: null, thinkingLevel: "off", availableThinkingLevels: ["off"] },
       }),
     ).toEqual(expect.objectContaining({ name: "session.configurationChanged" }));
+    expect(
+      parseAgentEvent({
+        v: 1,
+        kind: "event",
+        seq: 4,
+        sessionId: "s-1",
+        name: "session.usageChanged",
+        data: { tokens: 2_048, contextWindow: 8_192, percent: 25 },
+      }),
+    ).toEqual(expect.objectContaining({ name: "session.usageChanged" }));
+    expect(
+      parseAgentEvent({
+        v: 1,
+        kind: "event",
+        seq: 5,
+        sessionId: "s-1",
+        name: "session.usageChanged",
+        data: { tokens: -1, contextWindow: 8_192, percent: 25 },
+      }),
+    ).toBeNull();
     expect(parseAgentEvent([])).toBeNull();
   });
 

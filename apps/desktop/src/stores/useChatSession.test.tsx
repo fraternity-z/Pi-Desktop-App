@@ -179,6 +179,80 @@ describe("useChatSession", () => {
     expect(abortAgent).toHaveBeenCalledWith("s-1");
   });
 
+  it("可在发送前实体化草稿，使模型和思考配置立即可交互", async () => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:\\work"));
+
+    let prepared = false;
+    await act(async () => {
+      prepared = await result.current.prepareConfiguration();
+    });
+
+    expect(prepared).toBe(true);
+    expect(createAgentSession).toHaveBeenCalledWith("C:\\work");
+    expect(promptAgent).not.toHaveBeenCalled();
+    expect(result.current.configuration?.model?.name).toBe("GPT");
+    await act(() => result.current.updateModel("openai", "gpt"));
+    expect(configureAgentSession).toHaveBeenCalledWith("s-1", {
+      model: { provider: "openai", id: "gpt" },
+    });
+  });
+
+  it("将附加路径写入真实提示载荷，但时间线只展示用户正文", async () => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:\\work"));
+
+    await act(() =>
+      result.current.sendPrompt("检查文件", undefined, defaultToolNames, [
+        "C:\\work\\a&b.ts",
+        "C:\\work\\src",
+      ]),
+    );
+    const wireContent =
+      "检查文件\n\n<attached-paths>\n  <path>C:\\work\\a&amp;b.ts</path>\n  <path>C:\\work\\src</path>\n</attached-paths>";
+    expect(promptAgent).toHaveBeenCalledWith("s-1", wireContent, undefined, defaultToolNames);
+    expect(result.current.messages).toEqual([
+      expect.objectContaining({ role: "user", content: "检查文件", optimistic: true }),
+    ]);
+
+    act(() => emit?.(event("user.message", { content: wireContent })));
+    expect(result.current.messages.filter((item) => item.role === "user")).toEqual([
+      expect.objectContaining({ content: "检查文件", optimistic: false }),
+    ]);
+  });
+
+  it("从会话快照和增量事件同步上下文占用量", async () => {
+    vi.mocked(createAgentSession).mockResolvedValueOnce(
+      agentSession({ contextUsage: { tokens: 1_024, contextWindow: 8_192, percent: 12.5 } }),
+    );
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:\\work"));
+    await act(() => result.current.prepareConfiguration());
+    expect(result.current.contextUsage).toEqual({
+      tokens: 1_024,
+      contextWindow: 8_192,
+      percent: 12.5,
+    });
+
+    act(() =>
+      emit?.(
+        event("session.usageChanged", {
+          tokens: 4_096,
+          contextWindow: 8_192,
+          percent: 50,
+        }),
+      ),
+    );
+    expect(result.current.contextUsage).toEqual({
+      tokens: 4_096,
+      contextWindow: 8_192,
+      percent: 50,
+    });
+  });
+
   it("SDK 工具清单不可用时仍显式提交自定义禁止工具选择", async () => {
     vi.mocked(createAgentSession).mockResolvedValueOnce(
       agentSession({

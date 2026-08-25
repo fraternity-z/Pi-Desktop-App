@@ -27,6 +27,12 @@ export interface CreatedWorktree {
   path: string;
 }
 
+export interface WorkspacePathMatch {
+  path: string;
+  relativePath: string;
+  kind: "file" | "folder";
+}
+
 export async function getWorkspaceState(): Promise<WorkspaceState> {
   return invoke<WorkspaceState>("workspace_get_state");
 }
@@ -45,6 +51,14 @@ export async function ensureConversationWorkspace(): Promise<string> {
 
 export async function revealWorkspace(cwd: string): Promise<void> {
   return invoke<void>("workspace_reveal", { cwd });
+}
+
+export async function searchWorkspacePaths(
+  cwd: string,
+  query: string,
+  limit = 24,
+): Promise<WorkspacePathMatch[]> {
+  return invoke<WorkspacePathMatch[]>("workspace_search_paths", { cwd, query, limit });
 }
 
 export async function getWorktreeOptions(cwd: string): Promise<WorktreeOptions> {

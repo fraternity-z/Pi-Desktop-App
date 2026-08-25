@@ -465,18 +465,14 @@ describe("ChatWorkbenchView", () => {
     fireEvent.click(await screen.findByTitle("权限任务"));
     await screen.findByText("saved prompt");
     fireEvent.click(screen.getByRole("button", { name: "选择工具权限" }));
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /运行命令/ }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /自动审核/ }));
     fireEvent.change(screen.getByLabelText("发送给 Pi 的消息"), {
       target: { value: "只读检查" },
     });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
 
     await waitFor(() =>
-      expect(promptAgent).toHaveBeenCalledWith("saved", "只读检查", undefined, [
-        "read",
-        "edit",
-        "write",
-      ]),
+      expect(promptAgent).toHaveBeenCalledWith("saved", "只读检查", undefined, ["read"]),
     );
     expect(window.localStorage.getItem("pi-desktop.tool-permissions.v1")).toContain(
       '"mode":"custom"',

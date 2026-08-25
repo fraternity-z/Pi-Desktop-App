@@ -82,6 +82,14 @@ pub struct AgentTool {
     pub description: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextUsage {
+    pub tokens: u64,
+    pub context_window: u64,
+    pub percent: f64,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum PackageScope {
@@ -176,7 +184,7 @@ pub struct SessionConfiguration {
     pub default_tool_names: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CreatedSession {
     pub session_id: String,
@@ -189,6 +197,8 @@ pub struct CreatedSession {
     pub queued_messages: QueuedMessages,
     #[serde(default)]
     pub streaming: bool,
+    #[serde(default)]
+    pub context_usage: Option<ContextUsage>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -248,6 +258,7 @@ pub fn validate_hello(hello: &BridgeHello) -> Result<(), AppError> {
         "request-header-profiles",
         "packages",
         "resources",
+        "context-usage",
     ] {
         if !hello.capabilities.iter().any(|item| item == capability) {
             return Err(AppError::new(
@@ -435,6 +446,16 @@ pub fn validate_event(event: &BridgeEvent) -> Result<(), AppError> {
                 return Err(invalid_event_data(&event.name));
             }
         }
+        "session.usageChanged" => {
+            if let Some(data) = event.data.clone() {
+                let usage = serde_json::from_value::<ContextUsage>(data)
+                    .ok()
+                    .filter(valid_context_usage);
+                if usage.is_none() {
+                    return Err(invalid_event_data(&event.name));
+                }
+            }
+        }
         _ => {
             return Err(AppError::new(
                 "BRIDGE_EVENT_INVALID",
@@ -489,6 +510,10 @@ fn valid_session_configuration(configuration: &SessionConfiguration) -> bool {
         && tools_valid
         && valid_tool_selection(&configuration.active_tool_names, &available_names)
         && valid_tool_selection(&configuration.default_tool_names, &available_names)
+}
+
+fn valid_context_usage(usage: &ContextUsage) -> bool {
+    usage.context_window > 0 && usage.percent.is_finite() && (0.0..=100.0).contains(&usage.percent)
 }
 
 fn valid_tool_selection(
@@ -609,6 +634,7 @@ mod tests {
         "request-header-profiles",
         "packages",
         "resources",
+        "context-usage",
     ];
 
     fn hello(protocol_version: u16, capabilities: &[&str]) -> BridgeHello {
@@ -631,7 +657,7 @@ mod tests {
     #[test]
     fn deserializes_bridge_json_shape() {
         let value: BridgeHello = serde_json::from_str(
-            r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions","models","session-history","session-configuration","tool-status","tool-permissions","background-sessions","thinking-stream","queue","request-header-profiles","packages","resources"]}"#,
+            r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions","models","session-history","session-configuration","tool-status","tool-permissions","background-sessions","thinking-stream","queue","request-header-profiles","packages","resources","context-usage"]}"#,
         )
         .expect("Bridge hello JSON 必须可反序列化");
 
@@ -759,6 +785,26 @@ mod tests {
         assert_eq!(
             validate_event(&invalid)
                 .expect_err("非字符串队列项必须失败")
+                .code,
+            "BRIDGE_EVENT_INVALID"
+        );
+    }
+
+    #[test]
+    fn validates_context_usage_event_contract() {
+        let event: BridgeEvent = serde_json::from_str(
+            r#"{"v":1,"kind":"event","seq":1,"sessionId":"s-1","name":"session.usageChanged","data":{"tokens":4096,"contextWindow":32768,"percent":12.5}}"#,
+        )
+        .unwrap();
+        assert_eq!(validate_event(&event), Ok(()));
+
+        let invalid: BridgeEvent = serde_json::from_str(
+            r#"{"v":1,"kind":"event","seq":1,"sessionId":"s-1","name":"session.usageChanged","data":{"tokens":4096,"contextWindow":0,"percent":120}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            validate_event(&invalid)
+                .expect_err("越界上下文占用必须失败")
                 .code,
             "BRIDGE_EVENT_INVALID"
         );

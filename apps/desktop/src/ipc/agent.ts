@@ -22,6 +22,12 @@ export interface AgentTool {
   description: string;
 }
 
+export interface ContextUsage {
+  tokens: number;
+  contextWindow: number;
+  percent: number;
+}
+
 export interface AgentMessageSummary {
   role: "user" | "assistant" | "thinking" | "tool" | "system";
   content: string;
@@ -49,6 +55,7 @@ export interface AgentSession {
   messages: AgentMessageSummary[];
   queuedMessages: QueuedMessages;
   streaming: boolean;
+  contextUsage?: ContextUsage | null;
 }
 
 export interface AgentSessionSummary {
@@ -106,7 +113,8 @@ export type AgentEventName =
   | "tool.failed"
   | "queue.updated"
   | "agent.settled"
-  | "session.configurationChanged";
+  | "session.configurationChanged"
+  | "session.usageChanged";
 
 const AGENT_EVENT_NAMES = new Set<AgentEventName>([
   "agent.started",
@@ -121,6 +129,7 @@ const AGENT_EVENT_NAMES = new Set<AgentEventName>([
   "queue.updated",
   "agent.settled",
   "session.configurationChanged",
+  "session.usageChanged",
 ]);
 const MAX_SESSION_ID_CHARS = 128;
 const MAX_TOOL_CALL_ID_CHARS = 256;
@@ -319,6 +328,21 @@ function hasValidEventData(name: AgentEventName, data: unknown): boolean {
         (isAgentToolList(data.availableTools) &&
           isToolNameList(data.activeToolNames) &&
           isToolNameList(data.defaultToolNames)))
+    );
+  }
+  if (name === "session.usageChanged") {
+    if (data === null) return true;
+    return (
+      isRecord(data) &&
+      Object.keys(data).length === 3 &&
+      Number.isSafeInteger(data.tokens) &&
+      Number(data.tokens) >= 0 &&
+      Number.isSafeInteger(data.contextWindow) &&
+      Number(data.contextWindow) > 0 &&
+      typeof data.percent === "number" &&
+      Number.isFinite(data.percent) &&
+      data.percent >= 0 &&
+      data.percent <= 100
     );
   }
   return data === undefined || data === null;

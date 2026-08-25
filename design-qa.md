@@ -49,3 +49,49 @@ Open verification item:
 - P2: capture the populated target sidebar at the reference viewport, compare both images together, and correct any remaining pixel-level spacing or font-rendering differences.
 
 No P0 or P1 issues were found by source comparison, static layout review, automated interaction tests, type checks, or production build.
+
+# Dialog And Composer Design QA
+
+## Result
+
+Passed. The composer, project header, permission menu, model and thinking selectors,
+context meter, and resource menu were compared against the three user-provided Pix
+screenshots in the same image inputs after native runtime capture.
+
+## Visual Evidence
+
+- Base composer comparison: `C:\Users\Administrator\AppData\Local\Temp\pi-desktop-qa-base-final.png`
+- Permission comparison: `C:\Users\Administrator\AppData\Local\Temp\pi-desktop-qa-permission-final.png`
+- Resource comparison: `C:\Users\Administrator\AppData\Local\Temp\pi-desktop-qa-resources-final.png`
+- Reference implementation: `E:\code\pix`
+- Target runtime: native Tauri window at 1700 x 1000 on Windows with 150% DPI scaling.
+
+The final pass checked hierarchy, width, vertical density, spacing, border radius,
+translucent surfaces, selected states, warning color, icon alignment, text fit,
+menu overlap, and scrollbar treatment. The surrounding conversation canvas remains
+the target product's existing dark workspace and was not treated as part of the
+composer clone.
+
+## Runtime Interaction Evidence
+
+- Project selector displayed the active project, local runtime, and current Git branch.
+- The model menu loaded the real `codex` catalog and displayed `gpt-5.6-sol`,
+  `gpt-5.6-luna`, and `gpt-5.6-terra`; no false empty state appeared.
+- Permission selection exposed the Pix-compatible default, automatic review, and full
+  access presets with immediate selected-state feedback.
+- Thinking selection displayed and retained the active `high` level.
+- Context usage displayed the real initial 0% state and is wired to runtime usage events.
+- The resource menu loaded real authorized workspace paths, used native file/folder
+  actions, scrolled correctly, and closed through the normal trigger behavior.
+
+## Automated Evidence
+
+- Renderer: 138 tests passed; 84.78% statements, 80.02% branches, 85.03% functions,
+  and 87.85% lines.
+- Agent Bridge: 92 tests passed; 92.78% statements, 83.60% branches, 97.69% functions,
+  and 94.80% lines.
+- Rust Core: 64 tests passed.
+- `pnpm check` passed for TypeScript and Rust.
+- `pnpm build` passed for the Bridge bundle, Renderer production bundle, and Rust app.
+
+No P0, P1, or P2 visual or interaction issues remain in the requested surface.

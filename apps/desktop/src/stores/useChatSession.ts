@@ -14,6 +14,7 @@ import {
   type AgentModel,
   type AgentSession,
   type AgentSessionSummary,
+  type ContextUsage,
   type PromptStreamingBehavior,
   type QueuedMessages,
   type SessionConfiguration,
@@ -26,6 +27,11 @@ import {
   removeRecentWorkspace,
   type WorkspaceState,
 } from "../ipc/workspace";
+import {
+  displayPromptContent,
+  normalizeAttachedPaths,
+  promptWithAttachedPaths,
+} from "../components/composerAttachments";
 import { appendMonotonicText } from "./chatStream";
 
 export type TimelineRole = "user" | "assistant" | "thinking" | "tool" | "system";
@@ -72,6 +78,7 @@ interface SessionProjection {
   modelFallbackMessage: string | null;
   queuedMessages: QueuedMessages;
   queuePaused: boolean;
+  contextUsage: ContextUsage | null;
 }
 
 export interface ChatSessionState {
@@ -94,17 +101,20 @@ export interface ChatSessionState {
   runningSessionIds: string[];
   queuedMessages: QueuedMessages;
   queuePaused: boolean;
+  contextUsage: ContextUsage | null;
   loadCatalogs: () => Promise<void>;
   createSession: (cwd: string) => Promise<boolean>;
   createConversation: () => Promise<boolean>;
   openSession: (session: SessionListItem) => Promise<boolean>;
   removeWorkspace: (cwd: string) => Promise<void>;
+  prepareConfiguration: () => Promise<boolean>;
   updateModel: (provider: string, id: string) => Promise<void>;
   updateThinkingLevel: (level: ThinkingLevel) => Promise<void>;
   sendPrompt: (
     text: string,
     behavior?: PromptStreamingBehavior,
     activeToolNames?: string[],
+    attachedPaths?: string[],
   ) => Promise<boolean>;
   clearQueue: () => Promise<void>;
   abort: () => Promise<void>;
@@ -370,17 +380,55 @@ export function useChatSession(): ChatSessionState {
     }
   }, []);
 
+  const materializeDraft = useCallback(
+    async (draftSessionId: string): Promise<SessionProjection | null> => {
+      const draft = projectionsRef.current[draftSessionId];
+      if (!draft) return null;
+      if (draft.lifecycle !== "draft") return draft;
+      if (materializingDrafts.current.has(draftSessionId)) return null;
+      materializingDrafts.current.add(draftSessionId);
+      setNavigationPending(true);
+      commitProjections((current) => updateProjectionError(current, draftSessionId, null));
+      try {
+        const cwd = draft.cwd || (await ensureConversationWorkspace());
+        return installSession(await createAgentSession(cwd), "live", draftSessionId);
+      } catch (error) {
+        commitProjections((current) =>
+          updateProjectionError(current, draftSessionId, formatError(error)),
+        );
+        return null;
+      } finally {
+        materializingDrafts.current.delete(draftSessionId);
+        setNavigationPending(false);
+      }
+    },
+    [commitProjections, installSession],
+  );
+
+  const prepareConfiguration = useCallback(async () => {
+    const sessionId = activeSessionIdRef.current;
+    const projection = sessionId ? projectionsRef.current[sessionId] : undefined;
+    if (!sessionId || !projection || eventConnection !== "ready") return false;
+    if (projection.lifecycle !== "draft") return projection.configuration !== null;
+    return Boolean((await materializeDraft(sessionId))?.configuration);
+  }, [eventConnection, materializeDraft]);
+
   const updateConfiguration = useCallback(
     async (update: {
       model?: Pick<AgentModel, "provider" | "id">;
       thinkingLevel?: ThinkingLevel;
     }) => {
-      const sessionId = activeSessionIdRef.current;
-      const projection = sessionId ? projectionsRef.current[sessionId] : undefined;
+      let sessionId = activeSessionIdRef.current;
+      let projection: SessionProjection | null | undefined = sessionId
+        ? projectionsRef.current[sessionId]
+        : undefined;
+      if (sessionId && projection?.lifecycle === "draft") {
+        projection = await materializeDraft(sessionId);
+        sessionId = projection?.sessionId ?? null;
+      }
       if (
         !sessionId ||
         !projection ||
-        projection.lifecycle === "draft" ||
         projection.phase !== "ready" ||
         configuringSessionId
       ) {
@@ -402,7 +450,7 @@ export function useChatSession(): ChatSessionState {
         setConfiguringSessionId(null);
       }
     },
-    [commitProjections, configuringSessionId],
+    [commitProjections, configuringSessionId, materializeDraft],
   );
 
   const updateModel = useCallback(
@@ -415,10 +463,19 @@ export function useChatSession(): ChatSessionState {
   );
 
   const sendPrompt = useCallback(
-    async (text: string, behavior?: PromptStreamingBehavior, activeToolNames?: string[]) => {
+    async (
+      text: string,
+      behavior?: PromptStreamingBehavior,
+      activeToolNames?: string[],
+      attachedPaths: string[] = [],
+    ) => {
       let sessionId = activeSessionIdRef.current;
-      let projection = sessionId ? projectionsRef.current[sessionId] : undefined;
-      const content = text.trim();
+      let projection: SessionProjection | null | undefined = sessionId
+        ? projectionsRef.current[sessionId]
+        : undefined;
+      const paths = normalizeAttachedPaths(attachedPaths);
+      const content = text.trim() || (paths.length > 0 ? "请查看附加的文件。" : "");
+      const wireContent = promptWithAttachedPaths(content, paths);
       if (
         !sessionId ||
         !projection ||
@@ -429,28 +486,9 @@ export function useChatSession(): ChatSessionState {
         return false;
       }
       if (projection.lifecycle === "draft") {
-        const draftSessionId = sessionId;
-        if (materializingDrafts.current.has(draftSessionId)) return false;
-        materializingDrafts.current.add(draftSessionId);
-        setNavigationPending(true);
-        commitProjections((current) => updateProjectionError(current, draftSessionId, null));
-        try {
-          const cwd = projection.cwd || (await ensureConversationWorkspace());
-          projection = installSession(
-            await createAgentSession(cwd),
-            "live",
-            draftSessionId,
-          );
-          sessionId = projection.sessionId;
-        } catch (error) {
-          commitProjections((current) =>
-            updateProjectionError(current, draftSessionId, formatError(error)),
-          );
-          return false;
-        } finally {
-          materializingDrafts.current.delete(draftSessionId);
-          setNavigationPending(false);
-        }
+        projection = await materializeDraft(sessionId);
+        if (!projection) return false;
+        sessionId = projection.sessionId;
       }
       const queued = projection.phase === "streaming";
       const streamingBehavior = queued ? (behavior ?? "steer") : undefined;
@@ -490,7 +528,7 @@ export function useChatSession(): ChatSessionState {
         };
       });
       try {
-        await promptAgent(sessionId, content, streamingBehavior, promptTools);
+        await promptAgent(sessionId, wireContent, streamingBehavior, promptTools);
         void loadCatalogsRef.current();
         return true;
       } catch (error) {
@@ -520,7 +558,7 @@ export function useChatSession(): ChatSessionState {
         return false;
       }
     },
-    [commitProjections, configuringSessionId, eventConnection, installSession, nextItemId],
+    [commitProjections, configuringSessionId, eventConnection, materializeDraft, nextItemId],
   );
 
   const clearQueue = useCallback(async () => {
@@ -625,11 +663,13 @@ export function useChatSession(): ChatSessionState {
     runningSessionIds,
     queuedMessages: active?.queuedMessages ?? emptyQueue(),
     queuePaused: active?.queuePaused ?? false,
+    contextUsage: active?.contextUsage ?? null,
     loadCatalogs,
     createSession,
     createConversation,
     openSession,
     removeWorkspace,
+    prepareConfiguration,
     updateModel,
     updateThinkingLevel,
     sendPrompt,
@@ -648,7 +688,7 @@ function projectionFromSession(
   const messages = session.messages.map<ChatMessage>((message) => ({
     id: nextId(session.sessionId),
     role: message.role,
-    content: message.content,
+    content: message.role === "user" ? displayPromptContent(message.content) : message.content,
     ...(message.timestamp ? { timestamp: message.timestamp } : {}),
     ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
     ...(message.toolName ? { toolName: message.toolName } : {}),
@@ -665,11 +705,12 @@ function projectionFromSession(
     lifecycle,
     createdAt: replaced?.createdAt ?? new Date().toISOString(),
     modifiedAt: new Date().toISOString(),
-    queuedMessages: session.queuedMessages ?? emptyQueue(),
+    queuedMessages: displayQueuedMessages(session.queuedMessages ?? emptyQueue()),
     queuePaused: !session.streaming && queueSize(session.queuedMessages ?? emptyQueue()) > 0,
     phase: session.streaming ? "streaming" : "ready",
     error: null,
     modelFallbackMessage: session.modelFallbackMessage,
+    contextUsage: readContextUsage(session.contextUsage),
   };
 }
 
@@ -689,6 +730,7 @@ function createDraftProjection(sessionId: string, cwd: string): SessionProjectio
     modelFallbackMessage: null,
     queuedMessages: emptyQueue(),
     queuePaused: false,
+    contextUsage: null,
   };
 }
 
@@ -757,6 +799,9 @@ function applyAgentEvent(
     const configuration = readConfiguration(event.data);
     return configuration ? { ...projection, configuration } : projection;
   }
+  if (event.name === "session.usageChanged") {
+    return { ...projection, contextUsage: readContextUsage(event.data) };
+  }
   if (event.name === "queue.updated") {
     const queuedMessages = readQueuedMessages(event.data);
     return queuedMessages
@@ -768,8 +813,9 @@ function applyAgentEvent(
       : projection;
   }
   if (event.name === "user.message") {
-    const content = readEventText(event.data, "content");
-    if (!content) return projection;
+    const wireContent = readEventText(event.data, "content");
+    if (!wireContent) return projection;
+    const content = displayPromptContent(wireContent);
     const match = findLastOptimisticUser(projection.messages, content);
     return match < 0
       ? {
@@ -920,7 +966,29 @@ function readQueuedMessages(data: unknown): QueuedMessages | null {
   ) {
     return null;
   }
-  return { steering: data.steering, followUp: data.followUp };
+  return displayQueuedMessages({ steering: data.steering, followUp: data.followUp });
+}
+
+function displayQueuedMessages(queue: QueuedMessages): QueuedMessages {
+  return {
+    steering: queue.steering.map(displayPromptContent),
+    followUp: queue.followUp.map(displayPromptContent),
+  };
+}
+
+function readContextUsage(data: unknown): ContextUsage | null {
+  if (!isRecord(data)) return null;
+  const { tokens, contextWindow, percent } = data;
+  return Number.isSafeInteger(tokens) &&
+    Number(tokens) >= 0 &&
+    Number.isSafeInteger(contextWindow) &&
+    Number(contextWindow) > 0 &&
+    typeof percent === "number" &&
+    Number.isFinite(percent) &&
+    percent >= 0 &&
+    percent <= 100
+    ? { tokens: Number(tokens), contextWindow: Number(contextWindow), percent }
+    : null;
 }
 
 function readToolEvent(data: unknown): { toolCallId: string; toolName: string } | null {

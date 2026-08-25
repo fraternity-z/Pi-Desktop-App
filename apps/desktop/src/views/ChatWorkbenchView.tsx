@@ -9,19 +9,28 @@ import {
   RefreshCw,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
 
 import { AppSidebar, threadTitle } from "../components/AppSidebar";
 import { ChatComposer } from "../components/ChatComposer";
+import {
+  MAX_COMPOSER_ATTACHMENTS,
+  normalizeAttachedPaths,
+} from "../components/composerAttachments";
 import { ConversationTimeline } from "../components/ConversationTimeline";
 import { RuntimeStatusControl } from "../components/RuntimeStatusControl";
 import { SettingsSidebar, type SettingsSectionId } from "../components/SettingsSidebar";
 import type { PromptStreamingBehavior } from "../ipc/agent";
-import { selectProjectDirectory } from "../ipc/project";
+import {
+  selectAttachmentDirectory,
+  selectAttachmentFiles,
+  selectProjectDirectory,
+} from "../ipc/project";
 import {
   createWorkspaceWorktree,
   getWorktreeOptions,
   revealWorkspace,
+  searchWorkspacePaths,
 } from "../ipc/workspace";
 import { useAppPreferences } from "../stores/useAppPreferences";
 import { useAgentEcosystem } from "../stores/useAgentEcosystem";
@@ -53,6 +62,9 @@ export function ChatWorkbenchView() {
   const [projectPath, setProjectPath] = useState("");
   const [projectSelectionError, setProjectSelectionError] = useState<string | null>(null);
   const [selectingProject, setSelectingProject] = useState(false);
+  const [attachments, setAttachments] = useState<string[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [branchName, setBranchName] = useState<string | null>(null);
   const messagesEnd = useRef<HTMLDivElement>(null);
   const conversationScroll = useRef<HTMLDivElement>(null);
   const shouldStickToBottom = useRef(true);
@@ -75,7 +87,7 @@ export function ChatWorkbenchView() {
     (session.phase === "ready" || session.phase === "streaming") &&
     eventChannelReady &&
     !session.configuring &&
-    draft.trim().length > 0;
+    (draft.trim().length > 0 || attachments.length > 0);
 
   useEffect(() => {
     if (shouldStickToBottom.current) {
@@ -110,12 +122,31 @@ export function ChatWorkbenchView() {
     void ecosystem.refresh(managementCwd);
   }, [ecosystem.phase, ecosystem.refresh, eventChannelReady, managementCwd, runtimeReady]);
 
+  useEffect(() => {
+    if (!session.cwd) {
+      setBranchName(null);
+      return;
+    }
+    let cancelled = false;
+    void getWorktreeOptions(session.cwd)
+      .then((options) => {
+        if (!cancelled) setBranchName(options.branches.find((branch) => branch.current)?.name ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setBranchName(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session.cwd]);
+
   async function createProject(event: FormEvent) {
     event.preventDefault();
     if (!runtimeReady || !eventChannelReady || session.phase === "creating") {
       return;
     }
     if (await session.createSession(projectPath)) {
+      resetComposerInput();
       setProjectPath("");
       setProjectSelectionError(null);
       setProjectDialogOpen(false);
@@ -163,18 +194,21 @@ export function ChatWorkbenchView() {
       return;
     }
     if (await session.createSession(cwd)) {
+      resetComposerInput();
       closeSidebarAfterNavigation();
     }
   }
 
   async function createConversation() {
     if (await session.createConversation()) {
+      resetComposerInput();
       closeSidebarAfterNavigation();
     }
   }
 
   async function openSession(selected: SessionListItem) {
     if (await session.openSession(selected)) {
+      resetComposerInput();
       closeSidebarAfterNavigation();
     }
   }
@@ -238,13 +272,63 @@ export function ChatWorkbenchView() {
       return;
     }
     const prompt = draft;
+    const attachedPaths = attachments;
     shouldStickToBottom.current = true;
     setAtConversationBottom(true);
     setDraft("");
-    void session.sendPrompt(prompt, behavior, toolPermissions.promptToolNames).then((sent) => {
-      if (!sent) setDraft((current) => current || prompt);
-    });
+    setAttachments([]);
+    setAttachmentError(null);
+    void session
+      .sendPrompt(prompt, behavior, toolPermissions.promptToolNames, attachedPaths)
+      .then((sent) => {
+        if (!sent) {
+          setDraft((current) => current || prompt);
+          setAttachments((current) => normalizeAttachedPaths([...attachedPaths, ...current]));
+        }
+      });
   }
+
+  function resetComposerInput() {
+    setDraft("");
+    setAttachments([]);
+    setAttachmentError(null);
+  }
+
+  const addAttachments = useCallback(
+    (paths: string[]) => {
+      const next = normalizeAttachedPaths([...attachments, ...paths]);
+      setAttachments(next);
+      setAttachmentError(
+        attachments.length + paths.length > MAX_COMPOSER_ATTACHMENTS
+          ? `最多可添加 ${MAX_COMPOSER_ATTACHMENTS} 个文件或文件夹`
+          : null,
+      );
+    },
+    [attachments],
+  );
+
+  const addFiles = useCallback(async () => {
+    try {
+      addAttachments(await selectAttachmentFiles());
+    } catch (error) {
+      setAttachmentError(formatProjectSelectionError(error));
+    }
+  }, [addAttachments]);
+
+  const addFolder = useCallback(async () => {
+    try {
+      const path = await selectAttachmentDirectory();
+      if (path) addAttachments([path]);
+    } catch (error) {
+      setAttachmentError(formatProjectSelectionError(error));
+    }
+  }, [addAttachments]);
+
+  const searchComposerPaths = useCallback(
+    (query: string) =>
+      session.cwd ? searchWorkspacePaths(session.cwd, query, 24) : Promise.resolve([]),
+    [session.cwd],
+  );
 
   const runtimeMessage = getRuntimeMessage(runtime);
   const eventChannelFailed = session.eventConnection === "error";
@@ -462,12 +546,20 @@ export function ChatWorkbenchView() {
               {hasSession && (
                 <ChatComposer
                   workspaceName={workspaceName}
+                  workspacePath={session.cwd}
+                  recentWorkspaces={session.recentWorkspaces}
+                  branchName={branchName}
                   draft={draft}
                   phase={session.phase}
                   eventConnection={session.eventConnection}
                   models={session.models}
                   configuration={session.configuration}
                   configuring={session.configuring}
+                  catalogPhase={session.catalogPhase}
+                  catalogError={session.catalogError}
+                  contextUsage={session.contextUsage}
+                  attachments={attachments}
+                  attachmentError={attachmentError}
                   canSend={canSend}
                   queuedMessages={session.queuedMessages}
                   queuePaused={session.queuePaused}
@@ -476,6 +568,18 @@ export function ChatWorkbenchView() {
                   selectedToolNames={toolPermissions.selectedToolNames}
                   defaultToolNames={toolPermissions.defaultToolNames}
                   onDraftChange={setDraft}
+                  onProjectChange={(cwd) => void createSession(cwd)}
+                  onAddProject={openProjectDialog}
+                  onAddFiles={() => void addFiles()}
+                  onAddFolder={() => void addFolder()}
+                  onSearchWorkspacePaths={searchComposerPaths}
+                  onAttachPath={(path) => addAttachments([path])}
+                  onRemoveAttachment={(path) => {
+                    setAttachments((current) => current.filter((item) => item !== path));
+                    setAttachmentError(null);
+                  }}
+                  onRetryModels={() => void session.loadCatalogs()}
+                  onPrepareConfiguration={session.prepareConfiguration}
                   onModelChange={(provider, id) => void session.updateModel(provider, id)}
                   onThinkingLevelChange={(level) => void session.updateThinkingLevel(level)}
                   onUseDefaultTools={toolPermissions.useDefaultTools}

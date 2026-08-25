@@ -60,6 +60,7 @@ export const BRIDGE_CAPABILITIES = [
   "request-header-profiles",
   "packages",
   "resources",
+  "context-usage",
 ] as const;
 
 export type BridgeOperation = (typeof BRIDGE_OPERATIONS)[number];

@@ -34,6 +34,7 @@ interface SessionMock {
   setModel: ReturnType<typeof vi.fn>;
   setThinkingLevel: ReturnType<typeof vi.fn>;
   setActiveToolsByName: ReturnType<typeof vi.fn>;
+  setContextUsage(value: unknown): void;
   dispose: ReturnType<typeof vi.fn>;
   unsubscribe: ReturnType<typeof vi.fn>;
   setStreaming(streaming: boolean): void;
@@ -51,6 +52,7 @@ function createSessionMock(
     followUp?: string[];
     tools?: Array<{ name: string; description?: string }>;
     activeTools?: string[];
+    contextUsage?: unknown;
   } = {},
 ): SessionMock {
   let listener: (event: unknown) => void = () => undefined;
@@ -66,6 +68,7 @@ function createSessionMock(
       { name: "write", description: "Write files" },
     ];
   let activeTools = options.activeTools ?? tools.map((tool) => tool.name);
+  let contextUsage: unknown = options.contextUsage ?? null;
   const prompt = vi.fn(async () => undefined);
   const abort = vi.fn(async () => undefined);
   const clearQueue = vi.fn();
@@ -81,6 +84,9 @@ function createSessionMock(
     const available = new Set(tools.map((tool) => tool.name));
     activeTools = names.filter((name) => available.has(name));
   });
+  const setContextUsage = (value: unknown) => {
+    contextUsage = value;
+  };
   const session: PiSessionLike = {
     sessionId,
     sessionFile: options.sessionFile,
@@ -105,6 +111,7 @@ function createSessionMock(
       currentModel.reasoning ? ["off", "low", "medium", "high"] : ["off"],
     getAllTools: () => tools,
     getActiveToolNames: () => activeTools,
+    getContextUsage: () => contextUsage,
     setActiveToolsByName,
     dispose,
     subscribe: vi.fn((nextListener: (event: unknown) => void) => {
@@ -121,6 +128,7 @@ function createSessionMock(
     setModel,
     setThinkingLevel,
     setActiveToolsByName,
+    setContextUsage,
     dispose,
     unsubscribe,
     setStreaming: (streaming) => {
@@ -133,12 +141,14 @@ function sdkReturning(...sessions: SessionMock[]): PiSdkLike & {
   createAgentSession: ReturnType<typeof vi.fn>;
   modelRuntime: {
     getAvailable: ReturnType<typeof vi.fn>;
+    getModels: ReturnType<typeof vi.fn>;
     getModel: ReturnType<typeof vi.fn>;
   };
   listAll: ReturnType<typeof vi.fn>;
 } {
   const modelRuntime = {
     getAvailable: vi.fn(async () => [reasoningModel, plainModel]),
+    getModels: vi.fn(() => [reasoningModel, plainModel]),
     getModel: vi.fn((provider: string, id: string) =>
       [reasoningModel, plainModel].find((model) => model.provider === provider && model.id === id),
     ),
@@ -271,6 +281,54 @@ describe("PiSessionRuntime", () => {
       { sessionId: "s-1", name: "agent.settled" },
     ]);
     expect(JSON.stringify(events)).not.toContain("secret");
+  });
+
+  it("可用性探测失败时回退到真实模型目录并去重", async () => {
+    const sdk = sdkReturning(createSessionMock());
+    sdk.modelRuntime.getAvailable.mockRejectedValueOnce(new Error("availability failed"));
+    sdk.modelRuntime.getModels.mockReturnValueOnce([
+      reasoningModel,
+      reasoningModel,
+      plainModel,
+      { provider: "", id: "invalid" },
+    ]);
+    const runtime = new PiSessionRuntime(sdk, "C:\\agent");
+
+    await expect(runtime.listModels()).resolves.toEqual([
+      { ...reasoningModel, name: "GPT Test" },
+      { ...plainModel, name: "plain" },
+    ]);
+  });
+
+  it("返回 SDK 上下文占用量并仅在数值变化时广播", async () => {
+    const sessionMock = createSessionMock("usage", {
+      contextUsage: { tokens: 1_024, contextWindow: 8_192, percent: 12.5 },
+    });
+    const runtime = new PiSessionRuntime(sdkReturning(sessionMock), "C:\\agent");
+    const events: RuntimeEvent[] = [];
+    runtime.subscribe((event) => events.push(event));
+
+    await expect(runtime.createSession("C:\\work")).resolves.toEqual(
+      expect.objectContaining({
+        contextUsage: { tokens: 1_024, contextWindow: 8_192, percent: 12.5 },
+      }),
+    );
+    sessionMock.emit({ type: "agent_start" });
+    expect(events).toEqual([{ sessionId: "usage", name: "agent.started" }]);
+
+    sessionMock.setContextUsage({ tokens: 2_048, contextWindow: 8_192 });
+    sessionMock.emit({ type: "message_end", message: { role: "assistant", stopReason: "stop" } });
+    expect(events).toContainEqual({
+      sessionId: "usage",
+      name: "session.usageChanged",
+      data: { tokens: 2_048, contextWindow: 8_192, percent: 25 },
+    });
+
+    const usageEventCount = events.filter((event) => event.name === "session.usageChanged").length;
+    sessionMock.emit({ type: "agent_settled" });
+    expect(events.filter((event) => event.name === "session.usageChanged")).toHaveLength(
+      usageEventCount,
+    );
   });
 
   it("在首条非排队提示前应用 SDK 工具权限并广播有效配置", async () => {

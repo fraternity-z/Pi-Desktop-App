@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashSet, VecDeque},
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
@@ -43,6 +43,112 @@ pub fn workspace_ensure_conversation(store: State<'_, WorkspaceStore>) -> Result
 const MAX_GIT_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_BRANCHES: usize = 512;
 const MAX_WORKTREE_NAME_BYTES: usize = 80;
+const MAX_PATH_SEARCH_RESULTS: usize = 48;
+const MAX_PATH_SEARCH_ENTRIES: usize = 10_000;
+const MAX_PATH_SEARCH_DEPTH: usize = 8;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspacePathMatch {
+    pub path: String,
+    pub relative_path: String,
+    pub kind: String,
+}
+
+#[tauri::command]
+pub async fn workspace_search_paths(
+    store: State<'_, WorkspaceStore>,
+    cwd: String,
+    query: String,
+    limit: usize,
+) -> Result<Vec<WorkspacePathMatch>, AppError> {
+    if limit == 0 || limit > MAX_PATH_SEARCH_RESULTS {
+        return Err(AppError::new(
+            "WORKSPACE_SEARCH_INVALID",
+            "工作区路径搜索条数必须为 1-48",
+        ));
+    }
+    let query = query.trim().to_owned();
+    if query.chars().count() > 200 || query.chars().any(char::is_control) {
+        return Err(AppError::new(
+            "WORKSPACE_SEARCH_INVALID",
+            "工作区路径搜索词无效或超过 200 个字符",
+        ));
+    }
+    let authorized = PathBuf::from(store.authorize(&cwd)?);
+    tauri::async_runtime::spawn_blocking(move || search_workspace_paths(&authorized, &query, limit))
+        .await
+        .map_err(|_| {
+            AppError::new(
+                "WORKSPACE_SEARCH_FAILED",
+                "搜索工作区路径时任务异常终止",
+            )
+        })?
+}
+
+fn search_workspace_paths(
+    root: &Path,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<WorkspacePathMatch>, AppError> {
+    let needle = query.to_lowercase();
+    let mut queue = VecDeque::from([(root.to_path_buf(), 0usize)]);
+    let mut matches = Vec::new();
+    let mut scanned = 0usize;
+
+    while let Some((directory, depth)) = queue.pop_front() {
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(_) if directory == root => {
+                return Err(AppError::new(
+                    "WORKSPACE_SEARCH_FAILED",
+                    "无法读取当前工作区目录",
+                ));
+            }
+            Err(_) => continue,
+        };
+        let mut entries = entries.filter_map(Result::ok).collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_lowercase());
+        for entry in entries {
+            scanned += 1;
+            if scanned > MAX_PATH_SEARCH_ENTRIES {
+                return Ok(matches);
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            let relative = path.strip_prefix(root).unwrap_or(&path);
+            let relative_text = relative.to_string_lossy().into_owned();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let is_directory = file_type.is_dir();
+            if is_directory && depth < MAX_PATH_SEARCH_DEPTH && !skip_search_directory(&name) {
+                queue.push_back((path.clone(), depth + 1));
+            }
+            if needle.is_empty() || relative_text.to_lowercase().contains(&needle) {
+                matches.push(WorkspacePathMatch {
+                    path: path.to_string_lossy().into_owned(),
+                    relative_path: relative_text,
+                    kind: if is_directory { "folder" } else { "file" }.to_owned(),
+                });
+                if matches.len() >= limit {
+                    return Ok(matches);
+                }
+            }
+        }
+    }
+    Ok(matches)
+}
+
+fn skip_search_directory(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        ".git" | "node_modules" | "target" | "dist" | "build" | ".next" | ".cache"
+    )
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -595,5 +701,28 @@ mod tests {
             .len(),
             7
         );
+    }
+
+    #[test]
+    fn searches_workspace_paths_breadth_first_and_skips_heavy_directories() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-desktop-workspace-search-test-{}",
+            std::process::id()
+        ));
+        let source = root.join("src");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(root.join("node_modules").join("hidden")).unwrap();
+        fs::write(root.join("README.md"), "readme").unwrap();
+        fs::write(source.join("composer.tsx"), "composer").unwrap();
+        fs::write(root.join("node_modules").join("hidden").join("composer.ts"), "x").unwrap();
+
+        let matches = search_workspace_paths(&root, "composer", 24).unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].kind, "file");
+        assert!(matches[0].relative_path.ends_with("composer.tsx"));
+
+        let initial = search_workspace_paths(&root, "", 2).unwrap();
+        assert_eq!(initial.len(), 2);
+        let _ = fs::remove_dir_all(root);
     }
 }

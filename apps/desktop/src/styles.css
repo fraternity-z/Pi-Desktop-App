@@ -1,24 +1,133 @@
-:root {
-  color: #202124;
-  background: #ffffff;
+:root,
+:root[data-theme="light"] {
+  color: #1f1f1f;
+  background: #f7f7f7;
+  color-scheme: light;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --canvas: #ffffff;
+  --canvas: #f7f7f7;
   --panel: #ffffff;
-  --sidebar: #f5f5f4;
-  --line: #e4e4e1;
-  --line-strong: #d1d1cd;
-  --text: #202124;
-  --muted: #676864;
-  --subtle: #92938f;
-  --hover: #ececea;
-  --selected: #e5e5e2;
+  --sidebar: #f1f1f1;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-raised-translucent: rgb(255 255 255 / 96%);
+  --surface-subtle: #f0f0f0;
+  --surface-panel: #ffffff;
+  --line: #dedede;
+  --line-strong: #c7c7c7;
+  --text: #1f1f1f;
+  --muted: #5f5f5f;
+  --subtle: #707070;
+  --hover: #e8e8e8;
+  --selected: #dcdcdc;
+  --input-bg: #ffffff;
+  --input-border: #c7c7c7;
+  --input-placeholder: #707070;
+  --button-primary-bg: #202020;
+  --button-primary-hover: #050505;
+  --button-primary-text: #ffffff;
+  --button-secondary-bg: #ffffff;
+  --button-secondary-hover: #eeeeee;
+  --button-secondary-text: #2f2f2f;
+  --switch-bg: #d0d0d0;
+  --switch-border: #b8b8b8;
+  --switch-thumb: #ffffff;
+  --switch-active: #2f2f2f;
+  --switch-active-border: #2f2f2f;
+  --switch-active-thumb: #ffffff;
+  --composer: #ffffff;
+  --composer-protrusion: #f0f0f0;
+  --user-bubble: #eeeeee;
+  --code-bg: #f2f2f2;
+  --code-border: #d4d4d4;
+  --code-text: #242424;
+  --link: #315f9e;
+  --link-hover: #214978;
+  --overlay: rgb(0 0 0 / 36%);
+  --shadow: 0 18px 48px rgb(0 0 0 / 16%);
+  --shadow-strong: 0 24px 64px rgb(0 0 0 / 24%);
+  --sidebar-translucent: rgb(241 241 241 / 88%);
+  --scrollbar: #b5b5b5;
+  --disabled-opacity: 0.46;
   --success: #24754b;
+  --success-bg: #edf7f1;
+  --success-border: #bad9c6;
   --danger: #a33c36;
+  --danger-hover: #842e29;
+  --danger-bg: #fff2f1;
+  --danger-border: #e5bbb7;
+  --warning: #705a20;
+  --warning-bg: #fff9e8;
+  --warning-border: #e5d59f;
+  --permission-full: #c94d22;
+  --permission-full-bg: #fff0ea;
   --focus: #3478d4;
+}
+
+:root[data-theme="dark"] {
+  color: #f2f2f2;
+  background: #171717;
+  color-scheme: dark;
+  --canvas: #171717;
+  --panel: #191919;
+  --sidebar: #202020;
+  --surface: #242424;
+  --surface-raised: #2a2a2a;
+  --surface-raised-translucent: rgb(42 42 42 / 96%);
+  --surface-subtle: #303030;
+  --surface-panel: #2a2a2a;
+  --line: #3b3b3b;
+  --line-strong: #505050;
+  --text: #f2f2f2;
+  --muted: #b3b3b3;
+  --subtle: #909090;
+  --hover: #303030;
+  --selected: #3b3b3b;
+  --input-bg: #252525;
+  --input-border: #505050;
+  --input-placeholder: #909090;
+  --button-primary-bg: #f1f1f1;
+  --button-primary-hover: #ffffff;
+  --button-primary-text: #171717;
+  --button-secondary-bg: #2a2a2a;
+  --button-secondary-hover: #363636;
+  --button-secondary-text: #f2f2f2;
+  --switch-bg: #3b3b3b;
+  --switch-border: #565656;
+  --switch-thumb: #d8d8d8;
+  --switch-active: #f0f0f0;
+  --switch-active-border: #f0f0f0;
+  --switch-active-thumb: #202020;
+  --composer: #252525;
+  --composer-protrusion: #202020;
+  --user-bubble: #2b2b2b;
+  --code-bg: #232323;
+  --code-border: #464646;
+  --code-text: #f0f0f0;
+  --link: #a9c9f5;
+  --link-hover: #d0e2fb;
+  --overlay: rgb(0 0 0 / 62%);
+  --shadow: 0 18px 48px rgb(0 0 0 / 42%);
+  --shadow-strong: 0 28px 72px rgb(0 0 0 / 52%);
+  --sidebar-translucent: rgb(32 32 32 / 88%);
+  --scrollbar: #555555;
+  --disabled-opacity: 0.48;
+  --success: #65c58f;
+  --success-bg: #1f3027;
+  --success-border: #365b45;
+  --danger: #ef817a;
+  --danger-hover: #ff9b95;
+  --danger-bg: #302221;
+  --danger-border: #5f3d3a;
+  --warning: #d8c474;
+  --warning-bg: #2c291f;
+  --warning-border: #595035;
+  --permission-full: #ff8a5c;
+  --permission-full-bg: #3a2822;
+  --focus: #8ab4f8;
 }
 
 * {
@@ -1203,28 +1312,6 @@ p {
 }
 
 /* Pix-compatible desktop workbench */
-:root {
-  color: #f2f2f2;
-  background: #191919;
-  color-scheme: dark;
-  --canvas: #191919;
-  --panel: #191919;
-  --sidebar: #151515;
-  --line: #3c3c3c;
-  --line-strong: #484848;
-  --text: #f2f2f2;
-  --muted: #acacac;
-  --subtle: #747474;
-  --hover: #383838;
-  --selected: #383838;
-  --surface-panel: #2d2d2d;
-  --composer: #2b2b2b;
-  --composer-protrusion: #1f1f1f;
-  --user-bubble: #272727;
-  --success: #55c792;
-  --danger: #ee776f;
-  --focus: #8ab4f8;
-}
 
 body {
   background: var(--canvas);
@@ -5112,4 +5199,794 @@ body {
     height: 38px;
     flex-basis: 38px;
   }
+}
+
+/* Unified application theme surfaces */
+html,
+body,
+#root {
+  background: var(--canvas);
+  color: var(--text);
+}
+
+.desktop-shell {
+  background: var(--canvas);
+  color: var(--text);
+}
+
+.workspace-main,
+.conversation-shell {
+  background: var(--panel);
+  color: var(--text);
+}
+
+.topbar,
+.ecosystem-topbar {
+  border-color: var(--line);
+  background: var(--panel);
+  color: var(--text);
+}
+
+.empty-workspace p,
+.empty-conversation p,
+.message-role,
+.tool-execution > span {
+  color: var(--muted);
+}
+
+.user-message-bubble,
+.assistant-message-content,
+.message-content {
+  color: var(--text);
+}
+
+.message-user,
+.user-message-bubble {
+  border-color: var(--line);
+  background: var(--user-bubble);
+}
+
+.markdown-content blockquote {
+  border-color: var(--line-strong);
+}
+
+.markdown-content a {
+  color: var(--link);
+  text-decoration-color: color-mix(in srgb, var(--link) 48%, transparent);
+}
+
+.markdown-content a:hover {
+  color: var(--link-hover);
+}
+
+.markdown-content code,
+.markdown-code-block pre {
+  border-color: var(--code-border);
+  background: var(--code-bg);
+  color: var(--code-text);
+}
+
+.markdown-content th,
+.markdown-content td {
+  border-color: var(--line);
+}
+
+.markdown-content th,
+.markdown-content tr:nth-child(2n) td {
+  background: var(--surface-subtle);
+}
+
+.thinking-block,
+.status-panel,
+.status-list div {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.primary-button,
+.sidebar-dialog .primary-button,
+.package-install-form .primary-button,
+.ecosystem-view .primary-button {
+  border-color: var(--button-primary-bg);
+  background: var(--button-primary-bg);
+  color: var(--button-primary-text);
+}
+
+.primary-button:not(:disabled):hover,
+.sidebar-dialog .primary-button:not(:disabled):hover,
+.package-install-form .primary-button:not(:disabled):hover,
+.ecosystem-view .primary-button:not(:disabled):hover {
+  border-color: var(--button-primary-hover);
+  background: var(--button-primary-hover);
+  color: var(--button-primary-text);
+}
+
+.secondary-button,
+.sidebar-dialog .secondary-button {
+  border-color: var(--line-strong);
+  background: var(--button-secondary-bg);
+  color: var(--button-secondary-text);
+}
+
+.secondary-button:not(:disabled):hover,
+.sidebar-dialog .secondary-button:not(:disabled):hover {
+  background: var(--button-secondary-hover);
+  color: var(--text);
+}
+
+.danger-button {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: #ffffff;
+}
+
+.danger-button:not(:disabled):hover {
+  border-color: var(--danger-hover);
+  background: var(--danger-hover);
+}
+
+.primary-button:disabled,
+.secondary-button:disabled,
+.danger-button:disabled,
+.icon-button:disabled,
+.floating-menu-item:disabled,
+.settings-toggle:disabled,
+.settings-select:disabled,
+.composer-icon-trigger:disabled,
+.composer-access-trigger:disabled,
+.composer-picker-trigger:disabled,
+.composer-menu button:disabled {
+  opacity: var(--disabled-opacity);
+}
+
+/* Main and settings sidebars share the same semantic rail colors. */
+.app-sidebar,
+.app-sidebar:not(.settings-sidebar) {
+  --pix-rail-bg: var(--sidebar);
+  --pix-rail-text: var(--text);
+  --pix-rail-muted: var(--muted);
+  --pix-rail-subtle: var(--subtle);
+  --pix-rail-hover: var(--hover);
+  --pix-rail-selected: var(--selected);
+  --pix-rail-line: var(--line);
+  border-color: var(--line);
+  background: var(--sidebar);
+  color: var(--text);
+}
+
+:root[data-sidebar-translucent="true"] .app-sidebar {
+  background: var(--sidebar-translucent);
+}
+
+.app-sidebar:not(.settings-sidebar) .sidebar-brand,
+.app-sidebar:not(.settings-sidebar) .sidebar-primary-actions button,
+.app-sidebar:not(.settings-sidebar) .project-select,
+.app-sidebar:not(.settings-sidebar) .session-row,
+.app-sidebar:not(.settings-sidebar) .sidebar-footer button,
+.settings-back-button,
+.settings-nav-item,
+.sidebar-footer button {
+  color: var(--text);
+}
+
+.app-sidebar:not(.settings-sidebar) .icon-button,
+.app-sidebar:not(.settings-sidebar) .sidebar-section-tools button,
+.app-sidebar:not(.settings-sidebar) .project-toggle,
+.app-sidebar:not(.settings-sidebar) .project-select svg,
+.app-sidebar:not(.settings-sidebar) .sidebar-row-menu,
+.app-sidebar:not(.settings-sidebar) .session-row-actions button,
+.app-sidebar:not(.settings-sidebar) .sidebar-footer a,
+.session-pin-marker {
+  color: var(--muted);
+}
+
+.app-sidebar:not(.settings-sidebar) .sidebar-primary-actions small,
+.app-sidebar:not(.settings-sidebar) .sidebar-show-more,
+.app-sidebar:not(.settings-sidebar) .session-empty-action,
+.app-sidebar:not(.settings-sidebar) .sidebar-empty-state button,
+.app-sidebar:not(.settings-sidebar) .sidebar-empty-state,
+.app-sidebar:not(.settings-sidebar) .sidebar-status,
+.sidebar-section-toggle,
+.settings-nav-group h2,
+.settings-search-empty {
+  color: var(--subtle);
+}
+
+.app-sidebar:not(.settings-sidebar) .icon-button:not(:disabled):hover,
+.app-sidebar:not(.settings-sidebar) .sidebar-section-tools button:not(:disabled):hover,
+.app-sidebar:not(.settings-sidebar) .project-toggle:not(:disabled):hover,
+.app-sidebar:not(.settings-sidebar) .sidebar-row-menu:not(:disabled):hover,
+.app-sidebar:not(.settings-sidebar) .session-row-actions button:not(:disabled):hover,
+.app-sidebar:not(.settings-sidebar) .sidebar-primary-actions button:not(:disabled):hover,
+.app-sidebar:not(.settings-sidebar) .sidebar-primary-actions button[data-active="true"],
+.app-sidebar:not(.settings-sidebar) .session-row:hover,
+.app-sidebar:not(.settings-sidebar) .session-row[data-active="true"],
+.app-sidebar:not(.settings-sidebar) .sidebar-show-more:hover,
+.app-sidebar:not(.settings-sidebar) .session-empty-action:hover,
+.app-sidebar:not(.settings-sidebar) .sidebar-empty-state button:hover,
+.app-sidebar:not(.settings-sidebar) .sidebar-footer button:hover,
+.app-sidebar:not(.settings-sidebar) .sidebar-footer a:hover,
+.settings-back-button:hover,
+.settings-nav-item:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.app-sidebar:not(.settings-sidebar) .project-row[data-active="true"],
+.app-sidebar:not(.settings-sidebar) .session-row[data-active="true"],
+.settings-nav-item[aria-current="page"] {
+  background: var(--selected);
+  color: var(--text);
+}
+
+.sidebar-search-field,
+.settings-search-field,
+.settings-archive-search {
+  border-color: var(--input-border);
+  background: var(--input-bg);
+  color: var(--subtle);
+}
+
+.sidebar-search-field input,
+.settings-search-field input,
+.settings-archive-search input {
+  color: var(--text);
+}
+
+.sidebar-search-field input::placeholder,
+.settings-search-field input::placeholder,
+.settings-archive-search input::placeholder {
+  color: var(--input-placeholder);
+}
+
+.sidebar-search-field:focus-within,
+.settings-search-field:focus-within,
+.settings-archive-search:focus-within {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus) 18%, transparent);
+}
+
+.app-sidebar:not(.settings-sidebar) .sidebar-scroll,
+.settings-content-scroll,
+.composer-resource-results {
+  scrollbar-color: var(--scrollbar) transparent;
+}
+
+.app-sidebar:not(.settings-sidebar) .sidebar-resizer:hover::after,
+.app-sidebar:not(.settings-sidebar) .sidebar-resizer:focus-visible::after {
+  background: var(--line-strong);
+}
+
+/* Settings surfaces and controls */
+.settings-main,
+.settings-content-scroll {
+  background: var(--canvas);
+  color: var(--text);
+}
+
+.settings-card {
+  border-color: var(--line);
+  background: var(--surface);
+}
+
+.settings-row {
+  border-color: var(--line);
+}
+
+.settings-section-heading h2,
+.settings-save-status,
+.settings-archive-toolbar > span {
+  color: var(--subtle);
+}
+
+.settings-row-title,
+.settings-archive-empty strong {
+  color: var(--text);
+}
+
+.settings-row-description,
+.settings-status,
+.settings-value,
+.settings-range-control span,
+.settings-archive-empty,
+.settings-archive-meta time {
+  color: var(--muted);
+}
+
+.settings-select {
+  border-color: var(--input-border);
+  background: var(--input-bg);
+  color: var(--text);
+}
+
+.settings-select option,
+.sidebar-dialog-form option {
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.settings-toggle {
+  border-color: var(--switch-border);
+  background: var(--switch-bg);
+}
+
+.settings-toggle span {
+  background: var(--switch-thumb);
+}
+
+.settings-toggle[aria-checked="true"] {
+  border-color: var(--switch-active-border);
+  background: var(--switch-active);
+}
+
+.settings-toggle[aria-checked="true"] span {
+  background: var(--switch-active-thumb);
+}
+
+.settings-range-control input {
+  accent-color: var(--switch-active);
+}
+
+.settings-archive-actions .icon-button:not(:disabled):hover {
+  background: var(--hover);
+}
+
+.settings-archive-actions .settings-archive-delete,
+.settings-runtime-error,
+.sidebar-dialog-error,
+.form-hint-error,
+.composer-attachment-error,
+.composer-menu-state-error {
+  color: var(--danger);
+}
+
+.settings-runtime-error {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+}
+
+/* Portaled menus and dialogs inherit root tokens instead of a page-local theme. */
+.floating-menu,
+.composer-menu,
+.sidebar-dialog,
+.project-dialog {
+  border-color: var(--line-strong);
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: var(--shadow-strong);
+}
+
+.sidebar-dialog-backdrop,
+.dialog-backdrop,
+.sidebar-scrim {
+  background: var(--overlay);
+}
+
+.floating-menu-heading,
+.floating-menu-detail,
+.floating-menu-icon,
+.sidebar-dialog-header p,
+.sidebar-dialog .icon-button,
+.sidebar-dialog-form label,
+.sidebar-dialog-hint,
+.sidebar-dialog-loading,
+.project-dialog-header p,
+.project-source-label,
+.project-folder-picker-copy small {
+  color: var(--muted);
+}
+
+.floating-menu-item {
+  color: var(--text);
+}
+
+.floating-menu-item:not(:disabled):hover,
+.floating-menu-item[data-selected="true"] {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.floating-menu-item[data-danger="true"] {
+  color: var(--danger);
+}
+
+.floating-menu-separator,
+.composer-menu-divider {
+  background: var(--line);
+}
+
+.sidebar-dialog-form input,
+.sidebar-dialog-form select,
+.package-install-form input,
+.ecosystem-search input {
+  border-color: var(--input-border);
+  background: var(--input-bg);
+  color: var(--text);
+}
+
+.sidebar-dialog-form input::placeholder,
+.package-install-form input::placeholder,
+.ecosystem-search input::placeholder {
+  color: var(--input-placeholder);
+}
+
+.sidebar-dialog-form input:focus,
+.sidebar-dialog-form select:focus,
+.package-install-form input:focus,
+.ecosystem-search:focus-within {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus) 18%, transparent);
+}
+
+.project-folder-picker {
+  border-color: var(--input-border);
+  background: var(--surface-subtle);
+  color: var(--text);
+}
+
+.project-folder-picker:not(:disabled):hover {
+  border-color: var(--line-strong);
+  background: var(--hover);
+}
+
+.sidebar-action-feedback {
+  border-color: var(--success-border);
+  background: var(--surface-raised);
+  color: var(--success);
+  box-shadow: var(--shadow);
+}
+
+.sidebar-action-feedback[data-kind="error"] {
+  border-color: var(--danger-border);
+  color: var(--danger);
+}
+
+.sidebar-action-feedback button:hover {
+  background: var(--hover);
+}
+
+/* Composer and its portaled pickers use the same neutral layer scale. */
+.composer-dock {
+  color: var(--muted);
+}
+
+.composer-protrusion {
+  background: var(--composer-protrusion);
+  color: var(--text);
+}
+
+.composer-queue-card {
+  border-color: var(--line);
+  background: var(--surface-raised-translucent);
+  color: var(--muted);
+  box-shadow: var(--shadow);
+}
+
+.composer-queue-list {
+  border-color: var(--line);
+}
+
+.composer-queue-banner {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.composer-queue-row,
+.composer-queue-text,
+.composer-project-trigger,
+.composer-environment-chip {
+  color: var(--text);
+}
+
+.composer-queue-kind {
+  color: var(--muted);
+}
+
+.composer-project-bar {
+  border-color: var(--line-strong);
+  background: var(--surface-raised-translucent);
+  color: var(--text);
+}
+
+.composer-project-trigger:hover,
+.composer-project-trigger[aria-expanded="true"] {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.composer-frame {
+  border-color: var(--line-strong);
+  background: var(--composer);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.composer-frame:focus-within {
+  border-color: var(--focus);
+  box-shadow: var(--shadow), 0 0 0 2px color-mix(in srgb, var(--focus) 16%, transparent);
+}
+
+.composer-frame textarea,
+.composer-frame textarea:disabled {
+  background: transparent;
+  color: var(--text);
+}
+
+.composer-frame textarea::placeholder {
+  color: var(--input-placeholder);
+}
+
+.composer-attachment-chip {
+  border-color: var(--line);
+  background: var(--surface-subtle);
+  color: var(--muted);
+}
+
+.composer-attachment-chip button,
+.composer-context,
+.composer-icon-trigger,
+.composer-access-trigger,
+.composer-picker-trigger,
+.composer-context-meter,
+.composer-project-copy small,
+.composer-permission-copy small,
+.composer-resource-actions small,
+.composer-resource-row > small,
+.composer-menu-state,
+.composer-model-empty p {
+  color: var(--muted);
+}
+
+.composer-attachment-chip button:hover,
+.composer-select:hover,
+.composer-icon-trigger:not(:disabled):hover,
+.composer-icon-trigger[aria-expanded="true"],
+.composer-access-trigger:not(:disabled):hover,
+.composer-access-trigger[aria-expanded="true"],
+.composer-picker-trigger:not(:disabled):hover,
+.composer-picker-trigger[aria-expanded="true"] {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.composer-select select {
+  color: var(--muted);
+}
+
+.composer-access-trigger[data-mode="full"],
+.composer-menu .composer-permission-row-full,
+.composer-menu .composer-permission-row-full strong,
+.composer-menu .composer-permission-row-full small {
+  color: var(--permission-full);
+}
+
+.composer-access-trigger[data-mode="none"] {
+  color: var(--danger);
+}
+
+.composer-operation-status,
+.composer-frame[aria-busy="true"] .composer-context {
+  color: var(--success);
+}
+
+.composer-context-meter[data-empty="true"] {
+  color: var(--subtle);
+}
+
+.composer-submit {
+  border-color: var(--button-primary-bg);
+  background: var(--button-primary-bg);
+  color: var(--button-primary-text);
+}
+
+.composer-submit:not(:disabled):hover {
+  border-color: var(--button-primary-hover);
+  background: var(--button-primary-hover);
+  color: var(--button-primary-text);
+}
+
+.composer-stop,
+.composer-stop:hover {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: #ffffff;
+}
+
+.composer-menu-group + .composer-menu-group {
+  border-color: var(--line);
+}
+
+.composer-menu-group > p,
+.composer-menu-title,
+.composer-resources-title {
+  color: var(--subtle);
+}
+
+.composer-menu button {
+  color: var(--text);
+}
+
+.composer-menu button:not(:disabled):hover,
+.composer-menu button[aria-checked="true"] {
+  background: var(--selected);
+  color: var(--text);
+}
+
+.composer-menu .composer-tool-row[aria-checked="true"],
+.composer-menu .composer-tool-row:hover,
+.composer-menu .composer-tool-row[aria-checked="true"]:hover {
+  background: var(--selected);
+}
+
+.composer-tool-check {
+  border-color: var(--line-strong);
+  color: var(--button-primary-text);
+}
+
+.composer-tool-row[aria-checked="true"] .composer-tool-check {
+  border-color: var(--button-primary-bg);
+  background: var(--button-primary-bg);
+}
+
+.composer-menu .composer-permission-row-full[aria-checked="true"],
+.composer-menu .composer-permission-row-full:not(:disabled):hover {
+  background: var(--permission-full-bg);
+}
+
+.composer-resource-results::-webkit-scrollbar-thumb {
+  background: var(--scrollbar);
+  background-clip: padding-box;
+}
+
+.scroll-latest-button {
+  border-color: var(--line-strong);
+  background: var(--surface-raised);
+  color: var(--muted);
+  box-shadow: var(--shadow);
+}
+
+.scroll-latest-button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+/* Package and resource views follow the same application theme. */
+.ecosystem-view {
+  background: var(--canvas);
+  color: var(--text);
+}
+
+.ecosystem-topbar h1 {
+  color: var(--text);
+}
+
+.ecosystem-topbar-leading span,
+.ecosystem-topbar .icon-button,
+.package-install-copy p,
+.package-install-form > label,
+.package-install-form legend,
+.package-row-main span,
+.resource-row-main span,
+.resource-source,
+.package-row .icon-button,
+.resource-row .icon-button,
+.resource-kind-tabs button,
+.resource-kind-tabs button span,
+.ecosystem-state,
+.ecosystem-pagination {
+  color: var(--muted);
+}
+
+.ecosystem-topbar .icon-button:not(:disabled):hover,
+.package-row .icon-button:not(:disabled):hover,
+.resource-row .icon-button:not(:disabled):hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.segmented-control {
+  border-color: var(--line);
+  background: var(--surface-subtle);
+}
+
+.segmented-control button {
+  color: var(--muted);
+}
+
+.segmented-control button[aria-selected="true"],
+.segmented-control button[aria-pressed="true"] {
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.ecosystem-search,
+.package-install-form,
+.ecosystem-list {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.package-row,
+.resource-row {
+  border-color: var(--line);
+}
+
+.package-row-icon,
+.resource-kind-chip {
+  background: var(--surface-subtle);
+  color: var(--muted);
+}
+
+.package-row-main strong,
+.resource-row-main strong {
+  color: var(--text);
+}
+
+.update-badge {
+  background: color-mix(in srgb, var(--focus) 12%, var(--surface));
+  color: var(--focus);
+}
+
+.compact-switch > span {
+  border-color: var(--switch-border);
+  background: var(--switch-bg);
+}
+
+.compact-switch > span::after {
+  background: var(--switch-thumb);
+}
+
+.compact-switch input:checked + span {
+  border-color: var(--switch-active-border);
+  background: var(--switch-active);
+}
+
+.compact-switch input:checked + span::after {
+  background: var(--switch-active-thumb);
+}
+
+.resource-kind-tabs button:hover,
+.resource-kind-tabs button[aria-selected="true"] {
+  border-color: var(--line);
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.ecosystem-error {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.ecosystem-error button,
+.ecosystem-state button,
+.ecosystem-pagination button {
+  border-color: var(--line-strong);
+  background: var(--button-secondary-bg);
+  color: var(--button-secondary-text);
+}
+
+.inline-alert {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.inline-alert-secondary,
+.inline-notice {
+  border-color: var(--warning-border);
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+.inline-alert button {
+  background: var(--surface-raised);
+}
+
+.inline-alert button:hover {
+  background: var(--hover);
 }

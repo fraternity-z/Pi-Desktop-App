@@ -61,7 +61,7 @@ describe("SettingsView", () => {
     expect(screen.getByTestId("settings-general")).toBeInTheDocument();
   });
 
-  it("外观设置支持密度、透明效果和侧边栏宽度", () => {
+  it("外观设置支持主题、密度、透明效果和侧边栏宽度", () => {
     const onPreferencesChange = vi.fn();
     const onSidebarWidthChange = vi.fn();
     render(
@@ -79,6 +79,11 @@ describe("SettingsView", () => {
         onPreferencesChange={onPreferencesChange}
       />,
     );
+
+    fireEvent.change(screen.getByRole("combobox", { name: "颜色主题" }), {
+      target: { value: "dark" },
+    });
+    expect(onPreferencesChange).toHaveBeenCalledWith({ theme: "dark" });
 
     fireEvent.change(screen.getByRole("combobox", { name: "界面密度" }), {
       target: { value: "compact" },

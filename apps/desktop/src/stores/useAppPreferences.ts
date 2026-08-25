@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 
 export type InterfaceDensity = "comfortable" | "compact";
+export type ThemePreference = "system" | "light" | "dark";
+export type ResolvedTheme = Exclude<ThemePreference, "system">;
 
 export interface AppPreferences {
   schemaVersion: 1;
   showSuggestions: boolean;
   showRuntimeStatus: boolean;
   sidebarTranslucent: boolean;
+  theme: ThemePreference;
   interfaceDensity: InterfaceDensity;
   reduceMotion: boolean;
   confirmRemoveWorkspace: boolean;
@@ -20,6 +23,7 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
   showSuggestions: true,
   showRuntimeStatus: true,
   sidebarTranslucent: false,
+  theme: "system",
   interfaceDensity: "comfortable",
   reduceMotion: false,
   confirmRemoveWorkspace: true,
@@ -44,6 +48,7 @@ export function normalizeAppPreferences(value: unknown): AppPreferences {
       value.sidebarTranslucent,
       DEFAULT_APP_PREFERENCES.sidebarTranslucent,
     ),
+    theme: readThemePreference(value.theme),
     interfaceDensity:
       value.interfaceDensity === "compact" || value.interfaceDensity === "comfortable"
         ? value.interfaceDensity
@@ -84,9 +89,22 @@ export function saveAppPreferences(
   return normalized;
 }
 
-export function applyAppPreferences(preferences: AppPreferences): void {
+export function resolveTheme(
+  preference: ThemePreference,
+  systemPrefersDark = false,
+): ResolvedTheme {
+  if (preference === "system") return systemPrefersDark ? "dark" : "light";
+  return preference;
+}
+
+export function applyAppPreferences(
+  preferences: AppPreferences,
+  systemPrefersDark = getSystemThemeQuery()?.matches ?? false,
+): void {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
+  root.dataset.themePreference = preferences.theme;
+  root.dataset.theme = resolveTheme(preferences.theme, systemPrefersDark);
   root.dataset.interfaceDensity = preferences.interfaceDensity;
   root.dataset.reduceMotion = String(preferences.reduceMotion);
   root.dataset.sidebarTranslucent = String(preferences.sidebarTranslucent);
@@ -97,7 +115,12 @@ export function useAppPreferences() {
 
   useEffect(() => {
     const normalized = saveAppPreferences(preferences);
-    applyAppPreferences(normalized);
+    const systemTheme = normalized.theme === "system" ? getSystemThemeQuery() : null;
+    const applyTheme = () => applyAppPreferences(normalized, systemTheme?.matches ?? false);
+
+    applyTheme();
+    systemTheme?.addEventListener("change", applyTheme);
+    return () => systemTheme?.removeEventListener("change", applyTheme);
   }, [preferences]);
 
   const updatePreferences = useCallback((patch: Partial<AppPreferences>) => {
@@ -118,6 +141,21 @@ function getDefaultStorage(): PreferencesStorage | null {
 
 function readBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
+}
+
+function readThemePreference(value: unknown): ThemePreference {
+  return value === "system" || value === "light" || value === "dark"
+    ? value
+    : DEFAULT_APP_PREFERENCES.theme;
+}
+
+function getSystemThemeQuery(): MediaQueryList | null {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return null;
+  try {
+    return window.matchMedia("(prefers-color-scheme: dark)");
+  } catch {
+    return null;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

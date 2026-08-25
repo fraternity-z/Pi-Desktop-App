@@ -13,7 +13,11 @@ import { useMemo, useState, type ReactNode } from "react";
 import { ConfirmSidebarDialog } from "../components/SidebarDialog";
 import type { SettingsSectionId } from "../components/SettingsSidebar";
 import type { AgentEventConnection } from "../stores/useChatSession";
-import type { AppPreferences, InterfaceDensity } from "../stores/useAppPreferences";
+import type {
+  AppPreferences,
+  InterfaceDensity,
+  ThemePreference,
+} from "../stores/useAppPreferences";
 import type { RequestHeaderSettingsController } from "../stores/useRequestHeaderSettings";
 import type { RuntimeStatusController } from "../stores/useRuntimeStatus";
 import { useSidebarPreferences } from "../stores/useSidebarPreferences";
@@ -308,6 +312,26 @@ function AppearanceSettings({
 }) {
   return (
     <>
+      <SettingsSection label="主题">
+        <SettingsRow
+          title="颜色主题"
+          description="统一侧边栏、工作台、弹窗与设置页面的明暗显示。"
+          control={
+            <SettingsSelect
+              label="颜色主题"
+              value={preferences.theme}
+              options={[
+                { value: "system", label: "跟随系统" },
+                { value: "light", label: "浅色" },
+                { value: "dark", label: "深色" },
+              ]}
+              onChange={(value) => onChange({ theme: value as ThemePreference })}
+            />
+          }
+          last
+        />
+      </SettingsSection>
+
       <SettingsSection label="布局">
         <SettingsRow
           title="界面密度"

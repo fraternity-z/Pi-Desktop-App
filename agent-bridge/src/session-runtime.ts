@@ -610,7 +610,8 @@ export class PiSessionRuntime implements SessionRuntime {
   async listSessions(): Promise<AgentSessionSummary[]> {
     this.ensureOpen();
     try {
-      const sessions = await this.sdk.SessionManager.listAll(join(this.agentDir, "sessions"));
+      // Default Pi sessions are nested by encoded cwd; an explicit directory is treated as flat.
+      const sessions = await this.sdk.SessionManager.listAll();
       const byPath = new Map(
         sessions.flatMap((session) => toSessionSummary(session)).map((session) => [session.path, session]),
       );

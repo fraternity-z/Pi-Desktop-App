@@ -219,7 +219,7 @@ describe("PiSessionRuntime", () => {
     await expect(runtime.listSessions()).resolves.toEqual([
       expect.objectContaining({ id: "saved-1", name: "Review", cwd: "C:\\work" }),
     ]);
-    expect(sdk.listAll).toHaveBeenCalledWith("C:\\agent\\sessions");
+    expect(sdk.listAll).toHaveBeenCalledWith();
 
     await runtime.prompt("s-1", "hello");
     await runtime.prompt("s-1", "guide", "steer");
@@ -439,6 +439,19 @@ describe("PiSessionRuntime", () => {
     await expect(runtime.listSessions()).resolves.toEqual([
       expect.objectContaining({ id: "pending", path: sessionPath, firstMessage: "hello" }),
     ]);
+  });
+
+  it("会话目录枚举失败时返回稳定且不泄露细节的错误", async () => {
+    const sdk = sdkReturning();
+    sdk.listAll.mockRejectedValueOnce(new Error("token=secret"));
+    const runtime = new PiSessionRuntime(sdk, "C:\\agent");
+
+    await expect(runtime.listSessions()).rejects.toEqual(
+      expect.objectContaining<Partial<RuntimeError>>({
+        code: "SESSION_LIST_FAILED",
+        message: "无法读取 Pi 会话列表",
+      }),
+    );
   });
 
   it("通过隐藏内联扩展将最新请求头配置应用到既有会话", async () => {

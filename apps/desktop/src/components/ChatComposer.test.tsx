@@ -62,6 +62,10 @@ describe("ChatComposer", () => {
     expect(screen.getByRole("button", { name: "选择思考强度" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "选择工具权限" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    const emptyMeter = screen.getByRole("meter", { name: "上下文占用量" });
+    expect(emptyMeter).not.toHaveAttribute("aria-valuenow");
+    expect(emptyMeter.querySelector(".composer-context-ring-track")).toBeInTheDocument();
+    expect(emptyMeter.querySelector(".composer-context-ring-progress")).not.toBeInTheDocument();
   });
 
   it("会话配置尚未生成时仍展示并允许选择真实模型目录", () => {
@@ -247,9 +251,12 @@ describe("ChatComposer", () => {
     );
 
     expect(screen.getByText("main")).toBeInTheDocument();
-    expect(screen.getByRole("meter", { name: "上下文占用量" })).toHaveAttribute(
-      "aria-valuenow",
-      "25",
+    const contextMeter = screen.getByRole("meter", { name: "上下文占用量" });
+    expect(contextMeter).toHaveAttribute("aria-valuenow", "25");
+    expect(contextMeter).toHaveAttribute("data-context-percent", "25");
+    expect(contextMeter.querySelector(".composer-context-ring-progress")).toHaveAttribute(
+      "stroke-dashoffset",
+      "75",
     );
     fireEvent.click(screen.getByRole("button", { name: "选择项目" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /other/ }));

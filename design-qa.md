@@ -95,3 +95,49 @@ composer clone.
 - `pnpm build` passed for the Bridge bundle, Renderer production bundle, and Rust app.
 
 No P0, P1, or P2 visual or interaction issues remain in the requested surface.
+
+# Composer Size And Context Ring QA
+
+## Visual Sources
+
+- Width and height reference: `C:\Users\Administrator\AppData\Local\Temp\codex-clipboard-92972096-5715-4c21-8bf2-43321049dd62.png`
+- Context ring reference: `C:\Users\Administrator\AppData\Local\Temp\codex-clipboard-5540c808-1d3d-43b7-95fc-dda4c205412d.png`
+- Reference implementation: `E:\code\pix\apps\desktop\src\renderer\components\Composer.tsx`
+- Native implementation screenshot: `C:\Users\Administrator\AppData\Local\Temp\codex-shot-2026-08-25_15-34-36.png`
+- Combined full and focused comparison: `C:\Users\Administrator\AppData\Local\Temp\pi-composer-comparison.png`
+- Target implementation: `apps/desktop/src/components/ChatComposer.tsx` and `apps/desktop/src/styles.css`
+
+## Viewport And State
+
+- Native Tauri window on Windows at a 1080 x 720 CSS viewport with 150% DPI scaling.
+- Ready conversation state for `MathStudyPlatform`, local runtime, `main` branch,
+  `gpt-5.6-sol`, high thinking level, default permissions, and 9% context usage.
+- The desktop main region measured 808 px after excluding the 272 px sidebar.
+
+## Comparison Findings
+
+| Area | Expected | Measured result | Status |
+| --- | --- | --- | --- |
+| Composer width | 50% of the main region | 404 / 808 px | Matched |
+| Horizontal position | Centered in the main region | Composer and main-region centers both at x = 676 px | Matched |
+| Input height | 50% above the former 60 px minimum | 90 px minimum; complete composer about 180 px | Matched |
+| Context track | Pix two-circle ring, radius 7, stroke 2.25, 20% track opacity | Same geometry and opacity | Matched |
+| Context occupancy | Clockwise arc starting at 12 o'clock | `strokeDashoffset = 100 - percent`, verified at 9% | Matched |
+| Layout integrity | No clipping or control overlap | Project row, textarea, controls, and percentage remain legible | Matched |
+| Narrow viewport | Preserve usable mobile layout | Existing <=760 px full-width fallback retained | Matched |
+
+The large width reduction and height increase are intentional requested differences from
+the first reference screenshot. The focused ring comparison matches the Pix occupancy
+model, including the empty track, rounded progress arc, and adjacent numeric percentage.
+No P0, P1, or P2 visual issue remains in the requested surface.
+
+## Automated Evidence
+
+- Renderer: 140 tests passed; 84.87% statements, 80.23% branches, 85.15% functions,
+  and 87.89% lines.
+- `ChatComposer.tsx`: 86.38% statements and 88.17% lines.
+- Agent Bridge: 92 tests passed.
+- Rust Core: 64 tests passed.
+- `pnpm check` and `pnpm build` passed.
+
+final result: passed

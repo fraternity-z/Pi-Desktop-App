@@ -4512,7 +4512,7 @@ body {
   position: sticky;
   bottom: 0;
   z-index: 12;
-  width: min(1068px, calc(100% - 110px));
+  width: 50%;
   margin: auto auto 0;
   padding: 0 0 10px;
   background: transparent;
@@ -4619,7 +4619,7 @@ body {
 
 .composer-frame textarea,
 .composer-frame textarea:disabled {
-  min-height: 60px;
+  min-height: 90px;
   max-height: 220px;
   padding: 14px 14px 5px;
   background: transparent;
@@ -4815,6 +4815,12 @@ body {
 
 .composer-context-meter[data-empty="true"] {
   color: #b6c1c0;
+}
+
+.composer-context-ring {
+  width: 19px;
+  height: 19px;
+  flex: 0 0 19px;
 }
 
 .composer-model-trigger {

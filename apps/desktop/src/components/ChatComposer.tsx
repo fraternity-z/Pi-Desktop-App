@@ -2,7 +2,6 @@ import {
   ArrowUp,
   Check,
   ChevronDown,
-  CircleGauge,
   File,
   Folder,
   FolderOpen,
@@ -786,7 +785,8 @@ export function ChatComposer({
 }
 
 function ContextMeter({ usage }: { usage: ContextUsage | null }) {
-  const percent = Math.round(usage?.percent ?? 0);
+  const hasPercent = usage !== null && Number.isFinite(usage.percent);
+  const percent = hasPercent ? clamp(Math.round(usage.percent), 0, 100) : 0;
   const title = usage
     ? `上下文占用 ${formatTokenCount(usage.tokens)} / ${formatTokenCount(usage.contextWindow)}（${percent}%）`
     : "上下文占用量将在会话开始后显示";
@@ -797,11 +797,37 @@ function ContextMeter({ usage }: { usage: ContextUsage | null }) {
       aria-label="上下文占用量"
       aria-valuemin={0}
       aria-valuemax={100}
-      aria-valuenow={percent}
+      aria-valuenow={hasPercent ? percent : undefined}
       title={title}
-      data-empty={usage === null}
+      data-empty={!hasPercent}
+      data-context-percent={percent}
     >
-      <CircleGauge size={19} aria-hidden="true" />
+      <svg className="composer-context-ring" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <circle
+          className="composer-context-ring-track"
+          cx="10"
+          cy="10"
+          r="7"
+          stroke="currentColor"
+          strokeWidth="2.25"
+          opacity="0.2"
+        />
+        {percent > 0 && (
+          <circle
+            className="composer-context-ring-progress"
+            cx="10"
+            cy="10"
+            r="7"
+            pathLength="100"
+            stroke="currentColor"
+            strokeWidth="2.25"
+            strokeLinecap="round"
+            strokeDasharray="100"
+            strokeDashoffset={100 - percent}
+            transform="rotate(-90 10 10)"
+          />
+        )}
+      </svg>
       <span>{percent}%</span>
     </span>
   );

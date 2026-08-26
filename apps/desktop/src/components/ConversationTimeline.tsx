@@ -1,14 +1,16 @@
 import {
   Brain,
   Check,
+  CheckCircle2,
   ChevronDown,
+  Circle,
   CircleX,
   Copy,
   LoaderCircle,
   Square,
   Wrench,
 } from "lucide-react";
-import { useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 
 import type { ChatMessage, TimelineStatus } from "../stores/useChatSession";
 import { MarkdownContent } from "./MarkdownContent";
@@ -18,14 +20,22 @@ interface ConversationTimelineProps {
   streaming: boolean;
 }
 
-export function ConversationTimeline({ messages, streaming }: ConversationTimelineProps) {
+export const ConversationTimeline = memo(function ConversationTimeline({
+  messages,
+  streaming,
+}: ConversationTimelineProps) {
+  const activeThinkingId = useMemo(
+    () => findActiveThinkingId(messages, streaming),
+    [messages, streaming],
+  );
+
   return (
     <div className="message-stream">
-      {messages.map((message, index) => (
+      {messages.map((message) => (
         <TimelineItem
           key={message.id}
           message={message}
-          live={streaming && index === messages.length - 1}
+          live={message.id === activeThinkingId}
         />
       ))}
       {streaming && (
@@ -36,9 +46,15 @@ export function ConversationTimeline({ messages, streaming }: ConversationTimeli
       )}
     </div>
   );
-}
+});
 
-function TimelineItem({ message, live }: { message: ChatMessage; live: boolean }) {
+const TimelineItem = memo(function TimelineItem({
+  message,
+  live,
+}: {
+  message: ChatMessage;
+  live: boolean;
+}) {
   if (message.role === "user") {
     return (
       <article className="timeline-row timeline-user">
@@ -61,9 +77,9 @@ function TimelineItem({ message, live }: { message: ChatMessage; live: boolean }
     );
   }
   return <AssistantMessage message={message} />;
-}
+});
 
-function AssistantMessage({ message }: { message: ChatMessage }) {
+const AssistantMessage = memo(function AssistantMessage({ message }: { message: ChatMessage }) {
   const [copied, setCopied] = useState(false);
   async function copyMessage() {
     try {
@@ -98,11 +114,25 @@ function AssistantMessage({ message }: { message: ChatMessage }) {
       )}
     </article>
   );
-}
+});
 
 function ThinkingBlock({ content, live }: { content: string; live: boolean }) {
+  const [open, setOpen] = useState(live);
+  const wasLive = useRef(live);
+
+  useEffect(() => {
+    if (live !== wasLive.current) {
+      setOpen(live);
+      wasLive.current = live;
+    }
+  }, [live]);
+
   return (
-    <details className="thinking-block" open={live}>
+    <details
+      className="thinking-block"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
       <summary>
         {live ? <LoaderCircle className="spin" size={14} /> : <Brain size={14} />}
         <span>{live ? "思考中" : "思考过程"}</span>
@@ -114,28 +144,72 @@ function ThinkingBlock({ content, live }: { content: string; live: boolean }) {
 }
 
 function ToolRow({ message }: { message: ChatMessage }) {
-  const status = message.status ?? "completed";
+  const status = message.status ?? "pending";
+  const hasDetails = Boolean(message.toolCallId || message.content);
+  const summary = (
+    <>
+      <span className="timeline-tool-icon" aria-hidden="true">
+        <ToolIcon status={status} />
+      </span>
+      <span className="timeline-tool-copy">
+        <strong className="timeline-tool-name">{message.toolName ?? "tool"}</strong>
+        <small>工具调用</small>
+      </span>
+      <span className="timeline-tool-status">{toolStatusLabel(status)}</span>
+      {hasDetails && <ChevronDown className="timeline-tool-chevron" size={14} />}
+    </>
+  );
+
+  if (!hasDetails) {
+    return <div className={`timeline-tool timeline-tool-${status}`}>{summary}</div>;
+  }
+
   return (
-    <div className={`timeline-tool timeline-tool-${status}`}>
-      <ToolIcon status={status} />
-      <span className="timeline-tool-name">{message.toolName ?? "tool"}</span>
-      <small>{toolStatusLabel(status)}</small>
-    </div>
+    <details className={`timeline-tool timeline-tool-${status}`}>
+      <summary>{summary}</summary>
+      <div className="timeline-tool-details">
+        {message.content && (
+          <section>
+            <span>执行结果</span>
+            <pre>{message.content}</pre>
+          </section>
+        )}
+        {message.toolCallId && (
+          <section>
+            <span>调用 ID</span>
+            <code>{message.toolCallId}</code>
+          </section>
+        )}
+      </div>
+    </details>
   );
 }
 
 function ToolIcon({ status }: { status: TimelineStatus }) {
+  if (status === "pending") return <Circle size={14} />;
   if (status === "running") return <LoaderCircle className="spin" size={14} />;
   if (status === "failed") return <CircleX size={14} />;
   if (status === "cancelled") return <Square size={13} />;
+  if (status === "completed") return <CheckCircle2 size={14} />;
   return <Wrench size={14} />;
 }
 
 function toolStatusLabel(status: TimelineStatus): string {
   return {
+    pending: "等待执行",
     running: "执行中",
     completed: "已完成",
     failed: "失败",
     cancelled: "已停止",
   }[status];
+}
+
+function findActiveThinkingId(messages: ChatMessage[], streaming: boolean): string | null {
+  if (!streaming) return null;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || message.role === "user" || message.role === "assistant") return null;
+    if (message.role === "thinking") return message.id;
+  }
+  return null;
 }

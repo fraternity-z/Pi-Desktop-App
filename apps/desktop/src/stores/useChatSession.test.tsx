@@ -218,9 +218,11 @@ describe("useChatSession", () => {
     ]);
 
     act(() => emit?.(event("user.message", { content: wireContent })));
-    expect(result.current.messages.filter((item) => item.role === "user")).toEqual([
-      expect.objectContaining({ content: "检查文件", optimistic: false }),
-    ]);
+    await waitFor(() =>
+      expect(result.current.messages.filter((item) => item.role === "user")).toEqual([
+        expect.objectContaining({ content: "检查文件", optimistic: false }),
+      ]),
+    );
   });
 
   it("从会话快照和增量事件同步上下文占用量", async () => {
@@ -246,11 +248,13 @@ describe("useChatSession", () => {
         }),
       ),
     );
-    expect(result.current.contextUsage).toEqual({
-      tokens: 4_096,
-      contextWindow: 8_192,
-      percent: 50,
-    });
+    await waitFor(() =>
+      expect(result.current.contextUsage).toEqual({
+        tokens: 4_096,
+        contextWindow: 8_192,
+        percent: 50,
+      }),
+    );
   });
 
   it("SDK 工具清单不可用时仍显式提交自定义禁止工具选择", async () => {
@@ -408,16 +412,51 @@ describe("useChatSession", () => {
       emit?.(event("tool.failed", { toolCallId: "tool-2", toolName: "bash" }));
       emit?.(event("agent.settled"));
     });
-    expect(result.current.phase).toBe("ready");
-    expect(result.current.messages.filter((item) => item.role === "user")).toHaveLength(1);
-    expect(result.current.messages.find((item) => item.role === "assistant")?.content).toBe("A");
-    expect(result.current.messages.filter((item) => item.role === "tool")).toEqual([
-      expect.objectContaining({ toolCallId: "tool-1", toolName: "read", status: "completed" }),
-      expect.objectContaining({ toolCallId: "tool-2", toolName: "bash", status: "failed" }),
-    ]);
+    await waitFor(() => {
+      expect(result.current.phase).toBe("ready");
+      expect(result.current.messages.filter((item) => item.role === "user")).toHaveLength(1);
+      expect(result.current.messages.find((item) => item.role === "assistant")?.content).toBe("A");
+      expect(result.current.messages.filter((item) => item.role === "tool")).toEqual([
+        expect.objectContaining({ toolCallId: "tool-1", toolName: "read", status: "completed" }),
+        expect.objectContaining({ toolCallId: "tool-2", toolName: "bash", status: "failed" }),
+      ]);
+    });
 
     await act(async () => resolvePrompt?.(10));
     expect(result.current.phase).toBe("ready");
+  });
+
+  it("将同一帧内的高频文本增量合并为一次渲染发布", async () => {
+    let frameCallback: FrameRequestCallback | undefined;
+    const requestFrame = vi.fn((callback: FrameRequestCallback) => {
+      frameCallback = callback;
+      return 1;
+    });
+    vi.stubGlobal("requestAnimationFrame", requestFrame);
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+
+    try {
+      const { result } = renderHook(() => useChatSession());
+      await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+      await act(() => result.current.createSession("C:\\work"));
+      await act(() => result.current.sendPrompt("batch"));
+
+      act(() => {
+        emit?.(event("agent.started"));
+        for (let index = 0; index < 24; index += 1) {
+          emit?.(event("message.delta", { delta: String(index % 10) }));
+        }
+      });
+
+      expect(requestFrame).toHaveBeenCalledOnce();
+      expect(result.current.messages.find((item) => item.role === "assistant")).toBeUndefined();
+      act(() => frameCallback?.(16));
+      expect(result.current.messages.find((item) => item.role === "assistant")?.content).toBe(
+        "012345678901234567890123",
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("保留已有流式文本并展示 prompt 与 abort 错误", async () => {
@@ -477,14 +516,16 @@ describe("useChatSession", () => {
       emit?.(event("agent.started"));
       emit?.(event("message.delta", { delta: "late answer" }));
     });
-    expect(result.current.phase).toBe("streaming");
-    expect(result.current.messages.at(-1)?.content).toBe("late answer");
+    await waitFor(() => {
+      expect(result.current.phase).toBe("streaming");
+      expect(result.current.messages.at(-1)?.content).toBe("late answer");
+    });
 
     act(() => {
       emit?.(event("agent.settled"));
     });
 
-    expect(result.current.phase).toBe("ready");
+    await waitFor(() => expect(result.current.phase).toBe("ready"));
   });
 
   it("只应用完整有效的会话配置事件", async () => {
@@ -503,14 +544,16 @@ describe("useChatSession", () => {
         }),
       );
     });
-    expect(result.current.configuration).toEqual({
-      model: null,
-      thinkingLevel: "off",
-      availableThinkingLevels: ["off"],
-      availableTools: [],
-      activeToolNames: [],
-      defaultToolNames: [],
-    });
+    await waitFor(() =>
+      expect(result.current.configuration).toEqual({
+        model: null,
+        thinkingLevel: "off",
+        availableThinkingLevels: ["off"],
+        availableTools: [],
+        activeToolNames: [],
+        defaultToolNames: [],
+      }),
+    );
 
     act(() => {
       emit?.(
@@ -663,10 +706,12 @@ describe("useChatSession", () => {
         }),
       );
     });
-    expect(result.current.queuedMessages).toEqual({
-      steering: ["SDK 引导"],
-      followUp: ["SDK 后续"],
-    });
+    await waitFor(() =>
+      expect(result.current.queuedMessages).toEqual({
+        steering: ["SDK 引导"],
+        followUp: ["SDK 后续"],
+      }),
+    );
 
     await act(() => result.current.clearQueue());
     expect(clearAgentQueue).toHaveBeenCalledWith("s-1");
@@ -700,7 +745,7 @@ describe("useChatSession", () => {
     act(() => {
       emit?.(event("queue.updated", { steering: [], followUp: [] }));
     });
-    expect(result.current.queuePaused).toBe(false);
+    await waitFor(() => expect(result.current.queuePaused).toBe(false));
   });
 
   it("恢复带队列的非流式会话时展示暂停状态，并忽略畸形队列事件", async () => {
@@ -733,7 +778,7 @@ describe("useChatSession", () => {
     act(() => emit?.(event("queue.updated", { steering: [1], followUp: [] }, "queued")));
     expect(result.current.queuedMessages.steering).toEqual(["待继续"]);
     act(() => emit?.(event("agent.started", undefined, "queued")));
-    expect(result.current.queuePaused).toBe(false);
+    await waitFor(() => expect(result.current.queuePaused).toBe(false));
   });
 
   it("切换到正式会话后可直接恢复未绑定草稿且不读取会话文件", async () => {

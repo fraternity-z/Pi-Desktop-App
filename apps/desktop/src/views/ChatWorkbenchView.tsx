@@ -68,6 +68,7 @@ export function ChatWorkbenchView() {
   const messagesEnd = useRef<HTMLDivElement>(null);
   const conversationScroll = useRef<HTMLDivElement>(null);
   const shouldStickToBottom = useRef(true);
+  const pendingConversationScroll = useRef<(() => void) | null>(null);
   const projectDialogTrigger = useRef<HTMLElement | null>(null);
   const ecosystemCwd = useRef("");
   const [atConversationBottom, setAtConversationBottom] = useState(true);
@@ -95,18 +96,43 @@ export function ChatWorkbenchView() {
     eventChannelReady &&
     !session.configuring &&
     (draft.trim().length > 0 || attachments.length > 0);
+  const lastMessage = session.messages.at(-1);
+  const conversationRevision = `${session.messages.length}:${lastMessage?.id ?? ""}:${lastMessage?.content.length ?? 0}:${lastMessage?.status ?? ""}`;
+
+  const scheduleConversationScroll = useCallback(
+    (behavior: ScrollBehavior = "auto", replacePending = false) => {
+      if (replacePending) {
+        pendingConversationScroll.current?.();
+        pendingConversationScroll.current = null;
+      }
+      if (pendingConversationScroll.current) return;
+      pendingConversationScroll.current = scheduleAfterLayout(() => {
+        pendingConversationScroll.current = null;
+        scrollConversationToBottom(conversationScroll.current, messagesEnd.current, behavior);
+      });
+    },
+    [],
+  );
 
   useEffect(() => {
     if (shouldStickToBottom.current) {
-      scrollConversationToBottom(conversationScroll.current, messagesEnd.current);
+      scheduleConversationScroll();
     }
-  }, [session.messages]);
+  }, [conversationRevision, scheduleConversationScroll]);
 
   useEffect(() => {
     shouldStickToBottom.current = true;
     setAtConversationBottom(true);
-    scrollConversationToBottom(conversationScroll.current, messagesEnd.current);
-  }, [session.sessionId]);
+    scheduleConversationScroll("auto", true);
+  }, [scheduleConversationScroll, session.sessionId]);
+
+  useEffect(
+    () => () => {
+      pendingConversationScroll.current?.();
+      pendingConversationScroll.current = null;
+    },
+    [],
+  );
 
   useEffect(() => {
     try {
@@ -249,9 +275,7 @@ export function ChatWorkbenchView() {
   function leaveSettings() {
     setActiveView("chat");
     closeSidebarAfterNavigation();
-    window.setTimeout(() => {
-      scrollConversationToBottom(conversationScroll.current, messagesEnd.current);
-    }, 0);
+    scheduleConversationScroll("auto", true);
   }
 
   function openSettingsSection(section: SettingsSectionId) {
@@ -501,13 +525,13 @@ export function ChatWorkbenchView() {
 
           <div
             className="conversation-scroll"
-            aria-live="polite"
+            aria-label="会话消息"
             ref={conversationScroll}
             onScroll={(event) => {
               const target = event.currentTarget;
-              const atBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 64;
+              const atBottom = target.scrollHeight - target.scrollTop - target.clientHeight <= 80;
               shouldStickToBottom.current = atBottom;
-              setAtConversationBottom(atBottom);
+              setAtConversationBottom((current) => (current === atBottom ? current : atBottom));
             }}
           >
             <div className="thread-content-column-stack">
@@ -607,7 +631,7 @@ export function ChatWorkbenchView() {
                   onClick={() => {
                     shouldStickToBottom.current = true;
                     setAtConversationBottom(true);
-                    scrollConversationToBottom(conversationScroll.current, messagesEnd.current);
+                    scheduleConversationScroll(preferredManualScrollBehavior(), true);
                   }}
                 >
                   <ArrowDown size={16} />
@@ -879,10 +903,24 @@ function readSidebarWidth(): number {
 function scrollConversationToBottom(
   scrollElement: HTMLDivElement | null,
   endElement: HTMLDivElement | null,
+  behavior: ScrollBehavior = "auto",
 ) {
   if (scrollElement?.scrollTo) {
-    scrollElement.scrollTo({ top: scrollElement.scrollHeight, behavior: "auto" });
+    scrollElement.scrollTo({ top: scrollElement.scrollHeight, behavior });
     return;
   }
-  endElement?.scrollIntoView?.({ block: "end" });
+  endElement?.scrollIntoView?.({ block: "end", behavior });
+}
+
+function scheduleAfterLayout(callback: () => void): () => void {
+  if (typeof window.requestAnimationFrame === "function") {
+    const frame = window.requestAnimationFrame(callback);
+    return () => window.cancelAnimationFrame(frame);
+  }
+  const timeout = window.setTimeout(callback, 16);
+  return () => window.clearTimeout(timeout);
+}
+
+function preferredManualScrollBehavior(): ScrollBehavior {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
 }

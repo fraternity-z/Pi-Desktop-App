@@ -223,7 +223,7 @@ describe("ChatWorkbenchView", () => {
         agentEvent("tool.started", { toolCallId: "tool-1", toolName: "read_file" }, 1),
       );
     });
-    expect(screen.getByText("执行中")).toBeInTheDocument();
+    expect(await screen.findByText("执行中")).toBeInTheDocument();
     act(() => {
       emitAgentEvent?.(agentEvent("thinking.delta", { delta: "分析项目" }, 2));
       emitAgentEvent?.(agentEvent("message.delta", { delta: "完成" }, 3));
@@ -237,12 +237,47 @@ describe("ChatWorkbenchView", () => {
       emitAgentEvent?.(agentEvent("agent.settled", undefined, 7));
     });
 
-    expect(screen.getByText("完成检查")).toBeInTheDocument();
+    expect(await screen.findByText("完成检查")).toBeInTheDocument();
     expect(screen.getByText("思考过程")).toBeInTheDocument();
     expect(screen.getByText("read_file")).toBeInTheDocument();
     expect(screen.getByText("已完成")).toBeInTheDocument();
     expect(screen.getByText("失败")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+  });
+
+  it("用户上滑后停止自动跟随，并可主动跳回最新消息", async () => {
+    const { container } = render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    await addProject("C:\\work");
+    const composer = await screen.findByLabelText("发送给 Pi 的消息");
+    fireEvent.change(composer, { target: { value: "长会话" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(promptAgent).toHaveBeenCalled());
+    await screen.findAllByText("长会话");
+    await act(async () => new Promise((resolve) => window.setTimeout(resolve, 32)));
+
+    const scroll = container.querySelector(".conversation-scroll") as HTMLDivElement;
+    const scrollTo = vi.fn();
+    Object.defineProperties(scroll, {
+      scrollHeight: { configurable: true, value: 1_200 },
+      clientHeight: { configurable: true, value: 400 },
+      scrollTop: { configurable: true, writable: true, value: 300 },
+      scrollTo: { configurable: true, value: scrollTo },
+    });
+    fireEvent.scroll(scroll);
+    const jumpButton = await screen.findByRole("button", { name: "跳到最新消息" });
+
+    act(() => {
+      emitAgentEvent?.(agentEvent("message.delta", { delta: "新增内容" }, 1));
+    });
+    expect(await screen.findByText("新增内容")).toBeInTheDocument();
+    await act(async () => new Promise((resolve) => window.setTimeout(resolve, 32)));
+    expect(scrollTo).not.toHaveBeenCalled();
+
+    fireEvent.click(jumpButton);
+    await waitFor(() =>
+      expect(scrollTo).toHaveBeenCalledWith({ top: 1_200, behavior: "smooth" }),
+    );
   });
 
   it("流式响应期间可停止任务", async () => {

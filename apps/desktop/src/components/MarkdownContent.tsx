@@ -2,6 +2,7 @@ import { Check, Copy, ExternalLink } from "lucide-react";
 import {
   Children,
   isValidElement,
+  memo,
   useState,
   type ComponentProps,
   type MouseEvent,
@@ -16,28 +17,33 @@ interface MarkdownContentProps {
   className?: string;
 }
 
-export function MarkdownContent({ children, className }: MarkdownContentProps) {
+const REMARK_PLUGINS = [remarkGfm];
+const REHYPE_PLUGINS = [rehypeSanitize];
+const MARKDOWN_COMPONENTS = {
+  a: MarkdownLink,
+  img: MarkdownImage,
+  pre: MarkdownPre,
+  input: MarkdownInput,
+};
+
+export const MarkdownContent = memo(function MarkdownContent({
+  children,
+  className,
+}: MarkdownContentProps) {
   return (
     <div className={["markdown-content", className].filter(Boolean).join(" ")}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeSanitize]}
+        remarkPlugins={REMARK_PLUGINS}
+        rehypePlugins={REHYPE_PLUGINS}
         skipHtml
         urlTransform={safeMarkdownUrl}
-        components={{
-          a: MarkdownLink,
-          img: MarkdownImage,
-          pre: MarkdownPre,
-          input({ type, ...props }) {
-            return <input {...props} type={type} disabled />;
-          },
-        }}
+        components={MARKDOWN_COMPONENTS}
       >
         {children}
       </ReactMarkdown>
     </div>
   );
-}
+});
 
 function safeMarkdownUrl(url: string, key: string): string {
   const transformed = defaultUrlTransform(url);
@@ -70,9 +76,14 @@ function MarkdownImage({ alt }: ComponentProps<"img">) {
   return alt ? <span className="markdown-image-placeholder">[图片：{alt}]</span> : null;
 }
 
+function MarkdownInput({ type, ...props }: ComponentProps<"input">) {
+  return <input {...props} type={type} disabled />;
+}
+
 function MarkdownPre({ children, ...props }: ComponentProps<"pre">) {
   const [copied, setCopied] = useState(false);
   const code = nodeText(children).replace(/\n$/, "");
+  const language = codeLanguage(children);
   async function copyCode() {
     try {
       await navigator.clipboard.writeText(code);
@@ -84,18 +95,30 @@ function MarkdownPre({ children, ...props }: ComponentProps<"pre">) {
   }
   return (
     <div className="markdown-code-block">
-      <button
-        type="button"
-        className="icon-button markdown-code-copy"
-        onClick={() => void copyCode()}
-        aria-label="复制代码"
-        title="复制代码"
-      >
-        {copied ? <Check size={14} /> : <Copy size={14} />}
-      </button>
+      <div className="markdown-code-toolbar">
+        <span>{language ?? "代码"}</span>
+        <button
+          type="button"
+          className="icon-button markdown-code-copy"
+          onClick={() => void copyCode()}
+          aria-label="复制代码"
+          title="复制代码"
+        >
+          {copied ? <Check size={14} /> : <Copy size={14} />}
+        </button>
+      </div>
       <pre {...props}>{children}</pre>
     </div>
   );
+}
+
+function codeLanguage(node: ReactNode): string | null {
+  for (const child of Children.toArray(node)) {
+    if (!isValidElement<{ className?: string }>(child)) continue;
+    const match = /(?:^|\s)language-([\w-]+)/.exec(child.props.className ?? "");
+    if (match?.[1]) return match[1];
+  }
+  return null;
 }
 
 function nodeText(node: ReactNode): string {

@@ -49,7 +49,20 @@ describe("MarkdownContent", () => {
     );
 
     expect(screen.getByText("[图片：预览]")).toBeInTheDocument();
+    expect(screen.getByText("ts")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "复制代码" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("const value = 1;"));
+  });
+
+  it("增量补全 Markdown 时复用代码块容器并保持最终内容一致", () => {
+    const { container, rerender } = render(<MarkdownContent>{"```ts\nconst value ="}</MarkdownContent>);
+    const codeBlock = container.querySelector(".markdown-code-block");
+    expect(codeBlock).toHaveTextContent("const value =");
+
+    rerender(<MarkdownContent>{"```ts\nconst value = 1;\n```"}</MarkdownContent>);
+
+    expect(container.querySelector(".markdown-code-block")).toBe(codeBlock);
+    expect(codeBlock).toHaveTextContent("const value = 1;");
+    expect(screen.getByText("ts")).toBeInTheDocument();
   });
 });

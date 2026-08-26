@@ -35,7 +35,7 @@ import {
 import { appendMonotonicText } from "./chatStream";
 
 export type TimelineRole = "user" | "assistant" | "thinking" | "tool" | "system";
-export type TimelineStatus = "running" | "completed" | "failed" | "cancelled";
+export type TimelineStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
 export interface ChatMessage {
   id: string;
@@ -150,6 +150,7 @@ export function useChatSession(): ChatSessionState {
   const draftSequence = useRef(1);
   const restoreAttempted = useRef(false);
   const loadCatalogsRef = useRef<() => Promise<void>>(async () => undefined);
+  const pendingProjectionRender = useRef<(() => void) | null>(null);
 
   const commitProjections = useCallback(
     (update: (current: Record<string, SessionProjection>) => Record<string, SessionProjection>) => {
@@ -159,6 +160,14 @@ export function useChatSession(): ChatSessionState {
     },
     [],
   );
+
+  const scheduleProjectionRender = useCallback(() => {
+    if (pendingProjectionRender.current) return;
+    pendingProjectionRender.current = scheduleAfterLayout(() => {
+      pendingProjectionRender.current = null;
+      setProjections(projectionsRef.current);
+    });
+  }, []);
 
   const nextItemId = useCallback((sessionId: string) => {
     return `${sessionId}:${itemSequence.current++}`;
@@ -280,16 +289,20 @@ export function useChatSession(): ChatSessionState {
       if (event.seq !== expected) {
         setGlobalError(`AGENT_EVENT_SEQUENCE_GAP: 事件序号不连续（期望 ${expected}，收到 ${event.seq}）`);
       }
-      commitProjections((current) => {
-        const projection = current[event.sessionId];
-        if (!projection) return current;
+      const current = projectionsRef.current;
+      const projection = current[event.sessionId];
+      if (projection) {
         const updated = applyAgentEvent(projection, event, () => nextItemId(event.sessionId));
-        return {
-          ...current,
-          [event.sessionId]:
-            updated === projection ? projection : { ...updated, modifiedAt: new Date().toISOString() },
-        };
-      });
+        if (updated !== projection) {
+          // Bridge events can arrive faster than the display refresh rate. Keep the
+          // authoritative projection current, then publish at most once per frame.
+          projectionsRef.current = {
+            ...current,
+            [event.sessionId]: { ...updated, modifiedAt: new Date().toISOString() },
+          };
+          scheduleProjectionRender();
+        }
+      }
       if (event.name === "agent.settled") void loadCatalogsRef.current();
     })
       .then((stopListening) => {
@@ -308,8 +321,10 @@ export function useChatSession(): ChatSessionState {
     return () => {
       active = false;
       unlisten?.();
+      pendingProjectionRender.current?.();
+      pendingProjectionRender.current = null;
     };
-  }, [commitProjections, listenerAttempt, nextItemId]);
+  }, [listenerAttempt, nextItemId, scheduleProjectionRender]);
 
   const createSession = useCallback(
     async (cwd: string) => {
@@ -1135,4 +1150,13 @@ function formatError(error: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function scheduleAfterLayout(callback: () => void): () => void {
+  if (typeof window.requestAnimationFrame === "function") {
+    const frame = window.requestAnimationFrame(callback);
+    return () => window.cancelAnimationFrame(frame);
+  }
+  const timeout = window.setTimeout(callback, 16);
+  return () => window.clearTimeout(timeout);
 }

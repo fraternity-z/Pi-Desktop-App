@@ -9,3 +9,4 @@ src-tauri/resources/pi-bridge/pi-bridge.mjs
 
 .ccw/
 .workflow/
+output/

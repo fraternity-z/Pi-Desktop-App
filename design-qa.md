@@ -141,3 +141,93 @@ No P0, P1, or P2 visual issue remains in the requested surface.
 - `pnpm check` and `pnpm build` passed.
 
 final result: passed
+
+# Streaming Conversation Timeline QA
+
+## Visual Sources
+
+- Source visual truth:
+  - `C:\Users\Administrator\AppData\Local\Temp\codex-clipboard-20f5989b-f358-449c-b5a1-e6ee04756d2a.png`
+  - `C:\Users\Administrator\AppData\Local\Temp\codex-clipboard-56fe36d5-6495-4650-801e-0e25762781e8.png`
+  - `C:\Users\Administrator\AppData\Local\Temp\codex-clipboard-b21baf02-317f-4a76-a0f4-3e88bc05577f.png`
+- Reported pre-fix state: `C:\Users\Administrator\AppData\Local\Temp\codex-clipboard-69914bae-1ccd-4cea-9f46-dff748bead8c.png`
+- Full and focused comparison: `E:\code\Pi Desktop App\output\playwright\timeline-reference-comparison.png`
+- Desktop implementation: `E:\code\Pi Desktop App\output\playwright\timeline-desktop-completed.png`
+- Narrow implementation: `E:\code\Pi Desktop App\output\playwright\timeline-mobile-completed.png`
+- Expanded details: `E:\code\Pi Desktop App\output\playwright\timeline-mobile-expanded.png`
+- Streaming state without a copy action: `E:\code\Pi Desktop App\output\playwright\timeline-mobile.png`
+
+## Viewport And State
+
+- Desktop: 1200 x 760 CSS pixels, light theme, completed turn with seven tool rows,
+  completed/running/failed statuses, a final assistant segment, a system status, and one
+  turn-level copy action.
+- Narrow: 390 x 844 CSS pixels, the same dense content and responsive wrapping.
+- Details: failed tool expanded with long result text and an intentionally long call ID.
+- Streaming: active processing state verified separately; no copy action is rendered until
+  the current assistant turn settles.
+
+## Full-View Comparison Evidence
+
+The combined comparison normalizes the focused conversation region to the same width. The
+implementation now follows the reference hierarchy: unframed assistant text, compact inline
+tool activity, muted secondary status text, restrained semantic icons, and a light bordered
+details surface. The reported pre-fix empty action row and roughly 45 px tool rows are no
+longer present.
+
+Measured implementation geometry:
+
+- Assistant text to first tool row: 8 px on desktop and narrow viewports.
+- Collapsed tool row height: 24 px for every tested status.
+- Narrow document width: 390 px at a 390 px viewport; no horizontal page overflow.
+- Expanded narrow details: 344 px outer width, 327 px content/scroll width, and no horizontal
+  overflow or clipped long identifier.
+
+## Focused Fidelity Review
+
+| Surface | Evidence | Result |
+| --- | --- | --- |
+| Fonts and typography | 14 px assistant body, 1.65 line height, 12.5 px tool labels, 11.5 px statuses, zero negative letter spacing, and platform fallbacks retain the reference hierarchy. | Passed |
+| Spacing and layout rhythm | 8 px text-to-tool gap, zero inter-tool gap, stable 24 px rows, 6 px detail radius, and aligned 16 px icon track match the reference density. | Passed |
+| Colors and tokens | Existing semantic text, muted, subtle, success, focus, warning, danger, surface, line, and code tokens are reused; no page-wide palette changes were introduced. | Passed |
+| Image and asset fidelity | The surface has no raster imagery. All visible action and status icons use the existing Lucide icon family; no CSS or inline-SVG substitutes were added. | Passed |
+| Copy and content | One copy control appears only after a completed assistant turn. It concatenates assistant text segments and excludes thinking, tool results, call IDs, and system statuses. | Passed |
+| Responsive behavior | Desktop and 390 px captures have no overlap, clipping, page overflow, or broken wrapping; detail content remains internally scrollable. | Passed |
+| Streaming stability | Stable message/activity keys preserve tool nodes and open details while new deltas append; the copy action is not inserted during active output. | Passed |
+
+## Findings
+
+No actionable P0, P1, or P2 findings remain. Reference screenshots contain different dynamic
+copy and tool content, so literal line wrapping is not compared; geometry, density, state
+styling, icon alignment, and interaction placement are compared in the focused image instead.
+
+## Patches Made Since The Previous QA Pass
+
+- Removed the hidden per-message action row that reserved vertical space.
+- Grouped consecutive thinking, tool, and system activity under stable keyed containers.
+- Reduced collapsed activity rows to 24 px and normalized icon, label, status, and chevron tracks.
+- Added bounded, wrapping details surfaces for long results, errors, code, and call IDs.
+- Removed the narrow-screen copy-action spacer and retained an 8 px text-to-tool gap.
+- Replaced per-fragment copy controls with one completed-turn action that copies assistant text only.
+- Added tests for stable streamed nodes, detail state retention, copy aggregation, exclusions,
+  clipboard failure, and hidden copy actions during streaming.
+
+## Automated Evidence
+
+- Agent Bridge: 93 tests passed; 92.91% statements, 83.60% branches, 97.69% functions,
+  and 94.93% lines.
+- Renderer: 147 tests passed; 85.59% statements, 80.82% branches, 85.51% functions,
+  and 88.59% lines.
+- `ConversationTimeline.tsx`: 97.02% statements, 95.09% branches, 91.66% functions,
+  and 97.64% lines.
+- Rust Core: 67 tests passed.
+- `pnpm check`, `pnpm build`, and `pnpm tauri build` passed.
+
+## Implementation Checklist
+
+- [x] Match reference density and visual hierarchy.
+- [x] Verify desktop, narrow, expanded, loading, success, running, and failure states.
+- [x] Verify one completed-turn copy action and assistant-only clipboard content.
+- [x] Run full tests, checks, production build, and installer packaging.
+
+final result: passed

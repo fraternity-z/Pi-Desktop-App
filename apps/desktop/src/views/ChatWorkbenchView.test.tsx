@@ -172,6 +172,35 @@ describe("ChatWorkbenchView", () => {
       });
   });
 
+  it("Bridge 启动期间展示真实启动状态并在就绪后退出", async () => {
+    let resolveRuntime:
+      | ((value: Awaited<ReturnType<typeof getRuntimeStatus>>) => void)
+      | undefined;
+    vi.mocked(getRuntimeStatus).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveRuntime = resolve;
+        }),
+    );
+
+    const { container } = render(<ChatWorkbenchView />);
+
+    expect(await screen.findByRole("status", { name: "正在启动 Pi" })).toBeInTheDocument();
+    expect(screen.getByText("正在连接本机 Pi 运行时")).toBeInTheDocument();
+    expect(container.querySelector(".startup-status-mark img")).not.toBeNull();
+    expect(container.querySelector(".startup-status-spinner .spin")).not.toBeNull();
+
+    await act(async () => {
+      resolveRuntime?.(readyRuntime);
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByRole("status", { name: "状态正常" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("status", { name: "正在启动 Pi" })).not.toBeInTheDocument(),
+    );
+  });
+
   it("通过项目弹窗创建会话、发送提示并合并流式文本", async () => {
     render(<ChatWorkbenchView />);
     expect(await screen.findByRole("status", { name: "状态正常" })).toBeInTheDocument();

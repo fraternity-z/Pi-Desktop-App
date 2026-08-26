@@ -14,8 +14,10 @@ use crate::{
 };
 
 #[tauri::command]
-pub fn get_runtime_status(runtime: State<'_, BridgeRuntime>) -> RuntimeSnapshot {
-    runtime.snapshot()
+pub async fn get_runtime_status(
+    runtime: State<'_, BridgeRuntime>,
+) -> Result<RuntimeSnapshot, AppError> {
+    Ok(runtime.snapshot())
 }
 
 #[tauri::command]

@@ -24,7 +24,7 @@ use crate::{
     error::AppError,
 };
 
-const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_PROMPT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const DEFAULT_PACKAGE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -519,7 +519,13 @@ impl BridgeSupervisor {
         shutdown_timeout: Duration,
         event_sink: BridgeEventSink,
     ) -> Result<Self, AppError> {
-        let hello_line = transport.read_frame(handshake_timeout)?;
+        let hello_line = transport.read_frame(handshake_timeout).map_err(|error| {
+            if error.code == "BRIDGE_TIMEOUT" {
+                AppError::new("BRIDGE_TIMEOUT", "等待 Pi Bridge 启动响应超时，请重新检测")
+            } else {
+                error
+            }
+        })?;
         let hello = parse_hello_frame(&hello_line)?;
         let (commands, receiver) = mpsc::channel();
         let worker = thread::spawn(move || {
@@ -696,7 +702,10 @@ fn run_worker(
                 return;
             }
         }
-        expire_requests(&mut pending);
+        if expire_requests(&mut pending) {
+            let _ = transport.stop(shutdown_timeout);
+            return;
+        }
     }
 }
 
@@ -867,18 +876,26 @@ fn public_remote_error_code(code: &str) -> Option<&'static str> {
     })
 }
 
-fn expire_requests(pending: &mut HashMap<String, PendingRequest>) {
+fn expire_requests(pending: &mut HashMap<String, PendingRequest>) -> bool {
     let now = Instant::now();
     let expired: Vec<String> = pending
         .iter()
         .filter(|(_, request)| request.deadline <= now)
         .map(|(id, _)| id.clone())
         .collect();
+    if expired.is_empty() {
+        return false;
+    }
     for id in expired {
         if let Some(request) = pending.remove(&id) {
             let _ = request.reply.send(Err(request_timeout(request.operation)));
         }
     }
+    fail_pending(
+        pending,
+        AppError::new("BRIDGE_TIMEOUT", "Bridge 请求超时，连接已重置"),
+    );
+    true
 }
 
 fn fail_pending(pending: &mut HashMap<String, PendingRequest>, error: AppError) {
@@ -1188,6 +1205,18 @@ mod tests {
     }
 
     #[test]
+    fn uses_startup_tolerant_default_handshake_timeout() {
+        let config = BridgeLaunchConfig::new(
+            PathBuf::from("node"),
+            PathBuf::from("pi-bridge.mjs"),
+            PathBuf::from("sdk"),
+            PathBuf::from("agent"),
+        );
+
+        assert_eq!(config.handshake_timeout, Duration::from_secs(30));
+    }
+
+    #[test]
     fn connects_and_validates_health_response() {
         let transport = MockTransport::new([
             Ok(HELLO),
@@ -1344,6 +1373,27 @@ mod tests {
         let error = result.err().expect("握手超时必须失败");
 
         assert_eq!(error.code, "BRIDGE_TIMEOUT");
+        assert_eq!(error.message, "等待 Pi Bridge 启动响应超时，请重新检测");
+    }
+
+    #[test]
+    fn stops_transport_after_request_deadline() {
+        let transport = MockTransport::new([Ok(HELLO)]);
+        let stop_calls = transport.stop_calls.clone();
+        let supervisor = BridgeSupervisor::connect(
+            Box::new(transport),
+            Duration::from_secs(1),
+            Duration::from_millis(5),
+            Duration::from_millis(5),
+            Arc::new(|_| {}),
+        )
+        .expect("有效 hello 应连接成功");
+
+        let error = supervisor.ping().expect_err("请求截止后必须返回超时");
+        drop(supervisor);
+
+        assert_eq!(error.code, "BRIDGE_TIMEOUT");
+        assert_eq!(*stop_calls.lock().unwrap(), 1);
     }
 
     #[test]

@@ -60,30 +60,16 @@ impl BridgeRuntime {
             bridge_script,
             event_sink,
         };
-        match start_bridge(
-            launch.bridge_script.clone(),
-            launch.event_sink.clone(),
-            &request_header_settings,
-        ) {
-            Ok((supervisor, source)) => {
-                let snapshot = ready_snapshot(supervisor.hello(), &source);
-                Self {
-                    supervisor: Mutex::new(Some(Arc::new(supervisor))),
-                    known_sessions: Mutex::new(HashSet::new()),
-                    snapshot: Mutex::new(snapshot),
-                    request_header_settings: Mutex::new(request_header_settings),
-                    launch: Some(launch),
-                    closed: AtomicBool::new(false),
-                }
-            }
-            Err(error) => Self {
-                supervisor: Mutex::new(None),
-                known_sessions: Mutex::new(HashSet::new()),
-                snapshot: Mutex::new(unavailable_snapshot(error)),
-                request_header_settings: Mutex::new(request_header_settings),
-                launch: Some(launch),
-                closed: AtomicBool::new(false),
-            },
+        Self {
+            supervisor: Mutex::new(None),
+            known_sessions: Mutex::new(HashSet::new()),
+            snapshot: Mutex::new(unavailable_snapshot(AppError::new(
+                "BRIDGE_STARTING",
+                "Pi Bridge 正在启动",
+            ))),
+            request_header_settings: Mutex::new(request_header_settings),
+            launch: Some(launch),
+            closed: AtomicBool::new(false),
         }
     }
 
@@ -625,6 +611,7 @@ fn is_connection_failure(error: &AppError) -> bool {
         error.code,
         "BRIDGE_CLOSED"
             | "BRIDGE_EXITED"
+            | "BRIDGE_TIMEOUT"
             | "BRIDGE_WRITE_FAILED"
             | "BRIDGE_STDOUT_INVALID"
             | "BRIDGE_INVALID_JSON"
@@ -654,6 +641,20 @@ mod tests {
         assert_eq!(snapshot.error.unwrap().code, "RUNTIME_NOT_FOUND");
         assert_eq!(snapshot.pi_version, None);
         assert_eq!(snapshot.node_version, None);
+    }
+
+    #[test]
+    fn initialized_runtime_defers_bridge_startup() {
+        let runtime = BridgeRuntime::initialize(
+            PathBuf::from("missing-bridge.mjs"),
+            Arc::new(|_| {}),
+            RequestHeaderSettings::default(),
+        );
+
+        assert!(runtime.supervisor.lock().unwrap().is_none());
+        let snapshot = runtime.snapshot_value();
+        assert_eq!(snapshot.status, "unavailable");
+        assert_eq!(snapshot.error.unwrap().code, "BRIDGE_STARTING");
     }
 
     #[test]
@@ -839,7 +840,7 @@ mod tests {
             "SESSION_BUSY",
             "会话忙"
         )));
-        assert!(!is_connection_failure(&AppError::new(
+        assert!(is_connection_failure(&AppError::new(
             "BRIDGE_TIMEOUT",
             "请求超时"
         )));

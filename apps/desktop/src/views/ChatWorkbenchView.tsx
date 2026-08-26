@@ -75,6 +75,13 @@ export function ChatWorkbenchView() {
   const runtimeReady = runtime.phase === "ready" && runtime.status.status === "ready";
   const eventChannelReady = session.eventConnection === "ready";
   const hasSession = session.sessionId !== null;
+  const startupStage = !hasSession
+    ? runtime.phase === "loading"
+      ? "runtime"
+      : runtimeReady && session.eventConnection === "connecting"
+        ? "events"
+        : null
+    : null;
   const workspaceName = getWorkspaceName(session.cwd);
   const activeSession = session.sessions.find((item) => item.id === session.sessionId);
   const conversationTitle = activeSession
@@ -510,6 +517,8 @@ export function ChatWorkbenchView() {
                     <LoaderCircle className="spin" size={24} />
                     <span>正在切换会话</span>
                   </div>
+                ) : startupStage ? (
+                  <StartupStatus stage={startupStage} />
                 ) : !hasSession ? (
                   <EmptyWorkspace
                     loading={session.catalogPhase === "loading"}
@@ -622,6 +631,25 @@ export function ChatWorkbenchView() {
           onClose={closeProjectDialog}
         />
       )}
+    </div>
+  );
+}
+
+interface StartupStatusProps {
+  stage: "runtime" | "events";
+}
+
+function StartupStatus({ stage }: StartupStatusProps) {
+  return (
+    <div className="startup-status" role="status" aria-live="polite" aria-label="正在启动 Pi">
+      <div className="startup-status-mark" aria-hidden="true">
+        <img src={appIconUrl} alt="" />
+        <span className="startup-status-spinner">
+          <LoaderCircle className="spin" size={18} strokeWidth={2} />
+        </span>
+      </div>
+      <h2>正在启动 Pi</h2>
+      <p>{stage === "runtime" ? "正在连接本机 Pi 运行时" : "正在准备会话事件通道"}</p>
     </div>
   );
 }

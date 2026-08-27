@@ -29,9 +29,13 @@ import {
   ensureConversationWorkspace,
   getWorkspaceState,
   getWorktreeOptions,
+  openWorkspaceFile,
+  readWorkspaceFile,
   rememberWorkspace,
   removeRecentWorkspace,
   revealWorkspace,
+  revealWorkspaceFile,
+  searchWorkspacePaths,
 } from "../ipc/workspace";
 import { ChatWorkbenchView } from "./ChatWorkbenchView";
 
@@ -65,9 +69,13 @@ vi.mock("../ipc/workspace", () => ({
   ensureConversationWorkspace: vi.fn(),
   getWorkspaceState: vi.fn(),
   getWorktreeOptions: vi.fn(),
+  openWorkspaceFile: vi.fn(),
+  readWorkspaceFile: vi.fn(),
   rememberWorkspace: vi.fn(),
   removeRecentWorkspace: vi.fn(),
   revealWorkspace: vi.fn(),
+  revealWorkspaceFile: vi.fn(),
+  searchWorkspacePaths: vi.fn(),
 }));
 vi.mock("../stores/useDesktopNotifications", () => ({
   useDesktopNotifications: () => ({
@@ -169,6 +177,12 @@ describe("ChatWorkbenchView", () => {
       .mockReset()
       .mockResolvedValue("C:\\Users\\me\\Documents\\Pix\\conversations");
     vi.mocked(revealWorkspace).mockReset().mockResolvedValue(undefined);
+    vi.mocked(readWorkspaceFile)
+      .mockReset()
+      .mockResolvedValue({ dataBase64: "Y29uc3QgdmFsdWUgPSB0cnVlOw==", size: 19 });
+    vi.mocked(openWorkspaceFile).mockReset().mockResolvedValue(undefined);
+    vi.mocked(revealWorkspaceFile).mockReset().mockResolvedValue(undefined);
+    vi.mocked(searchWorkspacePaths).mockReset().mockResolvedValue([]);
     vi.mocked(getWorktreeOptions).mockReset().mockResolvedValue({
       branches: [{ name: "main", current: true, remote: false }],
       suggestedName: "work-1",
@@ -623,6 +637,71 @@ describe("ChatWorkbenchView", () => {
     expect(container.querySelector(".right-panel")).toHaveAttribute("aria-hidden", "true");
     await waitFor(() => expect(screen.getByRole("button", { name: "显示审查侧栏" })).toHaveFocus());
     await waitFor(() => expect(container.querySelector(".right-panel")).toBeNull());
+  });
+
+  it("从右侧面板搜索文件、读取源码、添加评论并调用受限文件操作", async () => {
+    vi.mocked(searchWorkspacePaths).mockResolvedValueOnce([
+      { path: "C:\\work\\src\\main.ts", relativePath: "src/main.ts", kind: "file" },
+      { path: "C:\\work\\src", relativePath: "src", kind: "folder" },
+    ]);
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    await addProject("C:\\work");
+    fireEvent.click(await screen.findByRole("button", { name: "显示审查侧栏" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "打开右侧面板标签页" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /打开文件/ }));
+    fireEvent.change(screen.getByRole("searchbox", { name: "输入内容搜索文件" }), {
+      target: { value: "main" },
+    });
+    const result = await screen.findByRole("button", { name: /main\.ts/ });
+    fireEvent.click(result);
+
+    await waitFor(() =>
+      expect(readWorkspaceFile).toHaveBeenCalledWith("C:\\work", "C:\\work\\src\\main.ts"),
+    );
+    expect(screen.getByRole("tab", { name: "main.ts" })).toHaveAttribute("aria-selected", "true");
+    await waitFor(() =>
+      expect(document.querySelector(".right-panel-file-code")).toHaveTextContent("const value = true;"),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "评论第 1 行" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "第 1 行评论" }), {
+      target: { value: "请补充边界测试" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "注释" }));
+    expect(await screen.findByText("请补充边界测试")).toBeInTheDocument();
+    expect(window.localStorage.getItem("pi-desktop.local-code-comments.v1")).toContain("请补充边界测试");
+
+    fireEvent.click(screen.getByRole("button", { name: "在外部打开文件" }));
+    await waitFor(() =>
+      expect(openWorkspaceFile).toHaveBeenCalledWith("C:\\work", "C:\\work\\src\\main.ts"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "显示文件所在文件夹" }));
+    await waitFor(() =>
+      expect(revealWorkspaceFile).toHaveBeenCalledWith("C:\\work", "C:\\work\\src\\main.ts"),
+    );
+  });
+
+  it("将图片搜索结果打开到快速预览标签", async () => {
+    vi.mocked(searchWorkspacePaths).mockResolvedValueOnce([
+      { path: "C:\\work\\assets\\logo.png", relativePath: "assets/logo.png", kind: "file" },
+    ]);
+    vi.mocked(readWorkspaceFile).mockResolvedValueOnce({ dataBase64: "AA==", size: 1 });
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    await addProject("C:\\work");
+    fireEvent.click(await screen.findByRole("button", { name: "显示审查侧栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "打开右侧面板标签页" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /打开文件/ }));
+    fireEvent.change(screen.getByRole("searchbox", { name: "输入内容搜索文件" }), {
+      target: { value: "logo" },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: /logo\.png/ }));
+
+    expect(await screen.findByRole("tab", { name: "logo.png" })).toHaveAttribute("aria-selected", "true");
+    const image = await screen.findByRole("img", { name: "logo.png" });
+    expect(image).toHaveAttribute("src", "data:image/png;base64,AA==");
   });
 
   it("从侧栏进入插件与资源视图并保持数据计数同步", async () => {

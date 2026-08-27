@@ -21,6 +21,9 @@ import {
   normalizeAttachedPaths,
 } from "../components/composerAttachments";
 import { ConversationTimeline } from "../components/ConversationTimeline";
+import { FileSearchDialog, type FileSearchResult } from "../components/FileSearchDialog";
+import { FileViewer } from "../components/FileViewer";
+import { QuickPreview } from "../components/QuickPreview";
 import { RightPanel, type RightPanelTabId } from "../components/RightPanel";
 import { RuntimeStatusControl } from "../components/RuntimeStatusControl";
 import { SettingsSidebar, type SettingsSectionId } from "../components/SettingsSidebar";
@@ -33,7 +36,10 @@ import {
 import {
   createWorkspaceWorktree,
   getWorktreeOptions,
+  openWorkspaceFile,
+  readWorkspaceFile,
   revealWorkspace,
+  revealWorkspaceFile,
   searchWorkspacePaths,
 } from "../ipc/workspace";
 import { useAppPreferences } from "../stores/useAppPreferences";
@@ -42,12 +48,41 @@ import { useChatSession, type SessionListItem } from "../stores/useChatSession";
 import { useRequestHeaderSettings } from "../stores/useRequestHeaderSettings";
 import { useDesktopNotifications } from "../stores/useDesktopNotifications";
 import { useRuntimeStatus } from "../stores/useRuntimeStatus";
+import {
+  commentsForFile,
+  createLocalCodeComment,
+  readLocalCodeComments,
+  writeLocalCodeComments,
+  type CreateLocalCodeCommentInput,
+} from "../stores/localCodeComments";
+import {
+  createRightPanelFileTarget,
+  decodeBase64Utf8,
+  formatRightPanelError,
+  type RightPanelFileTarget,
+} from "../stores/rightPanelFiles";
 import { useRightPanelLayout, useRightPanelVisibility } from "../stores/useRightPanelLayout";
 import { useSidebarPreferences } from "../stores/useSidebarPreferences";
 import { useToolPermissions } from "../stores/useToolPermissions";
 import { PackageManagerView, ResourcesView } from "./EcosystemViews";
 import { SettingsView } from "./SettingsView";
 import appIconUrl from "../../../../src-tauri/icons/64x64.png";
+
+interface RightPanelFileLoadState {
+  readonly targetPath: string | null;
+  readonly status: "idle" | "loading" | "ready" | "error";
+  readonly dataBase64: string;
+  readonly content: string;
+  readonly error: string | null;
+}
+
+const EMPTY_RIGHT_PANEL_FILE_STATE: RightPanelFileLoadState = {
+  targetPath: null,
+  status: "idle",
+  dataBase64: "",
+  content: "",
+  error: null,
+};
 
 export function ChatWorkbenchView() {
   const runtime = useRuntimeStatus();
@@ -87,6 +122,19 @@ export function ChatWorkbenchView() {
   const rightPanelVisibility = useRightPanelVisibility(rightPanelEnabled);
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTabId>("review");
   const [browserTabOpen, setBrowserTabOpen] = useState(false);
+  const [fileSearchOpen, setFileSearchOpen] = useState(false);
+  const [fileTab, setFileTab] = useState<RightPanelFileTarget | null>(null);
+  const [previewTab, setPreviewTab] = useState<RightPanelFileTarget | null>(null);
+  const [fileReloadKey, setFileReloadKey] = useState(0);
+  const [rightPanelFileState, setRightPanelFileState] = useState<RightPanelFileLoadState>(
+    EMPTY_RIGHT_PANEL_FILE_STATE,
+  );
+  const [localCodeComments, setLocalCodeComments] = useState(readLocalCodeComments);
+  const activeRightPanelFile = rightPanelTab === "file"
+    ? fileTab
+    : rightPanelTab === "preview"
+      ? previewTab
+      : null;
 
   const runtimeReady = runtime.phase === "ready" && runtime.status.status === "ready";
   const eventChannelReady = session.eventConnection === "ready";
@@ -186,6 +234,68 @@ export function ChatWorkbenchView() {
       cancelled = true;
     };
   }, [session.cwd]);
+
+  useEffect(() => {
+    setFileSearchOpen(false);
+    setFileTab(null);
+    setPreviewTab(null);
+    setRightPanelTab("review");
+    setRightPanelFileState(EMPTY_RIGHT_PANEL_FILE_STATE);
+  }, [session.cwd]);
+
+  useEffect(() => {
+    if (activeRightPanelFile === null || !session.cwd) return undefined;
+    const target = activeRightPanelFile;
+    if (!requiresWorkspaceFileRead(target)) {
+      setRightPanelFileState({
+        targetPath: target.path,
+        status: "ready",
+        dataBase64: "",
+        content: "",
+        error: null,
+      });
+      return undefined;
+    }
+    let cancelled = false;
+    setRightPanelFileState({
+      targetPath: target.path,
+      status: "loading",
+      dataBase64: "",
+      content: "",
+      error: null,
+    });
+    void readWorkspaceFile(session.cwd, target.path)
+      .then((result) => {
+        if (cancelled) return;
+        const content = target.tab === "file" || target.previewKind === "markdown" || target.previewKind === "text"
+          ? decodeBase64Utf8(result.dataBase64)
+          : "";
+        setRightPanelFileState({
+          targetPath: target.path,
+          status: "ready",
+          dataBase64: result.dataBase64,
+          content,
+          error: null,
+        });
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setRightPanelFileState({
+          targetPath: target.path,
+          status: "error",
+          dataBase64: "",
+          content: "",
+          error: formatRightPanelError(error, "WORKSPACE_FILE_READ_FAILED", "无法读取工作区文件"),
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeRightPanelFile, fileReloadKey, session.cwd]);
+
+  useEffect(() => {
+    if (!rightPanelVisibility.open) setFileSearchOpen(false);
+  }, [rightPanelVisibility.open]);
 
   async function createProject(event: FormEvent) {
     event.preventDefault();
@@ -374,6 +484,77 @@ export function ChatWorkbenchView() {
       session.cwd ? searchWorkspacePaths(session.cwd, query, 24) : Promise.resolve([]),
     [session.cwd],
   );
+
+  const searchRightPanelFiles = useCallback(
+    async (query: string): Promise<ReadonlyArray<FileSearchResult>> => {
+      if (!session.cwd) return [];
+      const matches = await searchWorkspacePaths(session.cwd, query, 24);
+      return matches
+        .filter((match) => match.kind === "file")
+        .map((match) => ({ path: match.path, name: match.relativePath.split(/[\\/]/).at(-1), root: session.cwd }));
+    },
+    [session.cwd],
+  );
+
+  const openRightPanelFileSearch = useCallback(() => {
+    if (!rightPanelEnabled) return;
+    setFileSearchOpen(true);
+  }, [rightPanelEnabled]);
+
+  const openRightPanelFile = useCallback((file: FileSearchResult) => {
+    const target = createRightPanelFileTarget(file.path);
+    if (target.tab === "preview") {
+      setPreviewTab(target);
+      setRightPanelTab("preview");
+    } else {
+      setFileTab(target);
+      setRightPanelTab("file");
+    }
+    setFileSearchOpen(false);
+    rightPanelVisibility.openPanel();
+  }, [rightPanelVisibility]);
+
+  const closeRightPanelFile = useCallback(() => {
+    setFileTab(null);
+    setRightPanelTab((current) => current === "file" ? "review" : current);
+  }, []);
+
+  const closeRightPanelPreview = useCallback(() => {
+    setPreviewTab(null);
+    setRightPanelTab((current) => current === "preview" ? "review" : current);
+  }, []);
+
+  const createRightPanelComment = useCallback((input: Omit<CreateLocalCodeCommentInput, "rootPath" | "filePath">) => {
+    if (!session.cwd || fileTab === null) return;
+    const comment = createLocalCodeComment({
+      ...input,
+      rootPath: session.cwd,
+      filePath: fileTab.path,
+    });
+    setLocalCodeComments((current) => {
+      const next = [...current, comment];
+      writeLocalCodeComments(next);
+      return next;
+    });
+  }, [fileTab, session.cwd]);
+
+  const deleteRightPanelComment = useCallback((commentId: string) => {
+    setLocalCodeComments((current) => {
+      const next = current.filter((comment) => comment.id !== commentId);
+      writeLocalCodeComments(next);
+      return next;
+    });
+  }, []);
+
+  const openActiveRightPanelFile = useCallback(async () => {
+    if (!session.cwd || activeRightPanelFile === null) return;
+    await openWorkspaceFile(session.cwd, activeRightPanelFile.path);
+  }, [activeRightPanelFile, session.cwd]);
+
+  const revealActiveRightPanelFile = useCallback(async () => {
+    if (!session.cwd || activeRightPanelFile === null) return;
+    await revealWorkspaceFile(session.cwd, activeRightPanelFile.path);
+  }, [activeRightPanelFile, session.cwd]);
 
   const openRightPanelBrowser = useCallback(() => {
     if (!rightPanelEnabled) return;
@@ -719,15 +900,50 @@ export function ChatWorkbenchView() {
             width={rightPanelLayout.width}
             expanded={rightPanelLayout.expanded}
             activeTab={rightPanelTab}
+            fileTab={fileTab ? { label: fileTab.name, title: fileTab.path } : null}
+            previewTab={previewTab ? { label: previewTab.name, title: previewTab.path } : null}
             browserTab={browserTabOpen ? { label: "浏览器" } : null}
             onClose={closeRightPanel}
             onWidthChange={rightPanelLayout.setWidth}
             onExpandedChange={setRightPanelExpanded}
             onActiveTabChange={setRightPanelTab}
+            onOpenFile={openRightPanelFileSearch}
             onOpenBrowser={openRightPanelBrowser}
+            onCloseFileTab={closeRightPanelFile}
+            onClosePreviewTab={closeRightPanelPreview}
             onCloseBrowserTab={closeRightPanelBrowser}
           >
-            {rightPanelTab === "browser" ? (
+            {rightPanelTab === "file" && fileTab ? (
+              <FileViewer
+                path={fileTab.path}
+                rootPath={session.cwd}
+                content={rightPanelFileState.targetPath === fileTab.path ? rightPanelFileState.content : ""}
+                loading={rightPanelFileState.targetPath !== fileTab.path || rightPanelFileState.status === "loading"}
+                error={rightPanelFileState.targetPath === fileTab.path ? rightPanelFileState.error : null}
+                comments={commentsForFile(localCodeComments, fileTab.path)}
+                onCreateComment={createRightPanelComment}
+                onDeleteComment={deleteRightPanelComment}
+                onRetry={() => setFileReloadKey((current) => current + 1)}
+                onOpenExternal={openActiveRightPanelFile}
+                onReveal={revealActiveRightPanelFile}
+              />
+            ) : rightPanelTab === "preview" && previewTab && previewTab.previewKind ? (
+              <QuickPreview
+                target={{
+                  kind: previewTab.previewKind,
+                  path: previewTab.path,
+                  name: previewTab.name,
+                  extension: previewTab.extension,
+                  content: rightPanelFileState.targetPath === previewTab.path ? rightPanelFileState.content : "",
+                }}
+                dataBase64={rightPanelFileState.targetPath === previewTab.path ? rightPanelFileState.dataBase64 : ""}
+                loading={rightPanelFileState.targetPath !== previewTab.path || rightPanelFileState.status === "loading"}
+                error={rightPanelFileState.targetPath === previewTab.path ? rightPanelFileState.error : null}
+                onOpenExternal={openActiveRightPanelFile}
+                onReveal={revealActiveRightPanelFile}
+                onRetry={() => setFileReloadKey((current) => current + 1)}
+              />
+            ) : rightPanelTab === "browser" ? (
               <div className="right-panel-empty">
                 <Globe2 aria-hidden="true" />
                 <h2>浏览器</h2>
@@ -741,6 +957,12 @@ export function ChatWorkbenchView() {
               </div>
             )}
           </RightPanel>
+          <FileSearchDialog
+            open={fileSearchOpen}
+            search={searchRightPanelFiles}
+            onClose={() => setFileSearchOpen(false)}
+            onOpenFile={openRightPanelFile}
+          />
         </>
       )}
 
@@ -953,6 +1175,13 @@ function getWorkspaceName(path: string): string {
     return "未绑定项目";
   }
   return normalized.split(/[\\/]/).at(-1) || normalized;
+}
+
+function requiresWorkspaceFileRead(target: RightPanelFileTarget): boolean {
+  return target.tab === "file" ||
+    target.previewKind !== "document" ||
+    target.extension === "pdf" ||
+    target.extension === "docx";
 }
 
 function isProjectWorkspace(cwd: string, conversationHome: string): boolean {

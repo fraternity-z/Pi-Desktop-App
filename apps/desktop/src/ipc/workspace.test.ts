@@ -6,9 +6,12 @@ import {
   ensureConversationWorkspace,
   getWorkspaceState,
   getWorktreeOptions,
+  openWorkspaceFile,
+  readWorkspaceFile,
   rememberWorkspace,
   removeRecentWorkspace,
   revealWorkspace,
+  revealWorkspaceFile,
   searchWorkspacePaths,
 } from "./workspace";
 
@@ -31,6 +34,9 @@ describe("workspace IPC", () => {
       .mockResolvedValueOnce({ ...state, recentWorkspaces: [] })
       .mockResolvedValueOnce("C:\\conversations")
       .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ dataBase64: "aGVsbG8=", size: 5 })
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce([
         { path: "C:\\work\\src\\main.ts", relativePath: "src/main.ts", kind: "file" },
       ])
@@ -48,6 +54,12 @@ describe("workspace IPC", () => {
     });
     await expect(ensureConversationWorkspace()).resolves.toBe("C:\\conversations");
     await expect(revealWorkspace("C:\\work")).resolves.toBeUndefined();
+    await expect(readWorkspaceFile("C:\\work", "src/main.ts")).resolves.toEqual({
+      dataBase64: "aGVsbG8=",
+      size: 5,
+    });
+    await expect(openWorkspaceFile("C:\\work", "src/main.ts")).resolves.toBeUndefined();
+    await expect(revealWorkspaceFile("C:\\work", "src/main.ts")).resolves.toBeUndefined();
     await expect(searchWorkspacePaths("C:\\work", "main", 12)).resolves.toEqual([
       { path: "C:\\work\\src\\main.ts", relativePath: "src/main.ts", kind: "file" },
     ]);
@@ -64,15 +76,27 @@ describe("workspace IPC", () => {
     expect(invoke).toHaveBeenNthCalledWith(3, "workspace_remove_recent", { cwd: "C:\\work" });
     expect(invoke).toHaveBeenNthCalledWith(4, "workspace_ensure_conversation");
     expect(invoke).toHaveBeenNthCalledWith(5, "workspace_reveal", { cwd: "C:\\work" });
-    expect(invoke).toHaveBeenNthCalledWith(6, "workspace_search_paths", {
+    expect(invoke).toHaveBeenNthCalledWith(6, "workspace_read_file", {
+      cwd: "C:\\work",
+      path: "src/main.ts",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(7, "workspace_open_file", {
+      cwd: "C:\\work",
+      path: "src/main.ts",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(8, "workspace_reveal_file", {
+      cwd: "C:\\work",
+      path: "src/main.ts",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(9, "workspace_search_paths", {
       cwd: "C:\\work",
       query: "main",
       limit: 12,
     });
-    expect(invoke).toHaveBeenNthCalledWith(7, "workspace_get_worktree_options", {
+    expect(invoke).toHaveBeenNthCalledWith(10, "workspace_get_worktree_options", {
       cwd: "C:\\work",
     });
-    expect(invoke).toHaveBeenNthCalledWith(8, "workspace_create_worktree", {
+    expect(invoke).toHaveBeenNthCalledWith(11, "workspace_create_worktree", {
       input: { cwd: "C:\\work", base: "main", name: "work-1" },
     });
   });

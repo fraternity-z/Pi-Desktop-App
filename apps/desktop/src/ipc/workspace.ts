@@ -33,6 +33,11 @@ export interface WorkspacePathMatch {
   kind: "file" | "folder";
 }
 
+export interface WorkspaceFileContent {
+  dataBase64: string;
+  size: number;
+}
+
 export async function getWorkspaceState(): Promise<WorkspaceState> {
   return invoke<WorkspaceState>("workspace_get_state");
 }
@@ -51,6 +56,18 @@ export async function ensureConversationWorkspace(): Promise<string> {
 
 export async function revealWorkspace(cwd: string): Promise<void> {
   return invoke<void>("workspace_reveal", { cwd });
+}
+
+export async function readWorkspaceFile(cwd: string, path: string): Promise<WorkspaceFileContent> {
+  return invoke<WorkspaceFileContent>("workspace_read_file", { cwd, path });
+}
+
+export async function openWorkspaceFile(cwd: string, path: string): Promise<void> {
+  return invoke<void>("workspace_open_file", { cwd, path });
+}
+
+export async function revealWorkspaceFile(cwd: string, path: string): Promise<void> {
+  return invoke<void>("workspace_reveal_file", { cwd, path });
 }
 
 export async function searchWorkspacePaths(

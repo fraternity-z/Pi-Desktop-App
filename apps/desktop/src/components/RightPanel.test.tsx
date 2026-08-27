@@ -10,7 +10,7 @@ function panelProps(overrides: Partial<RightPanelProps> = {}): RightPanelProps {
     width: 560,
     expanded: false,
     activeTab: "review",
-    fileTab: { label: "index.ts" },
+    fileTab: { label: "index.ts", title: "E:\\workspace\\src\\index.ts" },
     previewTab: { label: "预览" },
     browserTab: { label: "浏览器" },
     onClose: vi.fn(),
@@ -31,6 +31,7 @@ describe("RightPanel", () => {
     const props = panelProps();
     render(<RightPanel {...props}>审查内容</RightPanel>);
     expect(screen.getByRole("tab", { name: "审查" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "index.ts" })).toHaveAttribute("title", "E:\\workspace\\src\\index.ts");
     fireEvent.click(screen.getByRole("tab", { name: "index.ts" }));
     expect(props.onActiveTabChange).toHaveBeenCalledWith("file");
     expect(screen.getByRole("tabpanel")).toHaveTextContent("审查内容");

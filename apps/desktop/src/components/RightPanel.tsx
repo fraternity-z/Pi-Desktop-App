@@ -56,6 +56,7 @@ export interface RightPanelProps {
 interface TabDefinition {
   readonly id: RightPanelTabId;
   readonly label: string;
+  readonly title?: string;
   readonly icon: typeof FileText;
   readonly close?: () => void;
 }
@@ -70,9 +71,9 @@ export function RightPanel(props: RightPanelProps): ReactElement | null {
   const maxWidth = resolveRightPanelMaxWidth(typeof window === "undefined" ? null : window.innerWidth);
   const tabs: TabDefinition[] = [
     { id: "review", label: "审查", icon: FileDiff },
-    ...(props.fileTab ? [{ id: "file" as const, label: props.fileTab.label, icon: FileText, close: props.onCloseFileTab }] : []),
-    ...(props.previewTab ? [{ id: "preview" as const, label: props.previewTab.label, icon: Eye, close: props.onClosePreviewTab }] : []),
-    ...(props.browserTab ? [{ id: "browser" as const, label: props.browserTab.label, icon: Globe2, close: props.onCloseBrowserTab }] : []),
+    ...(props.fileTab ? [{ id: "file" as const, label: props.fileTab.label, title: props.fileTab.title, icon: FileText, close: props.onCloseFileTab }] : []),
+    ...(props.previewTab ? [{ id: "preview" as const, label: props.previewTab.label, title: props.previewTab.title, icon: Eye, close: props.onClosePreviewTab }] : []),
+    ...(props.browserTab ? [{ id: "browser" as const, label: props.browserTab.label, title: props.browserTab.title, icon: Globe2, close: props.onCloseBrowserTab }] : []),
   ];
 
   const selectTab = useCallback((tab: RightPanelTabId) => props.onActiveTabChange(tab), [props]);
@@ -180,7 +181,7 @@ export function RightPanel(props: RightPanelProps): ReactElement | null {
             const Icon = tab.icon;
             const active = props.activeTab === tab.id;
             return <div key={tab.id} className={`right-panel-tab-shell${active ? " is-active" : ""}`}>
-              <button type="button" id={`${panelId}-tab-${tab.id}`} className="right-panel-tab" role="tab" aria-selected={active} aria-controls={tabPanelId} tabIndex={active ? 0 : -1} title={tab.id === "review" ? "代码审查" : tab.label} onClick={() => selectTab(tab.id)}><Icon aria-hidden="true" /><span>{tab.label}</span></button>
+              <button type="button" id={`${panelId}-tab-${tab.id}`} className="right-panel-tab" role="tab" aria-selected={active} aria-controls={tabPanelId} tabIndex={active ? 0 : -1} title={tab.id === "review" ? "代码审查" : tab.title ?? tab.label} onClick={() => selectTab(tab.id)}><Icon aria-hidden="true" /><span>{tab.label}</span></button>
               {tab.id !== "review" ? <button type="button" className="right-panel-icon-button right-panel-tab-close" aria-label={getCloseTabLabel(tab.id)} title={getCloseTabLabel(tab.id)} onClick={() => closeTab(tab)}><X aria-hidden="true" /></button> : null}
             </div>;
           })}

@@ -6,6 +6,7 @@ use std::{
     process::{Command, Output},
 };
 
+use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -46,6 +47,179 @@ const MAX_WORKTREE_NAME_BYTES: usize = 80;
 const MAX_PATH_SEARCH_RESULTS: usize = 48;
 const MAX_PATH_SEARCH_ENTRIES: usize = 10_000;
 const MAX_PATH_SEARCH_DEPTH: usize = 8;
+const MAX_WORKSPACE_FILE_BYTES: u64 = 512 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFileContent {
+    pub data_base64: String,
+    pub size: u64,
+}
+
+#[tauri::command]
+pub async fn workspace_read_file(
+    store: State<'_, WorkspaceStore>,
+    cwd: String,
+    path: String,
+) -> Result<WorkspaceFileContent, AppError> {
+    let root = PathBuf::from(store.authorize(&cwd)?);
+    tauri::async_runtime::spawn_blocking(move || read_workspace_file(&root, &path))
+        .await
+        .map_err(|_| AppError::new("WORKSPACE_FILE_READ_FAILED", "读取工作区文件时任务异常终止"))?
+}
+
+#[tauri::command]
+pub fn workspace_open_file(
+    store: State<'_, WorkspaceStore>,
+    cwd: String,
+    path: String,
+) -> Result<(), AppError> {
+    let root = PathBuf::from(store.authorize(&cwd)?);
+    let file = resolve_workspace_file(&root, &path)?;
+    let mut command = open_file_command(&file);
+    hide_process_window(&mut command);
+    command.spawn().map(|_| ()).map_err(|error| {
+        let code = if error.kind() == std::io::ErrorKind::NotFound {
+            "FILE_MANAGER_NOT_FOUND"
+        } else {
+            "WORKSPACE_FILE_OPEN_FAILED"
+        };
+        AppError::new(code, "无法使用系统默认应用打开该文件")
+    })
+}
+
+#[tauri::command]
+pub fn workspace_reveal_file(
+    store: State<'_, WorkspaceStore>,
+    cwd: String,
+    path: String,
+) -> Result<(), AppError> {
+    let root = PathBuf::from(store.authorize(&cwd)?);
+    let file = resolve_workspace_file(&root, &path)?;
+    let mut command = reveal_command(&file);
+    hide_process_window(&mut command);
+    command.spawn().map(|_| ()).map_err(|error| {
+        let code = if error.kind() == std::io::ErrorKind::NotFound {
+            "FILE_MANAGER_NOT_FOUND"
+        } else {
+            "WORKSPACE_FILE_REVEAL_FAILED"
+        };
+        AppError::new(code, "无法在系统文件管理器中显示该文件")
+    })
+}
+
+fn read_workspace_file(
+    root: &Path,
+    requested_path: &str,
+) -> Result<WorkspaceFileContent, AppError> {
+    let file = resolve_workspace_file(root, requested_path)?;
+    let metadata = fs::metadata(&file).map_err(map_workspace_file_read_error)?;
+    if metadata.len() > MAX_WORKSPACE_FILE_BYTES {
+        return Err(workspace_file_too_large_error());
+    }
+    let bytes = fs::read(&file).map_err(map_workspace_file_read_error)?;
+    if bytes.len() as u64 > MAX_WORKSPACE_FILE_BYTES {
+        return Err(workspace_file_too_large_error());
+    }
+    Ok(WorkspaceFileContent {
+        data_base64: STANDARD.encode(bytes),
+        size: metadata.len(),
+    })
+}
+
+fn resolve_workspace_file(root: &Path, requested_path: &str) -> Result<PathBuf, AppError> {
+    let requested_path = requested_path.trim();
+    if requested_path.is_empty() || requested_path.chars().any(char::is_control) {
+        return Err(AppError::new(
+            "WORKSPACE_FILE_PATH_INVALID",
+            "工作区文件路径无效",
+        ));
+    }
+    let requested = Path::new(requested_path);
+    if requested
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(AppError::new(
+            "WORKSPACE_FILE_PATH_INVALID",
+            "工作区文件路径无效",
+        ));
+    }
+    let candidate = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        root.join(requested)
+    };
+    let relative = candidate.strip_prefix(root).map_err(|_| {
+        AppError::new(
+            "WORKSPACE_FILE_UNAUTHORIZED",
+            "只能访问已授权工作区内的文件",
+        )
+    })?;
+    reject_unsafe_workspace_path_components(root, relative)?;
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|_| AppError::new("WORKSPACE_FILE_NOT_FOUND", "工作区文件不存在或无法访问"))?;
+    if !canonical.starts_with(root) {
+        return Err(AppError::new(
+            "WORKSPACE_FILE_UNAUTHORIZED",
+            "只能访问已授权工作区内的文件",
+        ));
+    }
+    if !canonical.is_file() {
+        return Err(AppError::new(
+            "WORKSPACE_FILE_INVALID",
+            "工作区路径必须是文件",
+        ));
+    }
+    Ok(canonical)
+}
+
+fn reject_unsafe_workspace_path_components(root: &Path, relative: &Path) -> Result<(), AppError> {
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        match component {
+            std::path::Component::Normal(name) => {
+                current.push(name);
+                let metadata = fs::symlink_metadata(&current).map_err(|_| {
+                    AppError::new("WORKSPACE_FILE_NOT_FOUND", "工作区文件不存在或无法访问")
+                })?;
+                if metadata.file_type().is_symlink() {
+                    return Err(AppError::new(
+                        "WORKSPACE_FILE_SYMLINK_UNSUPPORTED",
+                        "工作区文件路径不能包含符号链接",
+                    ));
+                }
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::Prefix(_)
+            | std::path::Component::RootDir => {
+                return Err(AppError::new(
+                    "WORKSPACE_FILE_PATH_INVALID",
+                    "工作区文件路径无效",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn map_workspace_file_read_error(error: std::io::Error) -> AppError {
+    let code = if error.kind() == std::io::ErrorKind::PermissionDenied {
+        "WORKSPACE_FILE_PERMISSION_DENIED"
+    } else {
+        "WORKSPACE_FILE_READ_FAILED"
+    };
+    AppError::new(code, "无法读取工作区文件")
+}
+
+fn workspace_file_too_large_error() -> AppError {
+    AppError::new(
+        "WORKSPACE_FILE_TOO_LARGE",
+        "工作区文件超过 512 KiB 预览限制",
+    )
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -566,6 +740,13 @@ fn reveal_command(path: &Path) -> Command {
     command
 }
 
+#[cfg(target_os = "windows")]
+fn open_file_command(path: &Path) -> Command {
+    let mut command = Command::new("explorer.exe");
+    command.arg(path);
+    command
+}
+
 #[cfg(target_os = "macos")]
 fn reveal_command(path: &Path) -> Command {
     let mut command = Command::new("open");
@@ -573,10 +754,24 @@ fn reveal_command(path: &Path) -> Command {
     command
 }
 
+#[cfg(target_os = "macos")]
+fn open_file_command(path: &Path) -> Command {
+    let mut command = Command::new("open");
+    command.arg(path);
+    command
+}
+
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn reveal_command(path: &Path) -> Command {
     let mut command = Command::new("xdg-open");
     command.arg(path.parent().unwrap_or(path));
+    command
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+fn open_file_command(path: &Path) -> Command {
+    let mut command = Command::new("xdg-open");
+    command.arg(path);
     command
 }
 
@@ -724,5 +919,161 @@ mod tests {
         let initial = search_workspace_paths(&root, "", 2).unwrap();
         assert_eq!(initial.len(), 2);
         let _ = fs::remove_dir_all(root);
+    }
+
+    fn workspace_file_test_root(name: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("系统时间应晚于 UNIX 纪元")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "pi-desktop-workspace-file-{name}-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("应能创建测试工作区");
+        root.canonicalize().expect("应能规范化测试工作区")
+    }
+
+    #[test]
+    fn reads_relative_workspace_file_as_base64() {
+        let root = workspace_file_test_root("read");
+        let source = root.join("src");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("hello.txt"), b"hello").unwrap();
+
+        let content = read_workspace_file(&root, "src/hello.txt").unwrap();
+
+        assert_eq!(content.size, 5);
+        assert_eq!(content.data_base64, "aGVsbG8=");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reads_absolute_workspace_file_at_preview_limit() {
+        let root = workspace_file_test_root("absolute-limit");
+        let file = root.join("limit.bin");
+        fs::write(&file, vec![7_u8; MAX_WORKSPACE_FILE_BYTES as usize]).unwrap();
+
+        let content = read_workspace_file(&root, &file.to_string_lossy()).unwrap();
+
+        assert_eq!(content.size, MAX_WORKSPACE_FILE_BYTES);
+        assert!(!content.data_base64.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_workspace_file_outside_root_and_parent_traversal() {
+        let root = workspace_file_test_root("outside");
+        let outside = root.parent().unwrap().join("outside.txt");
+        fs::write(&outside, b"outside").unwrap();
+
+        assert_eq!(
+            resolve_workspace_file(&root, &outside.to_string_lossy())
+                .unwrap_err()
+                .code,
+            "WORKSPACE_FILE_UNAUTHORIZED"
+        );
+        assert_eq!(
+            resolve_workspace_file(&root, "../outside.txt")
+                .unwrap_err()
+                .code,
+            "WORKSPACE_FILE_PATH_INVALID"
+        );
+
+        let _ = fs::remove_file(outside);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_workspace_file_symbolic_links() {
+        let root = workspace_file_test_root("symlink");
+        let outside = root.parent().unwrap().join("symlink-target.txt");
+        let link = root.join("linked.txt");
+        fs::write(&outside, b"outside").unwrap();
+        std::os::windows::fs::symlink_file(&outside, &link).unwrap();
+
+        assert_eq!(
+            read_workspace_file(&root, "linked.txt").unwrap_err().code,
+            "WORKSPACE_FILE_SYMLINK_UNSUPPORTED"
+        );
+
+        let _ = fs::remove_file(outside);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_directories_and_files_larger_than_preview_limit() {
+        let root = workspace_file_test_root("limits");
+        let directory = root.join("folder");
+        fs::create_dir_all(&directory).unwrap();
+        let large_file = root.join("large.txt");
+        fs::write(
+            &large_file,
+            vec![0_u8; MAX_WORKSPACE_FILE_BYTES as usize + 1],
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_workspace_file(&root, "folder").unwrap_err().code,
+            "WORKSPACE_FILE_INVALID"
+        );
+        assert_eq!(
+            read_workspace_file(&root, "large.txt").unwrap_err().code,
+            "WORKSPACE_FILE_TOO_LARGE"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_empty_control_character_and_missing_file_paths() {
+        let root = workspace_file_test_root("invalid-paths");
+
+        assert_eq!(
+            resolve_workspace_file(&root, " ").unwrap_err().code,
+            "WORKSPACE_FILE_PATH_INVALID"
+        );
+        assert_eq!(
+            resolve_workspace_file(&root, "bad\nname.txt")
+                .unwrap_err()
+                .code,
+            "WORKSPACE_FILE_PATH_INVALID"
+        );
+        assert_eq!(
+            resolve_workspace_file(&root, "missing.txt")
+                .unwrap_err()
+                .code,
+            "WORKSPACE_FILE_NOT_FOUND"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn builds_fixed_file_open_and_reveal_commands_without_a_shell() {
+        let path = Path::new("C:\\repo\\file name.txt");
+        let open = open_file_command(path);
+        let reveal = reveal_command(path);
+
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(open.get_program(), "explorer.exe");
+            assert_eq!(open.get_args().collect::<Vec<_>>(), vec![path.as_os_str()]);
+            assert_eq!(reveal.get_program(), "explorer.exe");
+            assert_eq!(
+                reveal.get_args().collect::<Vec<_>>(),
+                vec![std::ffi::OsStr::new("/select,C:\\repo\\file name.txt")]
+            );
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(open.get_program(), "open");
+            assert_eq!(reveal.get_args().collect::<Vec<_>>(), vec!["-R", path]);
+        }
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+        {
+            assert_eq!(open.get_program(), "xdg-open");
+            assert_eq!(reveal.get_program(), "xdg-open");
+        }
     }
 }

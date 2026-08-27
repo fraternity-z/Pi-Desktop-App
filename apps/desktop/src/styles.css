@@ -16,6 +16,7 @@
   --surface-raised-translucent: rgb(255 255 255 / 96%);
   --surface-subtle: #f0f0f0;
   --surface-panel: #ffffff;
+  --radius-ui: 10px;
   --line: #dedede;
   --line-strong: #c7c7c7;
   --text: #1f1f1f;
@@ -6292,4 +6293,90 @@ body,
 
 .inline-alert button:hover {
   background: var(--hover);
+}
+
+/* Unified rectangular UI corners */
+.icon-button,
+.sidebar-primary-actions button,
+.project-row,
+.session-row,
+.inline-alert button,
+.primary-button,
+.secondary-button,
+.message-user,
+.user-message-bubble,
+.composer-select,
+.project-dialog,
+.project-folder-picker,
+.status-panel,
+.status-list,
+.markdown-content code,
+.markdown-code-block,
+.thinking-block > summary:focus-visible,
+.timeline-tool > summary:focus-visible,
+.thinking-content,
+.timeline-tool-details,
+.timeline-system-error,
+.composer-queue-card,
+.composer-queue-toolbar button,
+.composer-access-trigger,
+.composer-picker-trigger,
+.composer-menu,
+.composer-menu button,
+.sidebar-footer button,
+.settings-back-button,
+.settings-nav-item,
+.settings-search-field,
+.settings-card,
+.settings-select,
+.settings-archive-search,
+.app-sidebar:not(.settings-sidebar) .icon-button,
+.app-sidebar:not(.settings-sidebar) .sidebar-section-tools button,
+.app-sidebar:not(.settings-sidebar) .project-toggle,
+.app-sidebar:not(.settings-sidebar) .sidebar-row-menu,
+.app-sidebar:not(.settings-sidebar) .session-row-actions button,
+.sidebar-search-field,
+.app-sidebar:not(.settings-sidebar) .sidebar-primary-actions button,
+.app-sidebar:not(.settings-sidebar) .project-row,
+.app-sidebar:not(.settings-sidebar) .session-row,
+.app-sidebar:not(.settings-sidebar) .sidebar-show-more,
+.app-sidebar:not(.settings-sidebar) .session-empty-action,
+.app-sidebar:not(.settings-sidebar) .sidebar-empty-state button,
+.app-sidebar:not(.settings-sidebar) .sidebar-footer button,
+.app-sidebar:not(.settings-sidebar) .sidebar-footer a,
+.floating-menu,
+.floating-menu-item,
+.sidebar-dialog,
+.sidebar-dialog-form input,
+.sidebar-dialog-form select,
+.package-install-form input,
+.ecosystem-search input,
+.sidebar-action-feedback,
+.sidebar-action-feedback button,
+.danger-button,
+.segmented-control,
+.segmented-control button,
+.ecosystem-search,
+.ecosystem-error,
+.ecosystem-error button,
+.ecosystem-state button,
+.ecosystem-pagination button,
+.package-install-form,
+.ecosystem-list,
+.package-row-icon,
+.update-badge,
+.resource-kind-chip,
+.resource-kind-tabs button,
+.composer-project-trigger,
+.composer-environment-chip,
+.composer-attachment-chip,
+.composer-attachment-chip button,
+.composer-icon-trigger,
+.composer-frame {
+  border-radius: var(--radius-ui);
+}
+
+.composer-protrusion,
+.composer-project-bar {
+  border-radius: var(--radius-ui) var(--radius-ui) 0 0;
 }

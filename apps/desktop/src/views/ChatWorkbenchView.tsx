@@ -36,6 +36,7 @@ import { useAppPreferences } from "../stores/useAppPreferences";
 import { useAgentEcosystem } from "../stores/useAgentEcosystem";
 import { useChatSession, type SessionListItem } from "../stores/useChatSession";
 import { useRequestHeaderSettings } from "../stores/useRequestHeaderSettings";
+import { useDesktopNotifications } from "../stores/useDesktopNotifications";
 import { useRuntimeStatus } from "../stores/useRuntimeStatus";
 import { useSidebarPreferences } from "../stores/useSidebarPreferences";
 import { useToolPermissions } from "../stores/useToolPermissions";
@@ -51,6 +52,7 @@ export function ChatWorkbenchView() {
   const sidebarPreferences = useSidebarPreferences();
   const requestHeaders = useRequestHeaderSettings();
   const { preferences, updatePreferences } = useAppPreferences();
+  const notifications = useDesktopNotifications(preferences, updatePreferences);
   const [draft, setDraft] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(() => !isNarrowViewport());
   const [sidebarWidth, setSidebarWidth] = useState(readSidebarWidth);
@@ -432,6 +434,7 @@ export function ChatWorkbenchView() {
           sidebarOpen={sidebarOpen}
           sidebarWidth={sidebarWidth}
           preferences={preferences}
+          notifications={notifications}
           requestHeaders={requestHeaders}
           runtime={runtime}
           eventConnection={session.eventConnection}

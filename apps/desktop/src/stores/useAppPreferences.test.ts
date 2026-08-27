@@ -39,22 +39,30 @@ describe("app preferences", () => {
     const saved = saveAppPreferences({
       ...DEFAULT_APP_PREFERENCES,
       showSuggestions: false,
+      desktopNotifications: false,
+      taskCompletedNotifications: false,
       sidebarTranslucent: true,
       theme: "dark",
       interfaceDensity: "compact",
     });
 
     expect(saved.showSuggestions).toBe(false);
+    expect(saved.desktopNotifications).toBe(false);
+    expect(saved.taskCompletedNotifications).toBe(false);
     expect(loadAppPreferences()).toEqual(saved);
     expect(
       normalizeAppPreferences({
         ...saved,
         showRuntimeStatus: "no",
+        taskFailedNotifications: "sometimes",
+        notifyOnlyWhenUnfocused: null,
         theme: "sepia",
         interfaceDensity: "dense",
       }),
     ).toMatchObject({
       showRuntimeStatus: true,
+      taskFailedNotifications: true,
+      notifyOnlyWhenUnfocused: false,
       theme: "system",
       interfaceDensity: "comfortable",
     });

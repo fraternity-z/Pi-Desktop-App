@@ -2,6 +2,7 @@ import {
   Activity,
   Archive,
   ArrowLeft,
+  Bell,
   Gauge,
   Palette,
   PanelLeftClose,
@@ -13,7 +14,13 @@ import { useMemo, useState } from "react";
 
 import { SidebarResizer } from "./AppSidebar";
 
-export type SettingsSectionId = "general" | "appearance" | "behavior" | "runtime" | "archived";
+export type SettingsSectionId =
+  | "general"
+  | "notifications"
+  | "appearance"
+  | "behavior"
+  | "runtime"
+  | "archived";
 
 interface SettingsSidebarProps {
   open: boolean;
@@ -37,6 +44,12 @@ const SETTINGS_GROUPS: Array<{ label: string; items: SettingsNavItem[] }> = [
     label: "应用",
     items: [
       { id: "general", label: "常规", keywords: "提示 状态 工作台", icon: Gauge },
+      {
+        id: "notifications",
+        label: "通知",
+        keywords: "桌面 系统 任务 完成 失败 运行时 异常 声音 前台",
+        icon: Bell,
+      },
       { id: "appearance", label: "外观", keywords: "侧边栏 密度 动效 宽度", icon: Palette },
       { id: "behavior", label: "行为", keywords: "确认 导航 移除", icon: ShieldCheck },
     ],

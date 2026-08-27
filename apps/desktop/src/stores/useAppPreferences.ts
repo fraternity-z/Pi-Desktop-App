@@ -8,6 +8,12 @@ export interface AppPreferences {
   schemaVersion: 1;
   showSuggestions: boolean;
   showRuntimeStatus: boolean;
+  desktopNotifications: boolean;
+  taskCompletedNotifications: boolean;
+  taskFailedNotifications: boolean;
+  hostExceptionNotifications: boolean;
+  notifyOnlyWhenUnfocused: boolean;
+  notificationSound: boolean;
   sidebarTranslucent: boolean;
   theme: ThemePreference;
   interfaceDensity: InterfaceDensity;
@@ -22,6 +28,12 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
   schemaVersion: 1,
   showSuggestions: true,
   showRuntimeStatus: true,
+  desktopNotifications: true,
+  taskCompletedNotifications: true,
+  taskFailedNotifications: true,
+  hostExceptionNotifications: true,
+  notifyOnlyWhenUnfocused: false,
+  notificationSound: true,
   sidebarTranslucent: false,
   theme: "system",
   interfaceDensity: "comfortable",
@@ -43,6 +55,30 @@ export function normalizeAppPreferences(value: unknown): AppPreferences {
     showRuntimeStatus: readBoolean(
       value.showRuntimeStatus,
       DEFAULT_APP_PREFERENCES.showRuntimeStatus,
+    ),
+    desktopNotifications: readBoolean(
+      value.desktopNotifications,
+      DEFAULT_APP_PREFERENCES.desktopNotifications,
+    ),
+    taskCompletedNotifications: readBoolean(
+      value.taskCompletedNotifications,
+      DEFAULT_APP_PREFERENCES.taskCompletedNotifications,
+    ),
+    taskFailedNotifications: readBoolean(
+      value.taskFailedNotifications,
+      DEFAULT_APP_PREFERENCES.taskFailedNotifications,
+    ),
+    hostExceptionNotifications: readBoolean(
+      value.hostExceptionNotifications,
+      DEFAULT_APP_PREFERENCES.hostExceptionNotifications,
+    ),
+    notifyOnlyWhenUnfocused: readBoolean(
+      value.notifyOnlyWhenUnfocused,
+      DEFAULT_APP_PREFERENCES.notifyOnlyWhenUnfocused,
+    ),
+    notificationSound: readBoolean(
+      value.notificationSound,
+      DEFAULT_APP_PREFERENCES.notificationSound,
     ),
     sidebarTranslucent: readBoolean(
       value.sidebarTranslucent,

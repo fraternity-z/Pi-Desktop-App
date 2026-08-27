@@ -69,6 +69,18 @@ vi.mock("../ipc/workspace", () => ({
   removeRecentWorkspace: vi.fn(),
   revealWorkspace: vi.fn(),
 }));
+vi.mock("../stores/useDesktopNotifications", () => ({
+  useDesktopNotifications: () => ({
+    permission: "granted",
+    phase: "idle",
+    error: null,
+    status: null,
+    setEnabled: vi.fn().mockResolvedValue(true),
+    sendTestNotification: vi.fn().mockResolvedValue(true),
+    openSystemSettings: vi.fn().mockResolvedValue(true),
+    clearFeedback: vi.fn(),
+  }),
+}));
 
 const readyRuntime = {
   status: "ready" as const,
@@ -627,6 +639,10 @@ describe("ChatWorkbenchView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "系统设置" }));
     expect(screen.getByTestId("settings-general")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "通知" }));
+    expect(screen.getByTestId("settings-notifications")).toBeInTheDocument();
+    expect(screen.getAllByRole("switch")).toHaveLength(6);
 
     fireEvent.click(screen.getByRole("button", { name: "外观" }));
     expect(screen.getByTestId("settings-appearance")).toBeInTheDocument();

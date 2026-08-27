@@ -24,6 +24,8 @@ describe("SettingsSidebar", () => {
     expect(screen.getByRole("button", { name: "常规" })).toHaveAttribute("aria-current", "page");
     fireEvent.click(screen.getByRole("button", { name: "外观" }));
     expect(onSectionChange).toHaveBeenCalledWith("appearance");
+    fireEvent.click(screen.getByRole("button", { name: "通知" }));
+    expect(onSectionChange).toHaveBeenCalledWith("notifications");
     fireEvent.click(screen.getByRole("button", { name: "已归档" }));
     expect(onSectionChange).toHaveBeenCalledWith("archived");
 
@@ -32,6 +34,11 @@ describe("SettingsSidebar", () => {
     });
     expect(screen.getByRole("button", { name: "运行时" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "常规" })).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "搜索设置" }), {
+      target: { value: "声音" },
+    });
+    expect(screen.getByRole("button", { name: "通知" })).toBeInTheDocument();
 
     fireEvent.change(screen.getByRole("searchbox", { name: "搜索设置" }), {
       target: { value: "Codex" },

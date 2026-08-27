@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_APP_PREFERENCES } from "../stores/useAppPreferences";
+import type { DesktopNotificationController } from "../stores/useDesktopNotifications";
 import type { RequestHeaderSettingsController } from "../stores/useRequestHeaderSettings";
 import type { RuntimeStatusController } from "../stores/useRuntimeStatus";
 import { SettingsView } from "./SettingsView";
@@ -32,6 +33,22 @@ function readyRequestHeaders(
   };
 }
 
+function readyNotifications(
+  overrides: Partial<DesktopNotificationController> = {},
+): DesktopNotificationController {
+  return {
+    permission: "granted",
+    phase: "idle",
+    error: null,
+    status: null,
+    setEnabled: vi.fn().mockResolvedValue(true),
+    sendTestNotification: vi.fn().mockResolvedValue(true),
+    openSystemSettings: vi.fn().mockResolvedValue(true),
+    clearFeedback: vi.fn(),
+    ...overrides,
+  };
+}
+
 describe("SettingsView", () => {
   beforeEach(() => window.localStorage.clear());
 
@@ -44,6 +61,7 @@ describe("SettingsView", () => {
         sidebarOpen
         sidebarWidth={272}
         preferences={DEFAULT_APP_PREFERENCES}
+        notifications={readyNotifications()}
         requestHeaders={readyRequestHeaders()}
         runtime={readyRuntime}
         eventConnection="ready"
@@ -70,6 +88,7 @@ describe("SettingsView", () => {
         sidebarOpen
         sidebarWidth={272}
         preferences={DEFAULT_APP_PREFERENCES}
+        notifications={readyNotifications()}
         requestHeaders={readyRequestHeaders()}
         runtime={readyRuntime}
         eventConnection="ready"
@@ -107,6 +126,7 @@ describe("SettingsView", () => {
         sidebarOpen={false}
         sidebarWidth={272}
         preferences={DEFAULT_APP_PREFERENCES}
+        notifications={readyNotifications()}
         requestHeaders={readyRequestHeaders()}
         runtime={{ ...readyRuntime, refresh }}
         eventConnection="ready"
@@ -133,6 +153,7 @@ describe("SettingsView", () => {
         sidebarOpen
         sidebarWidth={272}
         preferences={DEFAULT_APP_PREFERENCES}
+        notifications={readyNotifications()}
         requestHeaders={
           readyRequestHeaders({
             settings: { enabled: true, client: "claude-code" },
@@ -165,6 +186,7 @@ describe("SettingsView", () => {
         sidebarOpen
         sidebarWidth={272}
         preferences={DEFAULT_APP_PREFERENCES}
+        notifications={readyNotifications()}
         requestHeaders={
           readyRequestHeaders({
             phase: "error",
@@ -195,6 +217,7 @@ describe("SettingsView", () => {
         sidebarOpen
         sidebarWidth={272}
         preferences={DEFAULT_APP_PREFERENCES}
+        notifications={readyNotifications()}
         requestHeaders={readyRequestHeaders()}
         runtime={readyRuntime}
         eventConnection="ready"
@@ -235,6 +258,7 @@ describe("SettingsView", () => {
         sidebarOpen
         sidebarWidth={272}
         preferences={DEFAULT_APP_PREFERENCES}
+        notifications={readyNotifications()}
         requestHeaders={readyRequestHeaders()}
         runtime={readyRuntime}
         eventConnection="ready"
@@ -262,5 +286,69 @@ describe("SettingsView", () => {
     fireEvent.click(screen.getByRole("button", { name: "删除" }));
     await waitFor(() => expect(screen.queryByText("等待删除")).not.toBeInTheDocument());
     expect(JSON.parse(window.localStorage.getItem("pix.threads.deleted")!)).toContain("remove");
+  });
+
+  it("通知设置支持主开关、分类开关和系统操作", () => {
+    const onPreferencesChange = vi.fn();
+    const notifications = readyNotifications();
+    render(
+      <SettingsView
+        section="notifications"
+        sidebarOpen
+        sidebarWidth={272}
+        preferences={DEFAULT_APP_PREFERENCES}
+        notifications={notifications}
+        requestHeaders={readyRequestHeaders()}
+        runtime={readyRuntime}
+        eventConnection="ready"
+        onOpenSidebar={vi.fn()}
+        onBack={vi.fn()}
+        onSidebarWidthChange={vi.fn()}
+        onPreferencesChange={onPreferencesChange}
+      />,
+    );
+
+    expect(screen.getAllByRole("switch")).toHaveLength(6);
+    expect(screen.getByText("系统已允许")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("switch", { name: "桌面通知" }));
+    fireEvent.click(screen.getByRole("switch", { name: "任务完成时通知" }));
+    fireEvent.click(screen.getByRole("button", { name: "发送测试通知" }));
+    fireEvent.click(screen.getByRole("button", { name: "打开系统通知设置" }));
+
+    expect(notifications.setEnabled).toHaveBeenCalledWith(false);
+    expect(onPreferencesChange).toHaveBeenCalledWith({ taskCompletedNotifications: false });
+    expect(notifications.sendTestNotification).toHaveBeenCalledOnce();
+    expect(notifications.openSystemSettings).toHaveBeenCalledOnce();
+  });
+
+  it("系统拒绝权限时主开关显示关闭并可重新请求权限", () => {
+    const notifications = readyNotifications({
+      permission: "denied",
+      error: "系统未授予通知权限",
+    });
+    render(
+      <SettingsView
+        section="notifications"
+        sidebarOpen
+        sidebarWidth={272}
+        preferences={DEFAULT_APP_PREFERENCES}
+        notifications={notifications}
+        requestHeaders={readyRequestHeaders()}
+        runtime={readyRuntime}
+        eventConnection="ready"
+        onOpenSidebar={vi.fn()}
+        onBack={vi.fn()}
+        onSidebarWidthChange={vi.fn()}
+        onPreferencesChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("系统未允许")).toBeInTheDocument();
+    const masterSwitch = screen.getByRole("switch", { name: "桌面通知" });
+    expect(masterSwitch).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("switch", { name: "任务完成时通知" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("系统未授予通知权限");
+    fireEvent.click(masterSwitch);
+    expect(notifications.setEnabled).toHaveBeenCalledWith(true);
   });
 });

@@ -32,6 +32,7 @@ const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 pub type BridgeEventSink = Arc<dyn Fn(BridgeEvent) + Send + Sync + 'static>;
+pub type BridgeFaultSink = Arc<dyn Fn(AppError) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone)]
 pub struct BridgeLaunchConfig {
@@ -102,24 +103,33 @@ pub struct BridgeSupervisor {
 
 impl BridgeSupervisor {
     pub fn start(config: BridgeLaunchConfig) -> Result<Self, AppError> {
-        Self::start_with_event_sink(config, Arc::new(|_| {}))
+        Self::start_with_sinks(config, Arc::new(|_| {}), Arc::new(|_| {}))
     }
 
     pub fn start_with_event_sink(
         config: BridgeLaunchConfig,
         event_sink: BridgeEventSink,
     ) -> Result<Self, AppError> {
+        Self::start_with_sinks(config, event_sink, Arc::new(|_| {}))
+    }
+
+    pub fn start_with_sinks(
+        config: BridgeLaunchConfig,
+        event_sink: BridgeEventSink,
+        fault_sink: BridgeFaultSink,
+    ) -> Result<Self, AppError> {
         let config = config.canonicalize()?;
         let handshake_timeout = config.handshake_timeout;
         let response_timeout = config.response_timeout;
         let shutdown_timeout = config.shutdown_timeout;
         let transport = ProcessTransport::spawn(&config)?;
-        Self::connect(
+        Self::connect_with_sinks(
             Box::new(transport),
             handshake_timeout,
             response_timeout,
             shutdown_timeout,
             event_sink,
+            fault_sink,
         )
     }
 
@@ -512,12 +522,31 @@ impl BridgeSupervisor {
         response.and(stopped)
     }
 
+    #[cfg(test)]
     fn connect(
+        transport: Box<dyn BridgeTransport>,
+        handshake_timeout: Duration,
+        response_timeout: Duration,
+        shutdown_timeout: Duration,
+        event_sink: BridgeEventSink,
+    ) -> Result<Self, AppError> {
+        Self::connect_with_sinks(
+            transport,
+            handshake_timeout,
+            response_timeout,
+            shutdown_timeout,
+            event_sink,
+            Arc::new(|_| {}),
+        )
+    }
+
+    fn connect_with_sinks(
         mut transport: Box<dyn BridgeTransport>,
         handshake_timeout: Duration,
         response_timeout: Duration,
         shutdown_timeout: Duration,
         event_sink: BridgeEventSink,
+        fault_sink: BridgeFaultSink,
     ) -> Result<Self, AppError> {
         let hello_line = transport.read_frame(handshake_timeout).map_err(|error| {
             if error.code == "BRIDGE_TIMEOUT" {
@@ -529,7 +558,13 @@ impl BridgeSupervisor {
         let hello = parse_hello_frame(&hello_line)?;
         let (commands, receiver) = mpsc::channel();
         let worker = thread::spawn(move || {
-            run_worker(transport, receiver, event_sink, shutdown_timeout);
+            run_worker(
+                transport,
+                receiver,
+                event_sink,
+                fault_sink,
+                shutdown_timeout,
+            );
         });
         Ok(Self {
             hello,
@@ -654,6 +689,7 @@ fn run_worker(
     mut transport: Box<dyn BridgeTransport>,
     commands: Receiver<WorkerCommand>,
     event_sink: BridgeEventSink,
+    fault_sink: BridgeFaultSink,
     shutdown_timeout: Duration,
 ) {
     let mut pending = HashMap::<String, PendingRequest>::new();
@@ -661,18 +697,20 @@ fn run_worker(
 
     loop {
         if pending.is_empty() {
-            match commands.recv() {
+            match commands.recv_timeout(WORKER_POLL_INTERVAL) {
                 Ok(command) => {
                     if handle_worker_command(
                         command,
                         &mut *transport,
                         &mut pending,
+                        &fault_sink,
                         shutdown_timeout,
                     ) {
                         return;
                     }
                 }
-                Err(_) => {
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
                     let _ = transport.stop(Duration::from_millis(100));
                     return;
                 }
@@ -680,7 +718,13 @@ fn run_worker(
         }
 
         while let Ok(command) = commands.try_recv() {
-            if handle_worker_command(command, &mut *transport, &mut pending, shutdown_timeout) {
+            if handle_worker_command(
+                command,
+                &mut *transport,
+                &mut pending,
+                &fault_sink,
+                shutdown_timeout,
+            ) {
                 return;
             }
         }
@@ -690,19 +734,23 @@ fn run_worker(
                 if let Err(error) =
                     handle_inbound_frame(&line, &mut pending, &mut last_event_sequence, &event_sink)
                 {
-                    fail_pending(&mut pending, error);
+                    fail_worker(&mut pending, error, &fault_sink);
                     let _ = transport.stop(Duration::from_millis(100));
                     return;
                 }
             }
             Err(error) if error.code == "BRIDGE_TIMEOUT" => {}
             Err(error) => {
-                fail_pending(&mut pending, error);
+                fail_worker(&mut pending, error, &fault_sink);
                 let _ = transport.stop(Duration::from_millis(100));
                 return;
             }
         }
         if expire_requests(&mut pending) {
+            fault_sink(AppError::new(
+                "BRIDGE_TIMEOUT",
+                "Bridge 请求超时，连接已重置",
+            ));
             let _ = transport.stop(shutdown_timeout);
             return;
         }
@@ -713,6 +761,7 @@ fn handle_worker_command(
     command: WorkerCommand,
     transport: &mut dyn BridgeTransport,
     pending: &mut HashMap<String, PendingRequest>,
+    fault_sink: &BridgeFaultSink,
     shutdown_timeout: Duration,
 ) -> bool {
     match command {
@@ -735,8 +784,10 @@ fn handle_worker_command(
                 false
             }
             Err(error) => {
-                let _ = reply.send(Err(error));
-                false
+                let _ = reply.send(Err(error.clone()));
+                fail_worker(pending, error, fault_sink);
+                let _ = transport.stop(shutdown_timeout);
+                true
             }
         },
         WorkerCommand::Stop { reply } => {
@@ -902,6 +953,15 @@ fn fail_pending(pending: &mut HashMap<String, PendingRequest>, error: AppError) 
     for (_, request) in pending.drain() {
         let _ = request.reply.send(Err(error.clone()));
     }
+}
+
+fn fail_worker(
+    pending: &mut HashMap<String, PendingRequest>,
+    error: AppError,
+    fault_sink: &BridgeFaultSink,
+) {
+    fail_pending(pending, error.clone());
+    fault_sink(error);
 }
 
 trait BridgeTransport: Send {
@@ -1158,6 +1218,7 @@ mod tests {
         reads: Arc<Mutex<VecDeque<Result<String, AppError>>>>,
         writes: Arc<Mutex<Vec<String>>>,
         stop_calls: Arc<Mutex<usize>>,
+        write_error: Option<AppError>,
     }
 
     impl MockTransport {
@@ -1171,12 +1232,21 @@ mod tests {
                 )),
                 writes: Arc::new(Mutex::new(Vec::new())),
                 stop_calls: Arc::new(Mutex::new(0)),
+                write_error: None,
             }
+        }
+
+        fn with_write_error(mut self, error: AppError) -> Self {
+            self.write_error = Some(error);
+            self
         }
     }
 
     impl BridgeTransport for MockTransport {
         fn write_frame(&mut self, frame: &str) -> Result<(), AppError> {
+            if let Some(error) = &self.write_error {
+                return Err(error.clone());
+            }
             self.writes.lock().unwrap().push(frame.to_owned());
             Ok(())
         }
@@ -1410,6 +1480,113 @@ mod tests {
         drop(supervisor);
 
         assert_eq!(*stop_calls.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn reports_unexpected_worker_fault_to_fault_sink() {
+        let transport = MockTransport::new([
+            Ok(HELLO),
+            Ok(r#"{"v":1,"kind":"event","seq":2,"sessionId":"s-1","name":"agent.started"}"#),
+        ]);
+        let faults = Arc::new(Mutex::new(Vec::new()));
+        let received_faults = faults.clone();
+        let supervisor = BridgeSupervisor::connect_with_sinks(
+            Box::new(transport),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Arc::new(|_| {}),
+            Arc::new(move |error| received_faults.lock().unwrap().push(error)),
+        )
+        .expect("有效 hello 应连接成功");
+
+        let error = supervisor
+            .ping()
+            .expect_err("非法事件序号必须使 worker 退出");
+
+        assert_eq!(error.code, "BRIDGE_EVENT_SEQUENCE_INVALID");
+        let faults = faults.lock().unwrap();
+        assert_eq!(faults.len(), 1);
+        assert_eq!(faults[0].code, "BRIDGE_EVENT_SEQUENCE_INVALID");
+    }
+
+    #[test]
+    fn reports_transport_failure_while_idle_to_fault_sink() {
+        let transport = MockTransport::new([
+            Ok(HELLO),
+            Err(AppError::new("BRIDGE_EXITED", "Bridge stdout 已断开")),
+        ]);
+        let (fault_sender, fault_receiver) = mpsc::channel();
+        let _supervisor = BridgeSupervisor::connect_with_sinks(
+            Box::new(transport),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Arc::new(|_| {}),
+            Arc::new(move |error| {
+                let _ = fault_sender.send(error);
+            }),
+        )
+        .expect("有效 hello 应连接成功");
+
+        let error = fault_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("空闲 Bridge 退出必须通知故障 sink");
+
+        assert_eq!(error.code, "BRIDGE_EXITED");
+    }
+
+    #[test]
+    fn reports_write_failure_to_fault_sink_and_stops_transport() {
+        let transport = MockTransport::new([Ok(HELLO)]).with_write_error(AppError::new(
+            "BRIDGE_WRITE_FAILED",
+            "写入 Bridge stdin 失败",
+        ));
+        let stop_calls = transport.stop_calls.clone();
+        let (fault_sender, fault_receiver) = mpsc::channel();
+        let supervisor = BridgeSupervisor::connect_with_sinks(
+            Box::new(transport),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Arc::new(|_| {}),
+            Arc::new(move |error| {
+                let _ = fault_sender.send(error);
+            }),
+        )
+        .expect("有效 hello 应连接成功");
+
+        let request_error = supervisor.ping().expect_err("写入失败必须终止请求");
+        let fault_error = fault_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("写入失败必须通知故障 sink");
+
+        assert_eq!(request_error.code, "BRIDGE_WRITE_FAILED");
+        assert_eq!(fault_error.code, "BRIDGE_WRITE_FAILED");
+        assert_eq!(*stop_calls.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn does_not_report_fault_for_normal_shutdown() {
+        let transport = MockTransport::new([
+            Ok(HELLO),
+            Ok(r#"{"v":1,"kind":"response","id":"rust-1","ok":true}"#),
+        ]);
+        let faults = Arc::new(Mutex::new(Vec::new()));
+        let received_faults = faults.clone();
+        let supervisor = BridgeSupervisor::connect_with_sinks(
+            Box::new(transport),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Arc::new(|_| {}),
+            Arc::new(move |error| received_faults.lock().unwrap().push(error)),
+        )
+        .expect("有效 hello 应连接成功");
+
+        supervisor.shutdown().expect("shutdown 应成功");
+
+        assert!(faults.lock().unwrap().is_empty());
     }
 
     #[test]

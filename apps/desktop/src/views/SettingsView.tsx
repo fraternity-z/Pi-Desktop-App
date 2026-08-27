@@ -1,6 +1,8 @@
 import {
   ArchiveRestore,
   ArrowLeft,
+  BellRing,
+  ExternalLink,
   Folder,
   LoaderCircle,
   Menu,
@@ -19,6 +21,7 @@ import type {
   ThemePreference,
 } from "../stores/useAppPreferences";
 import type { RequestHeaderSettingsController } from "../stores/useRequestHeaderSettings";
+import type { DesktopNotificationController } from "../stores/useDesktopNotifications";
 import type { RuntimeStatusController } from "../stores/useRuntimeStatus";
 import { useSidebarPreferences } from "../stores/useSidebarPreferences";
 
@@ -27,6 +30,7 @@ interface SettingsViewProps {
   sidebarOpen: boolean;
   sidebarWidth: number;
   preferences: AppPreferences;
+  notifications: DesktopNotificationController;
   requestHeaders: RequestHeaderSettingsController;
   runtime: RuntimeStatusController;
   eventConnection: AgentEventConnection;
@@ -38,6 +42,7 @@ interface SettingsViewProps {
 
 const SECTION_TITLES: Record<SettingsSectionId, string> = {
   general: "常规",
+  notifications: "通知",
   appearance: "外观",
   behavior: "行为",
   runtime: "运行时",
@@ -49,6 +54,7 @@ export function SettingsView({
   sidebarOpen,
   sidebarWidth,
   preferences,
+  notifications,
   requestHeaders,
   runtime,
   eventConnection,
@@ -102,6 +108,13 @@ export function SettingsView({
               onChange={onPreferencesChange}
             />
           )}
+          {section === "notifications" && (
+            <NotificationSettings
+              preferences={preferences}
+              controller={notifications}
+              onChange={onPreferencesChange}
+            />
+          )}
           {section === "behavior" && (
             <BehaviorSettings preferences={preferences} onChange={onPreferencesChange} />
           )}
@@ -119,6 +132,153 @@ export function SettingsView({
         </div>
       </div>
     </main>
+  );
+}
+
+function NotificationSettings({
+  preferences,
+  controller,
+  onChange,
+}: {
+  preferences: AppPreferences;
+  controller: DesktopNotificationController;
+  onChange: (patch: Partial<AppPreferences>) => void;
+}) {
+  const busy = controller.phase !== "idle";
+  const desktopNotificationsEnabled =
+    preferences.desktopNotifications && controller.permission === "granted";
+  const dependentControlsDisabled = busy || !desktopNotificationsEnabled;
+  const permissionLabel =
+    controller.phase === "checking-permission"
+      ? "检测权限中"
+      : controller.permission === "granted"
+        ? "系统已允许"
+        : controller.permission === "denied"
+          ? "系统未允许"
+          : "权限未知";
+
+  return (
+    <>
+      <SettingsSection
+        label="桌面通知"
+        action={
+          <SettingsStatus ready={controller.permission === "granted"} label={permissionLabel} />
+        }
+      >
+        <SettingsRow
+          title="桌面通知"
+          description="允许 Pi Desktop 发送系统通知。首次启用时会请求系统权限。"
+          control={
+            <SettingsToggle
+              label="桌面通知"
+              checked={desktopNotificationsEnabled}
+              disabled={busy}
+              onChange={(enabled) => void controller.setEnabled(enabled)}
+            />
+          }
+        />
+        <SettingsRow
+          title="任务完成时通知"
+          description="Pi 任务成功结束后发送通知。"
+          control={
+            <SettingsToggle
+              label="任务完成时通知"
+              checked={preferences.taskCompletedNotifications}
+              disabled={dependentControlsDisabled}
+              onChange={(checked) => onChange({ taskCompletedNotifications: checked })}
+            />
+          }
+        />
+        <SettingsRow
+          title="任务失败时通知"
+          description="Pi 任务因错误失败后发送通知；主动停止的任务不会通知。"
+          control={
+            <SettingsToggle
+              label="任务失败时通知"
+              checked={preferences.taskFailedNotifications}
+              disabled={dependentControlsDisabled}
+              onChange={(checked) => onChange({ taskFailedNotifications: checked })}
+            />
+          }
+        />
+        <SettingsRow
+          title="Host 异常时通知"
+          description="Agent Host 崩溃或 Pi Bridge 意外退出时发送通知。"
+          control={
+            <SettingsToggle
+              label="Host 异常时通知"
+              checked={preferences.hostExceptionNotifications}
+              disabled={dependentControlsDisabled}
+              onChange={(checked) => onChange({ hostExceptionNotifications: checked })}
+            />
+          }
+        />
+        <SettingsRow
+          title="仅在窗口未聚焦时通知"
+          description="窗口处于前台并已聚焦时不弹出系统通知。"
+          control={
+            <SettingsToggle
+              label="仅在窗口未聚焦时通知"
+              checked={preferences.notifyOnlyWhenUnfocused}
+              disabled={dependentControlsDisabled}
+              onChange={(checked) => onChange({ notifyOnlyWhenUnfocused: checked })}
+            />
+          }
+        />
+        <SettingsRow
+          title="通知声音"
+          description="通知时播放系统提示音（视系统支持而定）。"
+          control={
+            <SettingsToggle
+              label="通知声音"
+              checked={preferences.notificationSound}
+              disabled={dependentControlsDisabled}
+              onChange={(checked) => onChange({ notificationSound: checked })}
+            />
+          }
+          last
+        />
+      </SettingsSection>
+
+      <div className="settings-notification-actions">
+        <button
+          className="secondary-button"
+          type="button"
+          disabled={busy}
+          onClick={() => void controller.sendTestNotification()}
+        >
+          {controller.phase === "sending-test" ? (
+            <LoaderCircle className="spin" size={15} />
+          ) : (
+            <BellRing size={15} />
+          )}
+          发送测试通知
+        </button>
+        <button
+          className="secondary-button"
+          type="button"
+          disabled={busy}
+          onClick={() => void controller.openSystemSettings()}
+        >
+          {controller.phase === "opening-settings" ? (
+            <LoaderCircle className="spin" size={15} />
+          ) : (
+            <ExternalLink size={15} />
+          )}
+          打开系统通知设置
+        </button>
+      </div>
+      {controller.error && (
+        <p className="settings-notification-feedback settings-notification-error" role="alert">
+          {controller.error}
+        </p>
+      )}
+      {controller.status && (
+        <p className="settings-notification-feedback" role="status">
+          {controller.status}
+        </p>
+      )}
+    </>
   );
 }
 

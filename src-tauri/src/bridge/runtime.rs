@@ -18,7 +18,8 @@ use crate::{
             SessionConfiguration, SessionConfigurationUpdate,
         },
         supervisor::{
-            BridgeEventSink, BridgeLaunchConfig, BridgeSupervisor, normalize_process_path,
+            BridgeEventSink, BridgeFaultSink, BridgeLaunchConfig, BridgeSupervisor,
+            normalize_process_path,
         },
     },
     discovery::{RuntimeDiscoveryOptions, RuntimeSource, discover_runtime},
@@ -48,6 +49,7 @@ pub struct BridgeRuntime {
 struct RuntimeLaunchContext {
     bridge_script: PathBuf,
     event_sink: BridgeEventSink,
+    fault_sink: BridgeFaultSink,
 }
 
 impl BridgeRuntime {
@@ -56,9 +58,24 @@ impl BridgeRuntime {
         event_sink: BridgeEventSink,
         request_header_settings: RequestHeaderSettings,
     ) -> Self {
+        Self::initialize_with_fault_sink(
+            bridge_script,
+            event_sink,
+            Arc::new(|_| {}),
+            request_header_settings,
+        )
+    }
+
+    pub fn initialize_with_fault_sink(
+        bridge_script: PathBuf,
+        event_sink: BridgeEventSink,
+        fault_sink: BridgeFaultSink,
+        request_header_settings: RequestHeaderSettings,
+    ) -> Self {
         let launch = RuntimeLaunchContext {
             bridge_script,
             event_sink,
+            fault_sink,
         };
         Self {
             supervisor: Mutex::new(None),
@@ -307,6 +324,7 @@ impl BridgeRuntime {
         match start_bridge(
             launch.bridge_script.clone(),
             launch.event_sink.clone(),
+            launch.fault_sink.clone(),
             &request_header_settings,
         ) {
             Ok((supervisor, source)) => {
@@ -400,12 +418,13 @@ impl Drop for BridgeRuntime {
 fn start_bridge(
     bridge_script: PathBuf,
     event_sink: BridgeEventSink,
+    fault_sink: BridgeFaultSink,
     request_header_settings: &RequestHeaderSettings,
 ) -> Result<(BridgeSupervisor, RuntimeSource), AppError> {
     let runtime_paths = discover_runtime(&RuntimeDiscoveryOptions::default())?;
     let source = runtime_paths.source.clone();
     let agent_dir = system_agent_dir()?;
-    let supervisor = BridgeSupervisor::start_with_event_sink(
+    let supervisor = BridgeSupervisor::start_with_sinks(
         BridgeLaunchConfig::new(
             runtime_paths.node_path,
             bridge_script,
@@ -413,6 +432,7 @@ fn start_bridge(
             agent_dir,
         ),
         event_sink,
+        fault_sink,
     )?;
     if let Err(error) = supervisor.health() {
         let _ = supervisor.shutdown();

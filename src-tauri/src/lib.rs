@@ -9,7 +9,11 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager, path::BaseDirectory};
 
 use crate::{
-    bridge::{protocol::BridgeEvent, runtime::BridgeRuntime, supervisor::BridgeEventSink},
+    bridge::{
+        protocol::BridgeEvent,
+        runtime::BridgeRuntime,
+        supervisor::{BridgeEventSink, BridgeFaultSink},
+    },
     error::AppError,
     storage::{RequestHeaderSettingsStore, WorkspaceStore},
 };
@@ -18,6 +22,7 @@ use crate::{
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let config_dir = app
                 .path()
@@ -29,11 +34,20 @@ pub fn run() {
             let event_sink: BridgeEventSink = Arc::new(move |event: BridgeEvent| {
                 let _ = event_app.emit("agent://event", event);
             });
+            let fault_app = app.handle().clone();
+            let fault_sink: BridgeFaultSink = Arc::new(move |error: AppError| {
+                let _ = fault_app.emit("runtime://fault", error);
+            });
             let runtime = app
                 .path()
                 .resolve("resources/pi-bridge/pi-bridge.mjs", BaseDirectory::Resource)
                 .map(|path| {
-                    BridgeRuntime::initialize(path, event_sink, request_header_settings.clone())
+                    BridgeRuntime::initialize_with_fault_sink(
+                        path,
+                        event_sink,
+                        fault_sink,
+                        request_header_settings.clone(),
+                    )
                 })
                 .unwrap_or_else(|_| {
                     BridgeRuntime::unavailable(
@@ -52,6 +66,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::diagnostics::get_architecture_status,
+            commands::notifications::open_system_notification_settings,
             commands::runtime::get_runtime_status,
             commands::runtime::agent_create_session,
             commands::runtime::agent_list_sessions,

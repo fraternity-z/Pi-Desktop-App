@@ -1,11 +1,14 @@
 import {
   AlertTriangle,
   ArrowDown,
+  FileDiff,
   FolderOpen,
   FolderPlus,
+  Globe2,
   LoaderCircle,
   Menu,
   MessageSquarePlus,
+  PanelRight,
   RefreshCw,
   X,
 } from "lucide-react";
@@ -18,6 +21,7 @@ import {
   normalizeAttachedPaths,
 } from "../components/composerAttachments";
 import { ConversationTimeline } from "../components/ConversationTimeline";
+import { RightPanel, type RightPanelTabId } from "../components/RightPanel";
 import { RuntimeStatusControl } from "../components/RuntimeStatusControl";
 import { SettingsSidebar, type SettingsSectionId } from "../components/SettingsSidebar";
 import type { PromptStreamingBehavior } from "../ipc/agent";
@@ -38,6 +42,7 @@ import { useChatSession, type SessionListItem } from "../stores/useChatSession";
 import { useRequestHeaderSettings } from "../stores/useRequestHeaderSettings";
 import { useDesktopNotifications } from "../stores/useDesktopNotifications";
 import { useRuntimeStatus } from "../stores/useRuntimeStatus";
+import { useRightPanelLayout, useRightPanelVisibility } from "../stores/useRightPanelLayout";
 import { useSidebarPreferences } from "../stores/useSidebarPreferences";
 import { useToolPermissions } from "../stores/useToolPermissions";
 import { PackageManagerView, ResourcesView } from "./EcosystemViews";
@@ -72,12 +77,19 @@ export function ChatWorkbenchView() {
   const shouldStickToBottom = useRef(true);
   const pendingConversationScroll = useRef<(() => void) | null>(null);
   const projectDialogTrigger = useRef<HTMLElement | null>(null);
+  const rightPanelTrigger = useRef<HTMLButtonElement | null>(null);
   const ecosystemCwd = useRef("");
   const [atConversationBottom, setAtConversationBottom] = useState(true);
+  const hasSession = session.sessionId !== null;
+  const rightPanelEnabled =
+    activeView === "chat" && hasSession && isProjectWorkspace(session.cwd, session.conversationHome);
+  const rightPanelLayout = useRightPanelLayout();
+  const rightPanelVisibility = useRightPanelVisibility(rightPanelEnabled);
+  const [rightPanelTab, setRightPanelTab] = useState<RightPanelTabId>("review");
+  const [browserTabOpen, setBrowserTabOpen] = useState(false);
 
   const runtimeReady = runtime.phase === "ready" && runtime.status.status === "ready";
   const eventChannelReady = session.eventConnection === "ready";
-  const hasSession = session.sessionId !== null;
   const startupStage = !hasSession
     ? runtime.phase === "loading"
       ? "runtime"
@@ -363,6 +375,28 @@ export function ChatWorkbenchView() {
     [session.cwd],
   );
 
+  const openRightPanelBrowser = useCallback(() => {
+    if (!rightPanelEnabled) return;
+    setBrowserTabOpen(true);
+    setRightPanelTab("browser");
+    rightPanelVisibility.openPanel();
+  }, [rightPanelEnabled, rightPanelVisibility]);
+
+  const closeRightPanelBrowser = useCallback(() => {
+    setBrowserTabOpen(false);
+    setRightPanelTab((current) => current === "browser" ? "review" : current);
+  }, []);
+
+  const closeRightPanel = useCallback(() => {
+    rightPanelVisibility.closePanel();
+    window.setTimeout(() => rightPanelTrigger.current?.focus(), 0);
+  }, [rightPanelVisibility]);
+
+  const setRightPanelExpanded = useCallback((expanded: boolean) => {
+    if (expanded && !rightPanelLayout.expanded) rightPanelLayout.resetWidth();
+    rightPanelLayout.setExpanded(expanded);
+  }, [rightPanelLayout]);
+
   const runtimeMessage = getRuntimeMessage(runtime);
   const eventChannelFailed = session.eventConnection === "error";
   const sessionError =
@@ -372,8 +406,14 @@ export function ChatWorkbenchView() {
     <div
       className="desktop-shell"
       data-sidebar-open={sidebarOpen}
+      data-right-panel-open={rightPanelVisibility.open}
       data-active-view={activeView}
-      style={{ "--sidebar-width": `${sidebarOpen ? sidebarWidth : 0}px` } as CSSProperties}
+      style={{
+        "--sidebar-width": `${sidebarOpen ? sidebarWidth : 0}px`,
+        "--right-panel-shell-width": rightPanelVisibility.available && !rightPanelLayout.expanded
+          ? `${rightPanelLayout.width}px`
+          : "0px",
+      } as CSSProperties}
     >
       {activeView === "settings" ? (
         <SettingsSidebar
@@ -479,9 +519,24 @@ export function ChatWorkbenchView() {
               <h1>{hasSession ? conversationTitle : "会话工作台"}</h1>
             </div>
           </div>
-          {preferences.showRuntimeStatus && (
-            <RuntimeStatusControl runtime={runtime} eventConnection={session.eventConnection} />
-          )}
+          <div className="topbar-actions">
+            {preferences.showRuntimeStatus && (
+              <RuntimeStatusControl runtime={runtime} eventConnection={session.eventConnection} />
+            )}
+            {rightPanelEnabled && (
+              <button
+                ref={rightPanelTrigger}
+                className="icon-button"
+                type="button"
+                aria-label={rightPanelVisibility.open ? "隐藏审查侧栏" : "显示审查侧栏"}
+                aria-pressed={rightPanelVisibility.open}
+                title={rightPanelVisibility.open ? "隐藏审查侧栏" : "显示审查侧栏"}
+                onClick={rightPanelVisibility.togglePanel}
+              >
+                <PanelRight size={18} aria-hidden="true" />
+              </button>
+            )}
+          </div>
         </header>
 
         <section className="conversation-shell" aria-label="Pi 会话工作台">
@@ -644,6 +699,49 @@ export function ChatWorkbenchView() {
           </div>
         </section>
       </main>
+      )}
+
+      {rightPanelVisibility.available && (
+        <>
+          {rightPanelVisibility.open && (
+            <button
+              className="right-panel-scrim"
+              type="button"
+              aria-label="关闭右侧面板遮罩"
+              onClick={closeRightPanel}
+            />
+          )}
+          <RightPanel
+            open={rightPanelVisibility.open}
+            available={rightPanelVisibility.available}
+            opening={rightPanelVisibility.opening}
+            closing={rightPanelVisibility.closing}
+            width={rightPanelLayout.width}
+            expanded={rightPanelLayout.expanded}
+            activeTab={rightPanelTab}
+            browserTab={browserTabOpen ? { label: "浏览器" } : null}
+            onClose={closeRightPanel}
+            onWidthChange={rightPanelLayout.setWidth}
+            onExpandedChange={setRightPanelExpanded}
+            onActiveTabChange={setRightPanelTab}
+            onOpenBrowser={openRightPanelBrowser}
+            onCloseBrowserTab={closeRightPanelBrowser}
+          >
+            {rightPanelTab === "browser" ? (
+              <div className="right-panel-empty">
+                <Globe2 aria-hidden="true" />
+                <h2>浏览器</h2>
+                <p>打开网址后，网页会显示在这里。</p>
+              </div>
+            ) : (
+              <div className="right-panel-empty">
+                <FileDiff aria-hidden="true" />
+                <h2>没有待审查的更改</h2>
+                <p>工作区更改会显示在这里。</p>
+              </div>
+            )}
+          </RightPanel>
+        </>
       )}
 
       {projectDialogOpen && (
@@ -855,6 +953,15 @@ function getWorkspaceName(path: string): string {
     return "未绑定项目";
   }
   return normalized.split(/[\\/]/).at(-1) || normalized;
+}
+
+function isProjectWorkspace(cwd: string, conversationHome: string): boolean {
+  const normalizedCwd = normalizeComparablePath(cwd);
+  return normalizedCwd.length > 0 && normalizedCwd !== normalizeComparablePath(conversationHome);
+}
+
+function normalizeComparablePath(path: string): string {
+  return path.trim().replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
 }
 
 function getRuntimeMessage(runtime: ReturnType<typeof useRuntimeStatus>): string | null {

@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { applyAppPreferences, loadAppPreferences } from "./stores/useAppPreferences";
 import "./styles.css";
+import "./components/right-panel.css";
 
 const root = document.getElementById("root");
 

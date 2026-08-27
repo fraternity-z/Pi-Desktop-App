@@ -595,6 +595,34 @@ describe("ChatWorkbenchView", () => {
     expect(createAgentSession).toHaveBeenCalledWith(
       "C:\\Users\\me\\Documents\\Pix\\conversations",
     );
+    expect(screen.queryByRole("button", { name: "显示审查侧栏" })).not.toBeInTheDocument();
+  });
+
+  it("仅在项目会话中打开、展开并关闭右侧面板", async () => {
+    const { container } = render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    expect(screen.queryByRole("button", { name: "显示审查侧栏" })).not.toBeInTheDocument();
+
+    await addProject("C:\\work");
+    const toggle = await screen.findByRole("button", { name: "显示审查侧栏" });
+    fireEvent.click(toggle);
+    expect(await screen.findByRole("complementary", { name: "工作区侧边栏" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "审查" })).toHaveAttribute("aria-selected", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "打开右侧面板标签页" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /浏览器/ }));
+    expect(screen.getByRole("tab", { name: "浏览器" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(screen.getByRole("button", { name: "展开工作区侧边栏" }));
+    expect(container.querySelector(".right-panel")).toHaveClass("right-panel-expanded");
+    fireEvent.click(screen.getByRole("button", { name: "收起工作区侧边栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "关闭浏览器标签页" }));
+    expect(screen.queryByRole("tab", { name: "浏览器" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭差异侧栏" }));
+    expect(screen.getByRole("button", { name: "显示审查侧栏" })).toHaveAttribute("aria-pressed", "false");
+    expect(container.querySelector(".right-panel")).toHaveAttribute("aria-hidden", "true");
+    await waitFor(() => expect(screen.getByRole("button", { name: "显示审查侧栏" })).toHaveFocus());
+    await waitFor(() => expect(container.querySelector(".right-panel")).toBeNull());
   });
 
   it("从侧栏进入插件与资源视图并保持数据计数同步", async () => {

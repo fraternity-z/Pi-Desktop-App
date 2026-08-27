@@ -22,6 +22,17 @@ import {
   updateAgentPackage,
 } from "../ipc/agent";
 import { selectProjectDirectory } from "../ipc/project";
+import {
+  gitCommit,
+  gitCreateBranch,
+  gitDiff,
+  gitDiscard,
+  gitInit,
+  gitPush,
+  gitStage,
+  gitStatus,
+  gitUnstage,
+} from "../ipc/git";
 import { getRequestHeaderSettings, updateRequestHeaderSettings } from "../ipc/settings";
 import { getRuntimeStatus } from "../ipc/system";
 import {
@@ -58,6 +69,17 @@ vi.mock("../ipc/agent", () => ({
   updateAgentPackage: vi.fn(),
 }));
 vi.mock("../ipc/project", () => ({ selectProjectDirectory: vi.fn() }));
+vi.mock("../ipc/git", () => ({
+  gitStatus: vi.fn(),
+  gitDiff: vi.fn(),
+  gitStage: vi.fn(),
+  gitUnstage: vi.fn(),
+  gitDiscard: vi.fn(),
+  gitInit: vi.fn(),
+  gitCommit: vi.fn(),
+  gitPush: vi.fn(),
+  gitCreateBranch: vi.fn(),
+}));
 vi.mock("../ipc/settings", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../ipc/settings")>()),
   getRequestHeaderSettings: vi.fn(),
@@ -135,6 +157,30 @@ describe("ChatWorkbenchView", () => {
       .mockReset()
       .mockImplementation(async (settings) => settings);
     vi.mocked(selectProjectDirectory).mockReset().mockResolvedValue("C:\\work");
+    vi.mocked(gitStatus).mockReset().mockResolvedValue({
+      isRepository: true,
+      repoRoot: "C:\\work",
+      branch: {
+        head: "main",
+        upstream: "origin/main",
+        ahead: 0,
+        behind: 0,
+        detached: false,
+      },
+      staged: [],
+      unstaged: [],
+      untracked: [],
+      conflicted: [],
+      isClean: true,
+    });
+    vi.mocked(gitDiff).mockReset().mockResolvedValue({ path: null, staged: false, diff: "" });
+    vi.mocked(gitStage).mockReset().mockResolvedValue(undefined);
+    vi.mocked(gitUnstage).mockReset().mockResolvedValue(undefined);
+    vi.mocked(gitDiscard).mockReset().mockResolvedValue(undefined);
+    vi.mocked(gitInit).mockReset().mockResolvedValue(undefined);
+    vi.mocked(gitCommit).mockReset().mockResolvedValue(undefined);
+    vi.mocked(gitPush).mockReset().mockResolvedValue(undefined);
+    vi.mocked(gitCreateBranch).mockReset().mockResolvedValue(undefined);
     vi.mocked(createAgentSession).mockReset().mockResolvedValue(defaultSession);
     vi.mocked(openAgentSession).mockReset().mockResolvedValue({
       ...defaultSession,
@@ -622,6 +668,7 @@ describe("ChatWorkbenchView", () => {
     fireEvent.click(toggle);
     expect(await screen.findByRole("complementary", { name: "工作区侧边栏" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "审查" })).toHaveAttribute("aria-selected", "true");
+    await waitFor(() => expect(gitStatus).toHaveBeenCalledWith("C:\\work"));
 
     fireEvent.click(screen.getByRole("button", { name: "打开右侧面板标签页" }));
     fireEvent.click(screen.getByRole("menuitem", { name: /浏览器/ }));

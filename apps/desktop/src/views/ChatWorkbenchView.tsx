@@ -1,7 +1,6 @@
 import {
   AlertTriangle,
   ArrowDown,
-  FileDiff,
   FolderOpen,
   FolderPlus,
   Globe2,
@@ -23,6 +22,7 @@ import {
 import { ConversationTimeline } from "../components/ConversationTimeline";
 import { FileSearchDialog, type FileSearchResult } from "../components/FileSearchDialog";
 import { FileViewer } from "../components/FileViewer";
+import { GitReviewPanel } from "../components/GitReviewPanel";
 import { QuickPreview } from "../components/QuickPreview";
 import { RightPanel, type RightPanelTabId } from "../components/RightPanel";
 import { RuntimeStatusControl } from "../components/RuntimeStatusControl";
@@ -950,11 +950,14 @@ export function ChatWorkbenchView() {
                 <p>打开网址后，网页会显示在这里。</p>
               </div>
             ) : (
-              <div className="right-panel-empty">
-                <FileDiff aria-hidden="true" />
-                <h2>没有待审查的更改</h2>
-                <p>工作区更改会显示在这里。</p>
-              </div>
+              <GitReviewPanel
+                cwd={session.cwd}
+                active={rightPanelVisibility.open && rightPanelTab === "review"}
+                diffStyle={rightPanelLayout.diffStyle}
+                displayOptions={rightPanelLayout.displayOptions}
+                onDiffStyleChange={rightPanelLayout.setDiffStyle}
+                onDisplayOptionToggle={rightPanelLayout.toggleDisplayOption}
+              />
             )}
           </RightPanel>
           <FileSearchDialog

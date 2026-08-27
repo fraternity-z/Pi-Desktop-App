@@ -23,6 +23,11 @@ import {
 } from "../ipc/agent";
 import { selectProjectDirectory } from "../ipc/project";
 import {
+  hideBrowserSidebar,
+  openBrowserSidebar,
+  updateBrowserSidebarBounds,
+} from "../ipc/browser";
+import {
   gitCommit,
   gitCreateBranch,
   gitDiff,
@@ -69,6 +74,11 @@ vi.mock("../ipc/agent", () => ({
   updateAgentPackage: vi.fn(),
 }));
 vi.mock("../ipc/project", () => ({ selectProjectDirectory: vi.fn() }));
+vi.mock("../ipc/browser", () => ({
+  hideBrowserSidebar: vi.fn(),
+  openBrowserSidebar: vi.fn(),
+  updateBrowserSidebarBounds: vi.fn(),
+}));
 vi.mock("../ipc/git", () => ({
   gitStatus: vi.fn(),
   gitDiff: vi.fn(),
@@ -181,6 +191,9 @@ describe("ChatWorkbenchView", () => {
     vi.mocked(gitCommit).mockReset().mockResolvedValue(undefined);
     vi.mocked(gitPush).mockReset().mockResolvedValue(undefined);
     vi.mocked(gitCreateBranch).mockReset().mockResolvedValue(undefined);
+    vi.mocked(hideBrowserSidebar).mockReset().mockResolvedValue(undefined);
+    vi.mocked(openBrowserSidebar).mockReset().mockResolvedValue(undefined);
+    vi.mocked(updateBrowserSidebarBounds).mockReset().mockResolvedValue(undefined);
     vi.mocked(createAgentSession).mockReset().mockResolvedValue(defaultSession);
     vi.mocked(openAgentSession).mockReset().mockResolvedValue({
       ...defaultSession,
@@ -673,11 +686,38 @@ describe("ChatWorkbenchView", () => {
     fireEvent.click(screen.getByRole("button", { name: "打开右侧面板标签页" }));
     fireEvent.click(screen.getByRole("menuitem", { name: /浏览器/ }));
     expect(screen.getByRole("tab", { name: "浏览器" })).toHaveAttribute("aria-selected", "true");
+    const browserSurface = screen.getByLabelText("浏览器内容区域");
+    Object.defineProperty(browserSurface, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        x: 600,
+        y: 80,
+        top: 80,
+        left: 600,
+        right: 1_160,
+        bottom: 800,
+        width: 560,
+        height: 720,
+        toJSON: () => ({}),
+      } as DOMRect),
+    });
+    fireEvent(window, new Event("resize"));
+    await waitFor(() => {
+      expect(openBrowserSidebar).toHaveBeenCalledWith({
+        x: 600,
+        y: 80,
+        width: 560,
+        height: 720,
+        visible: true,
+        url: "https://www.google.com",
+      });
+    });
     fireEvent.click(screen.getByRole("button", { name: "展开工作区侧边栏" }));
     expect(container.querySelector(".right-panel")).toHaveClass("right-panel-expanded");
     fireEvent.click(screen.getByRole("button", { name: "收起工作区侧边栏" }));
     fireEvent.click(screen.getByRole("button", { name: "关闭浏览器标签页" }));
     expect(screen.queryByRole("tab", { name: "浏览器" })).not.toBeInTheDocument();
+    await waitFor(() => expect(hideBrowserSidebar).toHaveBeenCalled());
 
     fireEvent.click(screen.getByRole("button", { name: "关闭差异侧栏" }));
     expect(screen.getByRole("button", { name: "显示审查侧栏" })).toHaveAttribute("aria-pressed", "false");

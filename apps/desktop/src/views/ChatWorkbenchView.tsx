@@ -3,7 +3,6 @@ import {
   ArrowDown,
   FolderOpen,
   FolderPlus,
-  Globe2,
   LoaderCircle,
   Menu,
   MessageSquarePlus,
@@ -14,6 +13,7 @@ import {
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
 
 import { AppSidebar, threadTitle } from "../components/AppSidebar";
+import { BrowserSidebarPanel } from "../components/BrowserSidebarPanel";
 import { ChatComposer } from "../components/ChatComposer";
 import {
   MAX_COMPOSER_ATTACHMENTS,
@@ -944,11 +944,7 @@ export function ChatWorkbenchView() {
                 onRetry={() => setFileReloadKey((current) => current + 1)}
               />
             ) : rightPanelTab === "browser" ? (
-              <div className="right-panel-empty">
-                <Globe2 aria-hidden="true" />
-                <h2>浏览器</h2>
-                <p>打开网址后，网页会显示在这里。</p>
-              </div>
+              <BrowserSidebarPanel active={rightPanelVisibility.open} />
             ) : (
               <GitReviewPanel
                 cwd={session.cwd}

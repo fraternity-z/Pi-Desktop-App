@@ -67,6 +67,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::diagnostics::get_architecture_status,
             commands::notifications::open_system_notification_settings,
+            commands::browser::browser_sidebar_open,
+            commands::browser::browser_sidebar_update_bounds,
+            commands::browser::browser_sidebar_hide,
             commands::runtime::get_runtime_status,
             commands::runtime::agent_create_session,
             commands::runtime::agent_list_sessions,

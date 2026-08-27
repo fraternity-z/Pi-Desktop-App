@@ -50,7 +50,12 @@ const SETTINGS_GROUPS: Array<{ label: string; items: SettingsNavItem[] }> = [
         keywords: "桌面 系统 任务 完成 失败 运行时 异常 声音 前台",
         icon: Bell,
       },
-      { id: "appearance", label: "外观", keywords: "侧边栏 密度 动效 宽度", icon: Palette },
+      {
+        id: "appearance",
+        label: "外观",
+        keywords: "主题 皮肤 背景 图片 缩放 字体 字号 侧边栏 半透明 宽度",
+        icon: Palette,
+      },
       { id: "behavior", label: "行为", keywords: "确认 导航 移除", icon: ShieldCheck },
     ],
   },

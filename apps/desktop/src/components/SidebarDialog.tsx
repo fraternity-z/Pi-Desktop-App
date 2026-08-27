@@ -16,7 +16,7 @@ interface SidebarDialogFrameProps {
   onClose: () => void;
 }
 
-function SidebarDialogFrame({
+export function SidebarDialogFrame({
   title,
   description,
   busy = false,

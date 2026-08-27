@@ -10,16 +10,19 @@ import {
   Search,
   Trash2,
 } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState } from "react";
 
+import { AppearanceSettings } from "../components/AppearanceSettings";
 import { ConfirmSidebarDialog } from "../components/SidebarDialog";
+import {
+  SettingsRow,
+  SettingsSection,
+  SettingsSelect,
+  SettingsToggle,
+} from "../components/SettingsControls";
 import type { SettingsSectionId } from "../components/SettingsSidebar";
 import type { AgentEventConnection } from "../stores/useChatSession";
-import type {
-  AppPreferences,
-  InterfaceDensity,
-  ThemePreference,
-} from "../stores/useAppPreferences";
+import type { AppPreferences, InterfaceDensity } from "../stores/useAppPreferences";
 import type { RequestHeaderSettingsController } from "../stores/useRequestHeaderSettings";
 import type { DesktopNotificationController } from "../stores/useDesktopNotifications";
 import type { RuntimeStatusController } from "../stores/useRuntimeStatus";
@@ -64,7 +67,7 @@ export function SettingsView({
   onPreferencesChange,
 }: SettingsViewProps) {
   return (
-    <main className="workspace-main settings-main">
+    <main className={`workspace-main settings-main settings-main-${section}`}>
       <header className="topbar settings-topbar">
         <div className="topbar-title-group">
           {!sidebarOpen && (
@@ -459,40 +462,41 @@ function GeneralSettings({
   );
 }
 
-function AppearanceSettings({
+function BehaviorSettings({
   preferences,
-  sidebarWidth,
-  onSidebarWidthChange,
   onChange,
 }: {
   preferences: AppPreferences;
-  sidebarWidth: number;
-  onSidebarWidthChange: (width: number) => void;
   onChange: (patch: Partial<AppPreferences>) => void;
 }) {
   return (
     <>
-      <SettingsSection label="主题">
+      <SettingsSection label="导航与确认">
         <SettingsRow
-          title="颜色主题"
-          description="统一侧边栏、工作台、弹窗与设置页面的明暗显示。"
+          title="移除项目时确认"
+          description="从最近项目列表移除工作区前显示确认。"
           control={
-            <SettingsSelect
-              label="颜色主题"
-              value={preferences.theme}
-              options={[
-                { value: "system", label: "跟随系统" },
-                { value: "light", label: "浅色" },
-                { value: "dark", label: "深色" },
-              ]}
-              onChange={(value) => onChange({ theme: value as ThemePreference })}
+            <SettingsToggle
+              label="移除项目时确认"
+              checked={preferences.confirmRemoveWorkspace}
+              onChange={(checked) => onChange({ confirmRemoveWorkspace: checked })}
+            />
+          }
+        />
+        <SettingsRow
+          title="窄屏导航后关闭侧边栏"
+          description="在较小窗口中选择页面或会话后收起侧边栏。"
+          control={
+            <SettingsToggle
+              label="窄屏导航后关闭侧边栏"
+              checked={preferences.closeSidebarOnNavigation}
+              onChange={(checked) => onChange({ closeSidebarOnNavigation: checked })}
             />
           }
           last
         />
       </SettingsSection>
-
-      <SettingsSection label="布局">
+      <SettingsSection label="界面辅助">
         <SettingsRow
           title="界面密度"
           description="调整导航与设置项的纵向间距。"
@@ -509,39 +513,6 @@ function AppearanceSettings({
           }
         />
         <SettingsRow
-          title="侧边栏透明效果"
-          description="为侧边栏启用半透明背景和模糊效果。"
-          control={
-            <SettingsToggle
-              label="侧边栏透明效果"
-              checked={preferences.sidebarTranslucent}
-              onChange={(checked) => onChange({ sidebarTranslucent: checked })}
-            />
-          }
-        />
-        <SettingsRow
-          title="侧边栏宽度"
-          description={
-            <div className="settings-range-control">
-              <input
-                type="range"
-                min={232}
-                max={360}
-                step={4}
-                value={sidebarWidth}
-                aria-label="侧边栏宽度"
-                onChange={(event) => onSidebarWidthChange(Number(event.target.value))}
-              />
-              <span>{sidebarWidth}px</span>
-            </div>
-          }
-          control={<span className="sr-only">{sidebarWidth}px</span>}
-          last
-        />
-      </SettingsSection>
-
-      <SettingsSection label="动效">
-        <SettingsRow
           title="减少动态效果"
           description="关闭非必要的过渡与动画。"
           control={
@@ -555,42 +526,6 @@ function AppearanceSettings({
         />
       </SettingsSection>
     </>
-  );
-}
-
-function BehaviorSettings({
-  preferences,
-  onChange,
-}: {
-  preferences: AppPreferences;
-  onChange: (patch: Partial<AppPreferences>) => void;
-}) {
-  return (
-    <SettingsSection label="导航与确认">
-      <SettingsRow
-        title="移除项目时确认"
-        description="从最近项目列表移除工作区前显示确认。"
-        control={
-          <SettingsToggle
-            label="移除项目时确认"
-            checked={preferences.confirmRemoveWorkspace}
-            onChange={(checked) => onChange({ confirmRemoveWorkspace: checked })}
-          />
-        }
-      />
-      <SettingsRow
-        title="窄屏导航后关闭侧边栏"
-        description="在较小窗口中选择页面或会话后收起侧边栏。"
-        control={
-          <SettingsToggle
-            label="窄屏导航后关闭侧边栏"
-            checked={preferences.closeSidebarOnNavigation}
-            onChange={(checked) => onChange({ closeSidebarOnNavigation: checked })}
-          />
-        }
-        last
-      />
-    </SettingsSection>
   );
 }
 
@@ -735,104 +670,6 @@ function RequestHeaderSettings({
         </p>
       )}
     </SettingsSection>
-  );
-}
-
-function SettingsSection({
-  label,
-  action,
-  children,
-}: {
-  label: string;
-  action?: ReactNode;
-  children: ReactNode;
-}) {
-  return (
-    <section className="settings-section-block">
-      <div className="settings-section-heading">
-        <h2>{label}</h2>
-        {action}
-      </div>
-      <div className="settings-card">{children}</div>
-    </section>
-  );
-}
-
-function SettingsRow({
-  title,
-  description,
-  control,
-  last = false,
-}: {
-  title: string;
-  description?: ReactNode;
-  control: ReactNode;
-  last?: boolean;
-}) {
-  return (
-    <div className={`settings-row${last ? " settings-row-last" : ""}`}>
-      <div className="settings-row-copy">
-        <div className="settings-row-title">{title}</div>
-        {description && <div className="settings-row-description">{description}</div>}
-      </div>
-      <div className="settings-row-control">{control}</div>
-    </div>
-  );
-}
-
-function SettingsToggle({
-  label,
-  checked,
-  disabled = false,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  disabled?: boolean;
-  onChange: (checked: boolean) => void;
-}) {
-  return (
-    <button
-      className="settings-toggle"
-      type="button"
-      role="switch"
-      aria-label={label}
-      aria-checked={checked}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-    >
-      <span />
-    </button>
-  );
-}
-
-function SettingsSelect({
-  label,
-  value,
-  options,
-  disabled = false,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  options: Array<{ value: string; label: string }>;
-  disabled?: boolean;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <select
-      className="settings-select"
-      aria-label={label}
-      value={value}
-      disabled={disabled}
-      onChange={(event) => onChange(event.target.value)}
-    >
-      {options.map((option) => (
-        <option key={option.value} value={option.value}>
-          {option.label}
-        </option>
-      ))}
-    </select>
   );
 }
 

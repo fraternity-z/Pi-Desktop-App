@@ -231,3 +231,103 @@ styling, icon alignment, and interaction placement are compared in the focused i
 - [x] Run full tests, checks, production build, and installer packaging.
 
 final result: passed
+
+# Appearance Settings Design QA
+
+## Visual Sources
+
+- Source visual truth: `C:\Users\Administrator\AppData\Local\Temp\codex-clipboard-8205850b-5ba5-4530-b1c0-99cc8bbef71e.png`
+- Implementation screenshot: `E:\code\Pi Desktop App\output\playwright\appearance-desktop-final.png`
+- Full-view comparison: `E:\code\Pi Desktop App\output\playwright\appearance-reference-comparison-current.png`
+- Theme-browser comparison: `E:\code\Pi Desktop App\output\playwright\appearance-theme-comparison-current.png`
+- Controls comparison: `E:\code\Pi Desktop App\output\playwright\appearance-controls-comparison-current.png`
+- Narrow top and bottom states:
+  - `E:\code\Pi Desktop App\output\playwright\appearance-mobile-final-top-current.png`
+  - `E:\code\Pi Desktop App\output\playwright\appearance-mobile-final-bottom-current.png`
+- Narrow navigation state: `E:\code\Pi Desktop App\output\playwright\appearance-mobile-sidebar-current.png`
+- Cross-page background evidence: `E:\code\Pi Desktop App\output\playwright\appearance-desktop-cross-page-final2.png`
+- Local implementation: `http://127.0.0.1:1420/`
+
+## Viewport And State
+
+- Desktop comparison: 1308 x 1920 CSS pixels, matching the source image exactly.
+- Responsive comparison: 390 x 844 CSS pixels at the top, bottom, and open-navigation states.
+- State: light/system appearance, moonlit Elaina theme applied, sidebar translucency enabled,
+  300 px sidebar width, 100% scale, and system-default UI/code fonts.
+
+## Full-View Comparison Evidence
+
+The source and implementation were captured at the same 1308 x 1920 viewport and placed together
+in one comparison image. The 1230 px outer frame, 24 px viewport margin, title hierarchy, section
+spacing, card geometry, control widths, theme-card track, and bottom slider align with the source.
+The three dark strips in the source cross the UI at unrelated positions and were treated as external
+screenshot redactions rather than product chrome.
+
+## Focused Region Comparison Evidence
+
+Focused theme-browser and controls comparisons were opened after the full-view comparison. The final
+pass explicitly checked the required fidelity surfaces:
+
+| Surface | Evidence | Result |
+| --- | --- | --- |
+| Fonts and typography | System/Segoe UI fallbacks, zero negative letter spacing, 32 px page title, 20 px desktop labels, 18 px supporting copy, and responsive 14/12 px UI preserve the source hierarchy without clipping. | Passed |
+| Spacing and layout rhythm | 1230 px frame, 48 px desktop inset, 50 px section rhythm, 114 px setting rows, 24 px inset dividers, 8 px radii, and fixed control tracks match the normalized source capture. | Passed |
+| Colors and visual tokens | White settings cards, restrained gray copy and borders, `#3298ff` selected/toggle/range states, and translucent canvas treatment reproduce the source state while retaining readable contrast over images. | Passed |
+| Image quality and asset fidelity | Built-in previews are full-resolution WebP assets featuring Elaina's moonlit journey and spring meadow; they are reused as real application backgrounds with correct cover crops. No placeholder, CSS-drawn, emoji, or handcrafted SVG asset is present. | Passed |
+| Copy and content | Appearance, theme, scaling, font, translucency, width, and theme-action labels match the source hierarchy. Theme names are `魔女伊雷娜 · 月夜旅途` and `魔女伊雷娜 · 花海日记`. | Passed |
+| Icons and affordances | Existing Lucide icons are used for commands; selected, disabled, preview-only, and applied states remain distinct. Native select arrows vary slightly by platform but remain clear. | Passed |
+| Responsive behavior | At 390 x 844 the selected theme stays fully visible, controls stack without overlap, document width remains 390 px, and the fixed navigation scrim/close button work correctly. | Passed |
+
+## Findings
+
+No actionable P0, P1, or P2 findings remain. The exact source artwork is not available as a
+standalone file, so the built-in theme images intentionally use matching high-quality artwork rather
+than raster crops from the screenshot. Custom backgrounds remain user-replaceable by design.
+
+P3 platform variation: native select chevrons render slightly darker in the browser capture than in
+the source image. This does not affect hierarchy, control size, focus behavior, or usability.
+
+## Interaction And Persistence Evidence
+
+- Light, dark, and system theme modes update the application root immediately.
+- Built-in and custom themes support preview, apply, replace, create, edit, import, and export states.
+- Only an unapplied preview exposes the Apply command; the active card exposes a stable selected state.
+- Valid PNG, JPEG, and WebP images are installed through Rust into application data after absolute-path,
+  size, extension, and file-signature validation; invalid and spoofed files fail with stable errors.
+- The applied background remains visible on the conversation workbench and settings pages without
+  stacking duplicate translucent layers.
+- Versioned preferences migrate from v1 to v2 and retain theme, background, scale, fonts, translucency,
+  and sidebar width after reload.
+- Browser console verification returned zero errors and zero warnings. Web preview runtime failures are
+  surfaced as handled in-app Tauri-unavailable alerts and do not produce uncaught React errors.
+
+## Patches Made Since The Previous QA Pass
+
+- Implemented the full Appearance screen and separated reusable controls from page composition.
+- Added application-wide background rendering, live preview/apply behavior, and versioned persistence.
+- Added validated native background installation and portable custom-theme import/export commands.
+- Matched desktop dimensions, responsive stacking, mobile navigation layering, thumbnail swatches,
+  selected-state feedback, inset dividers, toggle geometry, and the outlined inset range track.
+- Fixed background-root selection and removed duplicate translucent layers on the conversation page.
+- Added `ResizeObserver` track positioning so the selected theme remains visible after viewport changes.
+
+## Automated Evidence
+
+- Renderer: 42 files and 260 tests passed; 86.97% statements, 81.32% branches,
+  87.01% functions, and 90.25% lines.
+- Agent Bridge: 6 files and 93 tests passed; 92.91% statements, 83.60% branches,
+  97.69% functions, and 94.93% lines.
+- Rust Core: 97 tests passed, including valid install, traversal, oversize, spoofed image,
+  and custom-theme portability cases.
+- `pnpm check`, `pnpm build`, `git diff --check`, and the changed-file sensitive-value scan passed.
+- Production build reports only the existing non-blocking large-chunk advisory.
+
+## Implementation Checklist
+
+- [x] Capture and compare the same desktop viewport and state as the source visual.
+- [x] Compare full-view and focused typography, spacing, colors, imagery, copy, icons, and controls.
+- [x] Verify theme preview/apply, custom background replacement, cross-page application, and persistence.
+- [x] Verify 390 x 844 responsive top, bottom, open-navigation, close, and overflow states.
+- [x] Run full tests, TypeScript/Rust checks, production build, diff check, and sensitive-value scan.
+
+final result: passed

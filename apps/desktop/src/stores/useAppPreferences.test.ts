@@ -7,6 +7,7 @@ import {
   applyAppPreferences,
   loadAppPreferences,
   normalizeAppPreferences,
+  resolveAppearanceBackground,
   resolveTheme,
   saveAppPreferences,
   useAppPreferences,
@@ -20,6 +21,14 @@ describe("app preferences", () => {
     document.documentElement.removeAttribute("data-sidebar-translucent");
     document.documentElement.removeAttribute("data-theme");
     document.documentElement.removeAttribute("data-theme-preference");
+    document.documentElement.removeAttribute("data-background-active");
+    document.documentElement.removeAttribute("data-background-preset");
+    document.documentElement.removeAttribute("data-ui-scale");
+    document.documentElement.removeAttribute("data-ui-font");
+    document.documentElement.removeAttribute("data-ui-font-size");
+    document.documentElement.removeAttribute("data-code-font");
+    document.documentElement.removeAttribute("data-code-font-size");
+    document.documentElement.removeAttribute("style");
   });
 
   afterEach(() => vi.unstubAllGlobals());
@@ -30,7 +39,7 @@ describe("app preferences", () => {
     window.localStorage.setItem(APP_PREFERENCES_STORAGE_KEY, "{");
     expect(loadAppPreferences()).toEqual(DEFAULT_APP_PREFERENCES);
 
-    expect(normalizeAppPreferences({ schemaVersion: 2, showSuggestions: false })).toEqual(
+    expect(normalizeAppPreferences({ schemaVersion: 3, showSuggestions: false })).toEqual(
       DEFAULT_APP_PREFERENCES,
     );
   });
@@ -43,6 +52,12 @@ describe("app preferences", () => {
       taskCompletedNotifications: false,
       sidebarTranslucent: true,
       theme: "dark",
+      backgroundPreset: "cyan-stage",
+      uiScale: 110,
+      uiFont: "microsoft-yahei",
+      uiFontSize: 15,
+      codeFont: "cascadia-code",
+      codeFontSize: 13,
       interfaceDensity: "compact",
     });
 
@@ -57,6 +72,13 @@ describe("app preferences", () => {
         taskFailedNotifications: "sometimes",
         notifyOnlyWhenUnfocused: null,
         theme: "sepia",
+        backgroundPreset: "custom",
+        customBackgroundPath: null,
+        uiScale: 101,
+        uiFont: "comic-sans",
+        uiFontSize: 72,
+        codeFont: "papyrus",
+        codeFontSize: 3,
         interfaceDensity: "dense",
       }),
     ).toMatchObject({
@@ -64,6 +86,12 @@ describe("app preferences", () => {
       taskFailedNotifications: true,
       notifyOnlyWhenUnfocused: false,
       theme: "system",
+      backgroundPreset: "default",
+      uiScale: 100,
+      uiFont: "system",
+      uiFontSize: 14,
+      codeFont: "system",
+      codeFontSize: 12,
       interfaceDensity: "comfortable",
     });
   });
@@ -75,6 +103,12 @@ describe("app preferences", () => {
       interfaceDensity: "compact",
       reduceMotion: true,
       sidebarTranslucent: true,
+      backgroundPreset: "cyan-stage",
+      uiScale: 125,
+      uiFont: "microsoft-yahei",
+      uiFontSize: 16,
+      codeFont: "consolas",
+      codeFontSize: 14,
     });
 
     expect(document.documentElement.dataset.interfaceDensity).toBe("compact");
@@ -82,6 +116,12 @@ describe("app preferences", () => {
     expect(document.documentElement.dataset.sidebarTranslucent).toBe("true");
     expect(document.documentElement.dataset.themePreference).toBe("dark");
     expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(document.documentElement.dataset.backgroundActive).toBe("true");
+    expect(document.documentElement.dataset.backgroundPreset).toBe("cyan-stage");
+    expect(document.documentElement.dataset.uiScale).toBe("125");
+    expect(document.documentElement.style.getPropertyValue("--app-scale")).toBe("1.25");
+    expect(document.documentElement.style.getPropertyValue("--app-ui-font-size")).toBe("16px");
+    expect(document.documentElement.style.getPropertyValue("--app-code-font-size")).toBe("14px");
   });
 
   it("跟随系统时解析并应用当前系统主题", () => {
@@ -142,5 +182,45 @@ describe("app preferences", () => {
         unavailableStorage,
       ),
     ).toMatchObject({ confirmRemoveWorkspace: false });
+  });
+
+  it("迁移 v1 偏好并为新增外观字段补齐默认值", () => {
+    window.localStorage.setItem(
+      "pi-desktop.app-preferences.v1",
+      JSON.stringify({
+        ...DEFAULT_APP_PREFERENCES,
+        schemaVersion: 1,
+        showSuggestions: false,
+        theme: "dark",
+        backgroundPreset: undefined,
+      }),
+    );
+
+    expect(loadAppPreferences()).toMatchObject({
+      schemaVersion: 2,
+      showSuggestions: false,
+      theme: "dark",
+      backgroundPreset: "default",
+      uiScale: 100,
+      uiFontSize: 14,
+      codeFontSize: 12,
+    });
+  });
+
+  it("解析自定义背景时使用受控资源地址并在失败时降级", () => {
+    const preferences = {
+      ...DEFAULT_APP_PREFERENCES,
+      backgroundPreset: "custom" as const,
+      customBackgroundPath: "C:\\AppData\\wallpaper.png",
+    };
+    const resolver = vi.fn(() => "asset://wallpaper.png");
+
+    expect(resolveAppearanceBackground(preferences, resolver)).toBe("asset://wallpaper.png");
+    expect(resolver).toHaveBeenCalledWith("C:\\AppData\\wallpaper.png");
+    expect(
+      resolveAppearanceBackground(preferences, () => {
+        throw new Error("asset protocol unavailable");
+      }),
+    ).toBeNull();
   });
 });

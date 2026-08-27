@@ -65,6 +65,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::appearance::install_appearance_background,
+            commands::appearance::import_appearance_theme,
+            commands::appearance::export_appearance_theme,
             commands::diagnostics::get_architecture_status,
             commands::notifications::open_system_notification_settings,
             commands::browser::browser_sidebar_open,

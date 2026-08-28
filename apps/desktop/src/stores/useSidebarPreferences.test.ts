@@ -71,5 +71,24 @@ describe("useSidebarPreferences", () => {
       expect.objectContaining({ title: "会话标题", cwd: "C:\\work" }),
     );
   });
-});
 
+  it("清理归档会话时移除本地索引及关联状态", () => {
+    const { result } = renderHook(() => useSidebarPreferences());
+    act(() => {
+      result.current.setThreadArchived("archived", true, { title: "待清理" });
+      result.current.setThreadAlias("archived", "待清理别名");
+      result.current.togglePinnedThread("archived");
+      result.current.markThreadUnread("archived", true);
+      result.current.setThreadProject("archived", "C:\\work");
+      result.current.clearArchivedThreads(["archived"]);
+    });
+
+    expect(result.current.preferences.archivedThreads).not.toContain("archived");
+    expect(result.current.preferences.archivedThreadMeta).not.toHaveProperty("archived");
+    expect(result.current.preferences.threadAliases).not.toHaveProperty("archived");
+    expect(result.current.preferences.pinnedThreads).not.toContain("archived");
+    expect(result.current.preferences.unreadThreads).not.toContain("archived");
+    expect(result.current.preferences.threadProjectOverrides).not.toHaveProperty("archived");
+    expect(result.current.preferences.deletedThreads).not.toContain("archived");
+  });
+});

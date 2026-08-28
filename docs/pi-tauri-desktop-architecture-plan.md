@@ -307,6 +307,15 @@ Renderer 不应获得启动任意进程的权限。
 
     {"v":1,"kind":"response","id":"r-001","ok":true,"data":{"finalSeq":102}}
 
+会话删除与归档清理只传会话 ID，不接受前端传入文件路径：
+
+    {"v":1,"id":"r-002","op":"session.delete","sessionIds":["s1","s2"]}
+
+Bridge 先通过官方 Pi SDK 的会话清单解析 ID，再校验目标是 `~/.pi/agent/sessions`
+目录内的 `.jsonl` 普通文件，最后执行删除。响应必须覆盖每个请求的会话 ID，并分别列出
+`deletedSessionIds` 和 `missingSessionIds`；目录外路径、非 JSONL 文件、重复或正在
+流式运行的会话必须返回稳定错误。Renderer 只在完整响应后清理本地归档索引。
+
 兼容说明：M1 的 hello 必须声明 `tool-status` 能力。`prompt` 成功响应中的
 `finalSeq` 仅表示 Bridge 写出响应时已经发出的事件高水位，用于协议兼容和诊断，
 不表示该 prompt 的事件已经全部到达。RPC 响应与事件流是两个独立通道；Renderer
@@ -318,6 +327,7 @@ Renderer 不应获得启动任意进程的权限。
 
 - protocolVersion。
 - 请求 ID 和事件序号。
+- `session.delete` 的 ID 白名单、路径校验和完整结果覆盖。
 - cancel、shutdown、health、ping。
 - 超时和最大帧大小。
 - Bridge 崩溃后的重启策略。
@@ -374,6 +384,7 @@ Renderer 不应获得启动任意进程的权限。
 原则：
 
 - Pi 会话文件仍是事实来源。
+- 会话删除与归档清理通过 ID 删除受控 `sessions` 目录内的 Pi 原生 JSONL；不删除目录外文件。
 - SQLite 只做工作区、会话、运行记录和索引。
 - App 与官方 CLI 并行时使用锁。
 - 配置使用 schemaVersion 和迁移机制。

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
@@ -17,9 +17,9 @@ use serde_json::{Value, json};
 use crate::{
     bridge::protocol::{
         AgentModel, AgentSessionSummary, BridgeEvent, BridgeHello, BridgeResponse, CreatedSession,
-        PROTOCOL_VERSION, PackageScope, PackageSummary, PackageUpdateInfo, PromptStreamingBehavior,
-        RequestHeaderSettings, ResourceSummary, SessionConfiguration, parse_hello_frame,
-        validate_event, validate_frame_size,
+        DeleteSessionsResult, PROTOCOL_VERSION, PackageScope, PackageSummary, PackageUpdateInfo,
+        PromptStreamingBehavior, RequestHeaderSettings, ResourceSummary, SessionConfiguration,
+        parse_hello_frame, validate_event, validate_frame_size,
     },
     error::AppError,
 };
@@ -28,6 +28,7 @@ const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_PROMPT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const DEFAULT_PACKAGE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const DEFAULT_SESSION_DELETE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
@@ -225,6 +226,47 @@ impl BridgeSupervisor {
                 "Bridge session.list 响应字段无效",
             )
         })
+    }
+
+    pub fn delete_sessions(
+        &self,
+        session_ids: &[String],
+    ) -> Result<DeleteSessionsResult, AppError> {
+        let data = self
+            .request(
+                "session.delete",
+                json!({"sessionIds": session_ids}),
+                DEFAULT_SESSION_DELETE_TIMEOUT,
+            )?
+            .ok_or_else(|| {
+                AppError::new(
+                    "BRIDGE_SESSION_DELETE_INVALID",
+                    "Bridge session.delete 响应缺少清理结果",
+                )
+            })?;
+        let result: DeleteSessionsResult = serde_json::from_value(data).map_err(|_| {
+            AppError::new(
+                "BRIDGE_SESSION_DELETE_INVALID",
+                "Bridge session.delete 响应字段无效",
+            )
+        })?;
+        let requested: HashSet<&str> = session_ids.iter().map(String::as_str).collect();
+        let mut returned = HashSet::new();
+        let invalid_return = result
+            .deleted_session_ids
+            .iter()
+            .any(|id| !requested.contains(id.as_str()) || !returned.insert(id.as_str()))
+            || result
+                .missing_session_ids
+                .iter()
+                .any(|id| !requested.contains(id.as_str()) || !returned.insert(id.as_str()));
+        if invalid_return || returned.len() != session_ids.len() {
+            return Err(AppError::new(
+                "BRIDGE_SESSION_DELETE_INVALID",
+                "Bridge session.delete 响应包含未请求或重复的会话 id",
+            ));
+        }
+        Ok(result)
     }
 
     pub fn open_session(&self, session_path: &Path) -> Result<CreatedSession, AppError> {
@@ -897,6 +939,9 @@ fn public_remote_error_code(code: &str) -> Option<&'static str> {
         "FRAME_TOO_LARGE" => "FRAME_TOO_LARGE",
         "SESSION_CREATE_FAILED" => "SESSION_CREATE_FAILED",
         "SESSION_LIST_FAILED" => "SESSION_LIST_FAILED",
+        "SESSION_DELETE_FAILED" => "SESSION_DELETE_FAILED",
+        "SESSION_IDS_INVALID" => "SESSION_IDS_INVALID",
+        "SESSION_PATH_INVALID" => "SESSION_PATH_INVALID",
         "SESSION_OPEN_FAILED" => "SESSION_OPEN_FAILED",
         "SESSION_BUSY" => "SESSION_BUSY",
         "SESSION_NOT_FOUND" => "SESSION_NOT_FOUND",
@@ -1709,6 +1754,53 @@ mod tests {
                 "thinkingLevel": "high"
             })
         );
+    }
+
+    #[test]
+    fn sends_typed_session_delete_request_and_validates_result() {
+        let transport = MockTransport::new([
+            Ok(HELLO),
+            Ok(
+                r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":{"deletedSessionIds":["saved"],"missingSessionIds":["gone"]}}"#,
+            ),
+        ]);
+        let writes = transport.writes.clone();
+        let supervisor = connect(transport);
+        let ids = vec!["saved".to_owned(), "gone".to_owned()];
+
+        let result = supervisor
+            .delete_sessions(&ids)
+            .expect("session.delete 应返回完整结果");
+
+        assert_eq!(result.deleted_session_ids, vec!["saved"]);
+        assert_eq!(result.missing_session_ids, vec!["gone"]);
+        assert_eq!(
+            serde_json::from_str::<Value>(&writes.lock().unwrap()[0]).unwrap(),
+            json!({
+                "v": 1,
+                "id": "rust-1",
+                "op": "session.delete",
+                "sessionIds": ["saved", "gone"]
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_incomplete_session_delete_result() {
+        let transport = MockTransport::new([
+            Ok(HELLO),
+            Ok(
+                r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":{"deletedSessionIds":["saved"],"missingSessionIds":[]}}"#,
+            ),
+        ]);
+        let supervisor = connect(transport);
+        let ids = vec!["saved".to_owned(), "gone".to_owned()];
+
+        let error = supervisor
+            .delete_sessions(&ids)
+            .expect_err("缺少请求 id 的结果必须被拒绝");
+
+        assert_eq!(error.code, "BRIDGE_SESSION_DELETE_INVALID");
     }
 
     #[test]

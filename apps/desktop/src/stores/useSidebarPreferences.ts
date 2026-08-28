@@ -336,6 +336,32 @@ export function useSidebarPreferences() {
               : current.pinnedThreads,
           };
         }),
+      clearArchivedThreads: (ids?: readonly string[]) =>
+        update((current) => {
+          const archivedIds = new Set(ids ?? current.archivedThreads);
+          if (archivedIds.size === 0) return current;
+          const withoutArchived = (id: string) => !archivedIds.has(id);
+          const threadAliases = Object.fromEntries(
+            Object.entries(current.threadAliases).filter(([id]) => withoutArchived(id)),
+          );
+          const archivedThreadMeta = Object.fromEntries(
+            Object.entries(current.archivedThreadMeta).filter(([id]) => withoutArchived(id)),
+          );
+          const threadProjectOverrides = Object.fromEntries(
+            Object.entries(current.threadProjectOverrides).filter(([id]) => withoutArchived(id)),
+          );
+          return {
+            ...current,
+            threadAliases,
+            archivedThreadMeta,
+            threadProjectOverrides,
+            archivedThreads: current.archivedThreads.filter(withoutArchived),
+            pinnedThreads: current.pinnedThreads.filter(withoutArchived),
+            threadManualOrder: current.threadManualOrder.filter(withoutArchived),
+            unreadThreads: current.unreadThreads.filter(withoutArchived),
+            deletedThreads: current.deletedThreads.filter(withoutArchived),
+          };
+        }),
       deleteThread: (id: string) =>
         update((current) => {
           const threadAliases = { ...current.threadAliases };
@@ -376,4 +402,3 @@ export function useSidebarPreferences() {
     [preferences, update],
   );
 }
-

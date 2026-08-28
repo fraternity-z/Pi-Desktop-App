@@ -9,6 +9,7 @@ interface RuntimeMock {
   emit(event: RuntimeEvent): void;
   createSession: ReturnType<typeof vi.fn>;
   listSessions: ReturnType<typeof vi.fn>;
+  deleteSessions: ReturnType<typeof vi.fn>;
   openSession: ReturnType<typeof vi.fn>;
   listModels: ReturnType<typeof vi.fn>;
   listPackages: ReturnType<typeof vi.fn>;
@@ -45,6 +46,7 @@ function createRuntimeMock(): RuntimeMock {
       streaming: false,
   }));
   const listSessions = vi.fn(async () => []);
+  const deleteSessions = vi.fn(async () => ({ deletedSessionIds: [], missingSessionIds: [] }));
   const openSession = vi.fn(async () => ({
     sessionId: "s-2",
     cwd: "C:\\work",
@@ -86,6 +88,7 @@ function createRuntimeMock(): RuntimeMock {
     configureRequestHeaders,
     createSession,
     listSessions,
+    deleteSessions,
     openSession,
     listModels,
     listPackages,
@@ -110,6 +113,7 @@ function createRuntimeMock(): RuntimeMock {
     emit: (event) => listener(event),
     createSession,
     listSessions,
+    deleteSessions,
     openSession,
     listModels,
     listPackages,
@@ -153,6 +157,9 @@ describe("BridgeServer", () => {
     await server.handleLine('{"v":1,"id":"5","op":"model.list"}');
     await server.handleLine('{"v":1,"id":"6","op":"session.list"}');
     await server.handleLine(
+      '{"v":1,"id":"6-delete","op":"session.delete","sessionIds":["saved","older"]}',
+    );
+    await server.handleLine(
       '{"v":1,"id":"6b","op":"request-headers.configure","enabled":true,"client":"codex"}',
     );
     await server.handleLine(
@@ -177,6 +184,7 @@ describe("BridgeServer", () => {
     );
     expect(runtimeMock.listModels).toHaveBeenCalledOnce();
     expect(runtimeMock.listSessions).toHaveBeenCalledOnce();
+    expect(runtimeMock.deleteSessions).toHaveBeenCalledWith(["saved", "older"]);
     expect(runtimeMock.configureRequestHeaders).toHaveBeenCalledWith({
       enabled: true,
       client: "codex",

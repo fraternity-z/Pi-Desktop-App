@@ -54,6 +54,10 @@ describe("parseRequest", () => {
     ['{"v":1,"id":"r-5","op":"model.list"}', { v: 1, id: "r-5", op: "model.list" }],
     ['{"v":1,"id":"r-6","op":"session.list"}', { v: 1, id: "r-6", op: "session.list" }],
     [
+      '{"v":1,"id":"r-6-delete","op":"session.delete","sessionIds":["saved","older"]}',
+      { v: 1, id: "r-6-delete", op: "session.delete", sessionIds: ["saved", "older"] },
+    ],
+    [
       '{"v":1,"id":"r-6b","op":"request-headers.configure","enabled":true,"client":"codex"}',
       { v: 1, id: "r-6b", op: "request-headers.configure", enabled: true, client: "codex" },
     ],
@@ -164,6 +168,11 @@ describe("parseRequest", () => {
       '{"v":1,"id":"r-1","op":"prompt","sessionId":"s-1","text":"hello","activeTools":"read"}',
     ],
     ["INVALID_REQUEST", '{"v":1,"id":"r-1","op":"session.open","sessionPath":"relative"}'],
+    ["INVALID_REQUEST", '{"v":1,"id":"r-1","op":"session.delete","sessionIds":[]}'],
+    [
+      "INVALID_REQUEST",
+      '{"v":1,"id":"r-1","op":"session.delete","sessionIds":["saved","saved"]}',
+    ],
     ["INVALID_REQUEST", '{"v":1,"id":"r-1","op":"session.configure","sessionId":"s-1"}'],
     [
       "INVALID_REQUEST",

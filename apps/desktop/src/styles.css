@@ -3373,10 +3373,40 @@ body {
   margin-bottom: 24px;
 }
 
-.settings-archive-toolbar > span {
+.settings-archive-toolbar-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-archive-toolbar-actions > span {
   flex: 0 0 auto;
   color: #8d8f92;
   font-size: 12px;
+}
+
+.settings-archive-cleanup {
+  min-height: 34px;
+  padding: 0 11px;
+  color: var(--danger);
+}
+
+.settings-archive-cleanup:not(:disabled):hover {
+  border-color: color-mix(in srgb, var(--danger) 52%, transparent);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+.settings-archive-feedback {
+  margin: -12px 3px 18px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.settings-archive-error {
+  color: var(--danger);
 }
 
 .settings-archive-search {
@@ -3560,6 +3590,15 @@ body {
   .settings-archive-toolbar {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .settings-archive-toolbar-actions {
+    justify-content: space-between;
+  }
+
+  .settings-archive-cleanup {
+    flex: 1 1 auto;
+    justify-content: center;
   }
 
   .settings-archive-search {
@@ -6160,7 +6199,7 @@ body,
 
 .settings-section-heading h2,
 .settings-save-status,
-.settings-archive-toolbar > span {
+.settings-archive-toolbar-actions > span {
   color: var(--subtle);
 }
 

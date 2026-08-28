@@ -53,6 +53,10 @@ function sidebarProps(overrides: Partial<SidebarProps> = {}): SidebarProps {
     onNewConversation: vi.fn(),
     onNewSession: vi.fn(),
     onRemoveWorkspace: vi.fn(),
+    onDeleteSession: vi.fn().mockResolvedValue({
+      deletedSessionIds: [savedSession.id],
+      missingSessionIds: [],
+    }),
     onRevealWorkspace: vi.fn(),
     onLoadWorktreeOptions: vi.fn().mockResolvedValue({
       branches: [{ name: "main", current: true, remote: false }],
@@ -332,10 +336,11 @@ describe("AppSidebar", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "删除" }));
     fireEvent.click(screen.getByRole("button", { name: "删除" }));
     await waitFor(() => expect(screen.queryByText("Alpha 会话")).not.toBeInTheDocument());
+    await waitFor(() => expect(props.onDeleteSession).toHaveBeenCalledWith("saved"));
 
     fireEvent.click(screen.getByRole("button", { name: "alpha更多操作" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "归档项目" }));
-    fireEvent.click(screen.getByRole("button", { name: "归档" }));
+    expect(screen.queryByRole("dialog", { name: "归档项目" })).not.toBeInTheDocument();
     await waitFor(() => expect(screen.queryByTitle("C:\\projects\\alpha")).not.toBeInTheDocument());
   });
 
@@ -398,6 +403,25 @@ describe("AppSidebar", () => {
     expect(JSON.parse(window.localStorage.getItem("pix.projects.aliases")!)).toEqual({
       "c:/projects/alpha": "Alpha 项目",
     });
+  });
+
+  it("删除会话失败时保留确认框和会话索引", async () => {
+    const onDeleteSession = vi.fn().mockRejectedValue({
+      code: "SESSION_DELETE_FAILED",
+      message: "原生会话文件删除失败",
+    });
+    render(<AppSidebar {...sidebarProps({ onDeleteSession })} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "检查类型错误更多操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "删除" }));
+    expect(screen.getByRole("dialog", { name: "删除会话" })).toHaveTextContent("Pi 原生 JSONL");
+    fireEvent.click(screen.getByRole("button", { name: "删除" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "SESSION_DELETE_FAILED: 原生会话文件删除失败",
+    );
+    expect(screen.getByRole("dialog", { name: "删除会话" })).toBeInTheDocument();
+    expect(screen.getByText("检查类型错误")).toBeInTheDocument();
   });
 
   it("公开稳定的宽度和会话标题降级规则", () => {

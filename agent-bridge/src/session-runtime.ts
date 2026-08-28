@@ -1,7 +1,10 @@
 import { existsSync } from "node:fs";
-import { basename, isAbsolute, join, win32 } from "node:path";
+import { realpath, stat, unlink } from "node:fs/promises";
+import { basename, extname, isAbsolute, join, relative, win32 } from "node:path";
 
 import {
+  MAX_SESSION_ID_CHARS,
+  MAX_SESSION_IDS,
   THINKING_LEVELS,
   type ModelSelection,
   type PromptStreamingBehavior,
@@ -245,6 +248,17 @@ export interface AgentSessionSummary {
   firstMessage: string;
 }
 
+export interface DeleteSessionsResult {
+  deletedSessionIds: string[];
+  missingSessionIds: string[];
+}
+
+export interface SessionFileDependencies {
+  realpath(path: string): Promise<string>;
+  stat(path: string): Promise<{ isFile(): boolean }>;
+  unlink(path: string): Promise<void>;
+}
+
 export interface RuntimeEvent {
   sessionId: string;
   name:
@@ -268,6 +282,7 @@ export interface SessionRuntime {
   configureRequestHeaders(settings: RequestHeaderSettings): RequestHeaderSettings;
   createSession(cwd: string): Promise<CreatedAgentSession>;
   listSessions(): Promise<AgentSessionSummary[]>;
+  deleteSessions(sessionIds: string[]): Promise<DeleteSessionsResult>;
   openSession(sessionPath: string): Promise<CreatedAgentSession>;
   listModels(): Promise<AgentModel[]>;
   listPackages(cwd: string): Promise<PackageSummary[]>;
@@ -326,6 +341,12 @@ const MAX_TOOL_CALL_ID_CHARS = 256;
 const MAX_TOOL_NAME_CHARS = 128;
 const MAX_TOOL_DESCRIPTION_CHARS = 1_024;
 const MAX_AVAILABLE_TOOLS = 256;
+
+const DEFAULT_SESSION_FILE_DEPENDENCIES: SessionFileDependencies = {
+  realpath,
+  stat,
+  unlink,
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -575,6 +596,7 @@ export class PiSessionRuntime implements SessionRuntime {
   constructor(
     private readonly sdk: PiSdkLike,
     private readonly agentDir: string,
+    private readonly sessionFiles: SessionFileDependencies = DEFAULT_SESSION_FILE_DEPENDENCIES,
   ) {}
 
   configureRequestHeaders(settings: RequestHeaderSettings): RequestHeaderSettings {
@@ -623,6 +645,109 @@ export class PiSessionRuntime implements SessionRuntime {
     } catch (error) {
       throw mapRuntimeError(error, "SESSION_LIST_FAILED", "无法读取 Pi 会话列表");
     }
+  }
+
+  async deleteSessions(sessionIds: string[]): Promise<DeleteSessionsResult> {
+    this.ensureOpen();
+    const ids = validateSessionIds(sessionIds);
+    const requested = new Set(ids);
+    const managedToRelease = [...this.sessions.entries()].filter(([id, managed]) => {
+      if (!requested.has(id)) return false;
+      if (managed.session.isStreaming) {
+        throw new RuntimeError("SESSION_BUSY", "Pi 正在处理任务，暂时无法清理归档会话");
+      }
+      return true;
+    });
+
+    let listed: PiSessionInfoLike[];
+    try {
+      listed = await this.sdk.SessionManager.listAll();
+    } catch {
+      throw new RuntimeError("SESSION_DELETE_FAILED", "无法读取 Pi 会话列表以执行清理");
+    }
+
+    let sessionsRoot: string;
+    try {
+      sessionsRoot = await this.sessionFiles.realpath(join(this.agentDir, "sessions"));
+    } catch (error) {
+      if (isMissingFileError(error)) {
+        for (const [, managed] of managedToRelease) releaseSession(managed);
+        for (const [id] of managedToRelease) this.sessions.delete(id);
+        return { deletedSessionIds: [], missingSessionIds: ids };
+      }
+      throw new RuntimeError("SESSION_DELETE_FAILED", "无法访问 Pi 会话目录");
+    }
+
+    // A newly created session can have a file before the SDK's directory scan sees it.
+    // Keep the path supplied by the managed SDK session as a second, still-authorized candidate.
+    const managedPaths = new Map<string, string>();
+    for (const [id, managed] of managedToRelease) {
+      if (managed.session.sessionFile) managedPaths.set(id, managed.session.sessionFile);
+    }
+    const candidates = new Map<string, string>();
+    for (const id of ids) {
+      const entry = listed.find((session) => session.id === id);
+      const candidatePath = entry?.path ?? managedPaths.get(id);
+      if (!candidatePath) continue;
+      const authorizedPath = await this.authorizeSessionFile(candidatePath, sessionsRoot);
+      if (authorizedPath) candidates.set(id, authorizedPath);
+    }
+
+    for (const [, managed] of managedToRelease) releaseSession(managed);
+    for (const [id] of managedToRelease) this.sessions.delete(id);
+
+    const deletedSessionIds: string[] = [];
+    const missingSessionIds: string[] = [];
+    for (const id of ids) {
+      const path = candidates.get(id);
+      if (!path) {
+        missingSessionIds.push(id);
+        continue;
+      }
+      try {
+        await this.sessionFiles.unlink(path);
+        deletedSessionIds.push(id);
+      } catch (error) {
+        if (isMissingFileError(error)) {
+          missingSessionIds.push(id);
+          continue;
+        }
+        throw new RuntimeError("SESSION_DELETE_FAILED", "无法删除 Pi 原生会话文件");
+      }
+    }
+    return { deletedSessionIds, missingSessionIds };
+  }
+
+  private async authorizeSessionFile(path: string, sessionsRoot: string): Promise<string | null> {
+    if (
+      typeof path !== "string" ||
+      !isAbsolute(path) ||
+      extname(path).toLocaleLowerCase() !== ".jsonl"
+    ) {
+      throw new RuntimeError("SESSION_PATH_INVALID", "Pi 会话文件路径无效");
+    }
+    let canonical: string;
+    try {
+      canonical = await this.sessionFiles.realpath(path);
+      const details = await this.sessionFiles.stat(canonical);
+      if (!details.isFile()) throw new Error("session path is not a file");
+    } catch (error) {
+      if (isMissingFileError(error)) {
+        return null;
+      }
+      throw new RuntimeError("SESSION_PATH_INVALID", "Pi 会话文件无法访问");
+    }
+    const relativePath = relative(sessionsRoot, canonical);
+    if (
+      !relativePath ||
+      isAbsolute(relativePath) ||
+      relativePath === ".." ||
+      relativePath.startsWith(`..${win32.sep}`) ||
+      relativePath.startsWith("../")
+    ) {
+      throw new RuntimeError("SESSION_PATH_INVALID", "Pi 会话文件不在授权的 sessions 目录中");
+    }
+    return path;
   }
 
   async openSession(sessionPath: string): Promise<CreatedAgentSession> {
@@ -1478,6 +1603,31 @@ function clipText(value: unknown, maximumLength: number): string {
   return normalized.length <= maximumLength
     ? normalized
     : `${normalized.slice(0, maximumLength - 1)}…`;
+}
+
+function validateSessionIds(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_SESSION_IDS) {
+    throw new RuntimeError("SESSION_IDS_INVALID", `会话 id 必须为 1-${MAX_SESSION_IDS} 项的数组`);
+  }
+  const ids = new Set<string>();
+  for (const item of value) {
+    const normalized = typeof item === "string" ? item.trim() : "";
+    if (
+      typeof item !== "string" ||
+      normalized.length === 0 ||
+      item.length > MAX_SESSION_ID_CHARS ||
+      /[\r\n\0]/.test(item) ||
+      ids.has(normalized)
+    ) {
+      throw new RuntimeError("SESSION_IDS_INVALID", "会话 id 包含无效或重复值");
+    }
+    ids.add(normalized);
+  }
+  return [...ids];
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return isRecord(error) && error.code === "ENOENT";
 }
 
 function mapRuntimeError(error: unknown, code: string, message: string): RuntimeError {

@@ -6,6 +6,7 @@ import {
   clearAgentQueue,
   configureAgentSession,
   createAgentSession,
+  deleteAgentSessions,
   listAgentModels,
   listAgentSessions,
   listenToAgentEvents,
@@ -28,6 +29,7 @@ vi.mock("../ipc/agent", () => ({
   clearAgentQueue: vi.fn(),
   configureAgentSession: vi.fn(),
   createAgentSession: vi.fn(),
+  deleteAgentSessions: vi.fn(),
   listAgentModels: vi.fn(),
   listAgentSessions: vi.fn(),
   listenToAgentEvents: vi.fn(),
@@ -117,6 +119,9 @@ describe("useChatSession", () => {
     vi.mocked(promptAgent).mockReset().mockResolvedValue(0);
     vi.mocked(abortAgent).mockReset().mockResolvedValue(undefined);
     vi.mocked(clearAgentQueue).mockReset().mockResolvedValue(undefined);
+    vi.mocked(deleteAgentSessions)
+      .mockReset()
+      .mockResolvedValue({ deletedSessionIds: [], missingSessionIds: [] });
     vi.mocked(getWorkspaceState).mockReset().mockResolvedValue({
       recentWorkspaces: [],
       lastWorkspace: null,
@@ -374,6 +379,26 @@ describe("useChatSession", () => {
     expect(result.current.catalogPhase).toBe("error");
     expect(result.current.catalogError).toContain("SESSION_LIST_FAILED");
     expect(result.current.models).toHaveLength(1);
+  });
+
+  it("清理归档会话后移除目录、活动投影和当前会话", async () => {
+    vi.mocked(listAgentSessions).mockResolvedValue([savedSummary]);
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.loadCatalogs());
+    await act(() => result.current.openSession(result.current.sessions[0]!));
+    expect(result.current.sessionId).toBe("saved");
+
+    vi.mocked(deleteAgentSessions).mockResolvedValueOnce({
+      deletedSessionIds: ["saved"],
+      missingSessionIds: [],
+    });
+    await act(() => result.current.deleteSessions(["saved"]));
+
+    expect(deleteAgentSessions).toHaveBeenCalledWith(["saved"]);
+    expect(result.current.sessionId).toBeNull();
+    expect(result.current.sessions).toEqual([]);
+    expect(result.current.catalogPhase).toBe("ready");
   });
 
   it("忽略其他会话和无效增量并处理完整事件生命周期", async () => {

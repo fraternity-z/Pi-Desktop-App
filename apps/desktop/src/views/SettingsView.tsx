@@ -21,6 +21,10 @@ import {
   SettingsToggle,
 } from "../components/SettingsControls";
 import type { SettingsSectionId } from "../components/SettingsSidebar";
+import {
+  deleteAgentSessions,
+  type DeleteAgentSessionsResult,
+} from "../ipc/agent";
 import type { AgentEventConnection } from "../stores/useChatSession";
 import type { AppPreferences, InterfaceDensity } from "../stores/useAppPreferences";
 import type { RequestHeaderSettingsController } from "../stores/useRequestHeaderSettings";
@@ -41,6 +45,7 @@ interface SettingsViewProps {
   onBack: () => void;
   onSidebarWidthChange: (width: number) => void;
   onPreferencesChange: (patch: Partial<AppPreferences>) => void;
+  onClearArchivedSessions?: (sessionIds: string[]) => Promise<DeleteAgentSessionsResult>;
 }
 
 const SECTION_TITLES: Record<SettingsSectionId, string> = {
@@ -65,6 +70,7 @@ export function SettingsView({
   onBack,
   onSidebarWidthChange,
   onPreferencesChange,
+  onClearArchivedSessions,
 }: SettingsViewProps) {
   return (
     <main className={`workspace-main settings-main settings-main-${section}`}>
@@ -131,7 +137,9 @@ export function SettingsView({
               <RequestHeaderSettings controller={requestHeaders} />
             </>
           )}
-          {section === "archived" && <ArchivedSettings />}
+          {section === "archived" && (
+            <ArchivedSettings onClearArchivedSessions={onClearArchivedSessions ?? deleteAgentSessions} />
+          )}
         </div>
       </div>
     </main>
@@ -285,10 +293,21 @@ function NotificationSettings({
   );
 }
 
-function ArchivedSettings() {
+function ArchivedSettings({
+  onClearArchivedSessions,
+}: {
+  onClearArchivedSessions: (sessionIds: string[]) => Promise<DeleteAgentSessionsResult>;
+}) {
   const sidebar = useSidebarPreferences();
   const [query, setQuery] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [cleanupTarget, setCleanupTarget] = useState<string[] | null>(null);
+  const [cleanupBusy, setCleanupBusy] = useState(false);
+  const [cleanupError, setCleanupError] = useState<string | null>(null);
+  const [cleanupStatus, setCleanupStatus] = useState<string | null>(null);
+  const archivedIds = sidebar.preferences.archivedThreads;
   const archivedGroups = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
     const entries = sidebar.preferences.archivedThreads
@@ -317,6 +336,42 @@ function ArchivedSettings() {
   }, [query, sidebar.preferences]);
   const resultCount = archivedGroups.reduce((count, [, entries]) => count + entries.length, 0);
 
+  async function confirmDelete() {
+    if (!deleteTarget || deleteBusy) return;
+    const target = deleteTarget;
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      const result = await onClearArchivedSessions([target.id]);
+      validateArchivedCleanupResult(result, [target.id]);
+      sidebar.deleteThread(target.id);
+      setDeleteTarget(null);
+    } catch (cause) {
+      setDeleteError(formatArchivedCleanupError(cause));
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
+
+  async function confirmCleanup() {
+    if (!cleanupTarget || cleanupBusy) return;
+    const target = cleanupTarget;
+    setCleanupBusy(true);
+    setCleanupError(null);
+    setCleanupStatus(null);
+    try {
+      const result = await onClearArchivedSessions(target);
+      validateArchivedCleanupResult(result, target);
+      sidebar.clearArchivedThreads(target);
+      setCleanupTarget(null);
+      setCleanupStatus(`已清理 ${target.length} 个归档会话及其 Pi 原生 JSONL 文件`);
+    } catch (cause) {
+      setCleanupError(formatArchivedCleanupError(cause));
+    } finally {
+      setCleanupBusy(false);
+    }
+  }
+
   return (
     <>
       <div className="settings-archive-toolbar">
@@ -330,8 +385,36 @@ function ArchivedSettings() {
             onChange={(event) => setQuery(event.target.value)}
           />
         </label>
-        <span>{resultCount} 个会话</span>
+        <div className="settings-archive-toolbar-actions">
+          <span>{resultCount} 个会话</span>
+          <button
+            className="secondary-button settings-archive-cleanup"
+            type="button"
+            aria-label="清理所有归档"
+            title="清理所有归档"
+            disabled={cleanupBusy || archivedIds.length === 0}
+            onClick={() => {
+              setCleanupError(null);
+              setCleanupStatus(null);
+              setCleanupTarget([...archivedIds]);
+            }}
+          >
+            {cleanupBusy ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />}
+            清理所有归档
+          </button>
+        </div>
       </div>
+
+      {cleanupError && (
+        <p className="settings-archive-feedback settings-archive-error" role="alert">
+          {cleanupError}
+        </p>
+      )}
+      {cleanupStatus && (
+        <p className="settings-archive-feedback" role="status">
+          {cleanupStatus}
+        </p>
+      )}
 
       {archivedGroups.length === 0 ? (
         <div className="settings-archive-empty">
@@ -378,7 +461,10 @@ function ArchivedSettings() {
                       type="button"
                       aria-label={`删除${entry.title}`}
                       title="删除"
-                      onClick={() => setDeleteTarget({ id: entry.id, title: entry.title })}
+                      onClick={() => {
+                        setDeleteError(null);
+                        setDeleteTarget({ id: entry.id, title: entry.title });
+                      }}
                     >
                       <Trash2 size={16} />
                     </button>
@@ -394,14 +480,25 @@ function ArchivedSettings() {
       {deleteTarget && (
         <ConfirmSidebarDialog
           title="删除已归档会话"
-          description={`从侧边栏永久隐藏“${deleteTarget.title}”？Pi 原生会话文件不会被删除。`}
+          description={`将永久删除“${deleteTarget.title}”及其 Pi 原生 JSONL 文件。此操作不可恢复。`}
           confirmLabel="删除"
           danger
-          onConfirm={() => {
-            sidebar.deleteThread(deleteTarget.id);
-            setDeleteTarget(null);
-          }}
+          busy={deleteBusy}
+          error={deleteError}
+          onConfirm={() => void confirmDelete()}
           onClose={() => setDeleteTarget(null)}
+        />
+      )}
+      {cleanupTarget && (
+        <ConfirmSidebarDialog
+          title="清理所有归档"
+          description={`将永久删除 ${cleanupTarget.length} 个归档会话及其 Pi 原生 JSONL 文件。此操作不可恢复。`}
+          confirmLabel="清理"
+          danger
+          busy={cleanupBusy}
+          error={cleanupError}
+          onConfirm={() => void confirmCleanup()}
+          onClose={() => setCleanupTarget(null)}
         />
       )}
     </>
@@ -424,6 +521,46 @@ function formatArchivedDate(value: string): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(timestamp)}`;
+}
+
+function formatArchivedCleanupError(cause: unknown): string {
+  if (
+    cause &&
+    typeof cause === "object" &&
+    "code" in cause &&
+    "message" in cause &&
+    typeof cause.code === "string" &&
+    typeof cause.message === "string"
+  ) {
+    return `${cause.code}: ${cause.message}`;
+  }
+  return "SESSION_DELETE_FAILED: 清理归档会话未完成，请重试";
+}
+
+function validateArchivedCleanupResult(
+  result: DeleteAgentSessionsResult | null | undefined,
+  target: readonly string[],
+): void {
+  const deleted = result?.deletedSessionIds;
+  const missing = result?.missingSessionIds;
+  if (
+    !Array.isArray(deleted) ||
+    !Array.isArray(missing) ||
+    !deleted.every((id): id is string => typeof id === "string") ||
+    !missing.every((id): id is string => typeof id === "string")
+  ) {
+    throw new Error("cleanup result has invalid session id arrays");
+  }
+  const requested = new Set(target);
+  const handled = new Set<string>();
+  for (const id of [...deleted, ...missing]) {
+    if (!requested.has(id) || !handled.add(id)) {
+      throw new Error("cleanup result contains an unknown or duplicate session id");
+    }
+  }
+  if (handled.size !== requested.size) {
+    throw new Error("cleanup result did not cover every requested session");
+  }
 }
 
 function GeneralSettings({

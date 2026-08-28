@@ -8,6 +8,7 @@ import {
   clearAgentQueue,
   configureAgentSession,
   createAgentSession,
+  deleteAgentSessions,
   installAgentPackage,
   listAgentModels,
   listAgentPackages,
@@ -80,7 +81,8 @@ describe("agent IPC", () => {
       .mockResolvedValueOnce({ thinkingLevel: "high" })
       .mockResolvedValueOnce(0)
       .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce(undefined);
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ deletedSessionIds: ["saved"], missingSessionIds: [] });
 
     await expect(createAgentSession("C:\\work")).resolves.toEqual({
       sessionId: "s-1",
@@ -93,6 +95,7 @@ describe("agent IPC", () => {
     await promptAgent("s-1", "hello", "steer");
     await clearAgentQueue("s-1");
     await abortAgent("s-1");
+    await deleteAgentSessions(["saved"]);
 
     expect(invoke).toHaveBeenNthCalledWith(1, "agent_create_session", { cwd: "C:\\work" });
     expect(invoke).toHaveBeenNthCalledWith(2, "agent_list_sessions");
@@ -111,6 +114,34 @@ describe("agent IPC", () => {
     });
     expect(invoke).toHaveBeenNthCalledWith(7, "agent_clear_queue", { sessionId: "s-1" });
     expect(invoke).toHaveBeenNthCalledWith(8, "agent_abort", { sessionId: "s-1" });
+    expect(invoke).toHaveBeenNthCalledWith(9, "agent_delete_sessions", {
+      sessionIds: ["saved"],
+    });
+  });
+
+  it("超过协议上限时分批清理会话并合并结果", async () => {
+    const sessionIds = Array.from({ length: 1025 }, (_, index) => `session-${index}`);
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({
+        deletedSessionIds: sessionIds.slice(0, 1024),
+        missingSessionIds: [],
+      })
+      .mockResolvedValueOnce({
+        deletedSessionIds: [],
+        missingSessionIds: [sessionIds[1024]!],
+      });
+
+    await expect(deleteAgentSessions(sessionIds)).resolves.toEqual({
+      deletedSessionIds: sessionIds.slice(0, 1024),
+      missingSessionIds: [sessionIds[1024]],
+    });
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(invoke).toHaveBeenNthCalledWith(1, "agent_delete_sessions", {
+      sessionIds: sessionIds.slice(0, 1024),
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "agent_delete_sessions", {
+      sessionIds: [sessionIds[1024]],
+    });
   });
 
   it("订阅经过边界校验的事件、丢弃无效载荷并返回解绑函数", async () => {

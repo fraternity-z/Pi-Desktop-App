@@ -7,6 +7,7 @@ import {
   clearAgentQueue,
   configureAgentSession,
   createAgentSession,
+  deleteAgentSessions,
   installAgentPackage,
   listAgentModels,
   listAgentPackages,
@@ -61,6 +62,7 @@ vi.mock("../ipc/agent", () => ({
   clearAgentQueue: vi.fn(),
   configureAgentSession: vi.fn(),
   createAgentSession: vi.fn(),
+  deleteAgentSessions: vi.fn(),
   installAgentPackage: vi.fn(),
   listAgentModels: vi.fn(),
   listAgentPackages: vi.fn(),
@@ -195,6 +197,9 @@ describe("ChatWorkbenchView", () => {
     vi.mocked(openBrowserSidebar).mockReset().mockResolvedValue(undefined);
     vi.mocked(updateBrowserSidebarBounds).mockReset().mockResolvedValue(undefined);
     vi.mocked(createAgentSession).mockReset().mockResolvedValue(defaultSession);
+    vi.mocked(deleteAgentSessions)
+      .mockReset()
+      .mockResolvedValue({ deletedSessionIds: [], missingSessionIds: [] });
     vi.mocked(openAgentSession).mockReset().mockResolvedValue({
       ...defaultSession,
       sessionId: "saved",

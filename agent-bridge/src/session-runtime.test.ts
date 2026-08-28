@@ -1,3 +1,7 @@
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -451,6 +455,122 @@ describe("PiSessionRuntime", () => {
         code: "SESSION_LIST_FAILED",
         message: "无法读取 Pi 会话列表",
       }),
+    );
+  });
+
+  it("只删除授权 sessions 目录内的 JSONL，并释放已管理会话", async () => {
+    const agentDir = await mkdtemp(join(tmpdir(), "pi-desktop-delete-"));
+    try {
+      const sessionsDir = join(agentDir, "sessions");
+      await mkdir(sessionsDir);
+      const sessionPath = join(sessionsDir, "saved.jsonl");
+      await writeFile(sessionPath, "session data", "utf8");
+      const managed = createSessionMock("saved", { sessionFile: sessionPath });
+      const sdk = sdkReturning(managed);
+      const runtime = new PiSessionRuntime(sdk, agentDir);
+      await runtime.createSession("C:\\work");
+      sdk.listAll.mockResolvedValueOnce([
+        {
+          id: "saved",
+          path: sessionPath,
+          cwd: "C:\\work",
+          created: "2026-08-20T08:00:00.000Z",
+          modified: "2026-08-20T09:00:00.000Z",
+          messageCount: 1,
+          firstMessage: "hello",
+        },
+      ]);
+
+      await expect(runtime.deleteSessions(["saved"])).resolves.toEqual({
+        deletedSessionIds: ["saved"],
+        missingSessionIds: [],
+      });
+      await expect(readFile(sessionPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      expect(managed.dispose).toHaveBeenCalledOnce();
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("SDK 清单暂未包含活动会话时仍使用托管会话文件删除 JSONL", async () => {
+    const agentDir = await mkdtemp(join(tmpdir(), "pi-desktop-delete-"));
+    try {
+      const sessionsDir = join(agentDir, "sessions");
+      await mkdir(sessionsDir);
+      const sessionPath = join(sessionsDir, "pending.jsonl");
+      await writeFile(sessionPath, "pending session", "utf8");
+      const managed = createSessionMock("pending", { sessionFile: sessionPath });
+      const sdk = sdkReturning(managed);
+      const runtime = new PiSessionRuntime(sdk, agentDir);
+      await runtime.createSession("C:\\work");
+      sdk.listAll.mockResolvedValueOnce([]);
+
+      await expect(runtime.deleteSessions(["pending"])).resolves.toEqual({
+        deletedSessionIds: ["pending"],
+        missingSessionIds: [],
+      });
+      await expect(readFile(sessionPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      expect(managed.dispose).toHaveBeenCalledOnce();
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("拒绝流式会话和越界文件，不执行任何删除", async () => {
+    const agentDir = await mkdtemp(join(tmpdir(), "pi-desktop-delete-"));
+    try {
+      const sessionsDir = join(agentDir, "sessions");
+      await mkdir(sessionsDir);
+      const sessionPath = join(sessionsDir, "streaming.jsonl");
+      await writeFile(sessionPath, "streaming", "utf8");
+      const streaming = createSessionMock("streaming", {
+        sessionFile: sessionPath,
+        streaming: true,
+      });
+      const sdk = sdkReturning(streaming);
+      const runtime = new PiSessionRuntime(sdk, agentDir);
+      await runtime.createSession("C:\\work");
+
+      await expect(runtime.deleteSessions(["streaming"])).rejects.toEqual(
+        expect.objectContaining<Partial<RuntimeError>>({ code: "SESSION_BUSY" }),
+      );
+      await expect(readFile(sessionPath, "utf8")).resolves.toBe("streaming");
+
+      const outsidePath = join(agentDir, "outside.jsonl");
+      await writeFile(outsidePath, "outside", "utf8");
+      streaming.setStreaming(false);
+      sdk.listAll.mockResolvedValueOnce([
+        {
+          id: "outside",
+          path: outsidePath,
+          cwd: "C:\\work",
+          created: "2026-08-20T08:00:00.000Z",
+          modified: "2026-08-20T09:00:00.000Z",
+          messageCount: 1,
+          firstMessage: "outside",
+        },
+      ]);
+      await expect(runtime.deleteSessions(["outside"])).rejects.toEqual(
+        expect.objectContaining<Partial<RuntimeError>>({ code: "SESSION_PATH_INVALID" }),
+      );
+      await expect(readFile(outsidePath, "utf8")).resolves.toBe("outside");
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("将不存在的会话归类为 missing，并拒绝重复或空 id", async () => {
+    const runtime = new PiSessionRuntime(sdkReturning(), "C:\\agent");
+
+    await expect(runtime.deleteSessions(["missing"])).resolves.toEqual({
+      deletedSessionIds: [],
+      missingSessionIds: ["missing"],
+    });
+    await expect(runtime.deleteSessions([])).rejects.toEqual(
+      expect.objectContaining<Partial<RuntimeError>>({ code: "SESSION_IDS_INVALID" }),
+    );
+    await expect(runtime.deleteSessions(["same", "same"])).rejects.toEqual(
+      expect.objectContaining<Partial<RuntimeError>>({ code: "SESSION_IDS_INVALID" }),
     );
   });
 

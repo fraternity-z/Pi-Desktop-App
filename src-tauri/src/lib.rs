@@ -76,6 +76,7 @@ pub fn run() {
             commands::runtime::get_runtime_status,
             commands::runtime::agent_create_session,
             commands::runtime::agent_list_sessions,
+            commands::runtime::agent_delete_sessions,
             commands::runtime::agent_open_session,
             commands::runtime::agent_list_models,
             commands::runtime::agent_list_packages,

@@ -3,9 +3,9 @@ use tauri::State;
 use crate::{
     bridge::{
         protocol::{
-            AgentModel, AgentSessionSummary, CreatedSession, PackageScope, PackageSummary,
-            PackageUpdateInfo, PromptStreamingBehavior, ResourceSummary, SessionConfiguration,
-            SessionConfigurationUpdate,
+            AgentModel, AgentSessionSummary, CreatedSession, DeleteSessionsResult, PackageScope,
+            PackageSummary, PackageUpdateInfo, PromptStreamingBehavior, ResourceSummary,
+            SessionConfiguration, SessionConfigurationUpdate,
         },
         runtime::{BridgeRuntime, RuntimeSnapshot},
     },
@@ -33,6 +33,14 @@ pub async fn agent_list_sessions(
     runtime: State<'_, BridgeRuntime>,
 ) -> Result<Vec<AgentSessionSummary>, AppError> {
     runtime.list_sessions()
+}
+
+#[tauri::command]
+pub async fn agent_delete_sessions(
+    runtime: State<'_, BridgeRuntime>,
+    session_ids: Vec<String>,
+) -> Result<DeleteSessionsResult, AppError> {
+    runtime.delete_sessions(session_ids)
 }
 
 #[tauri::command]

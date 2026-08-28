@@ -45,6 +45,7 @@ import type {
   CreateWorktreeInput,
   WorktreeOptions,
 } from "../ipc/workspace";
+import type { DeleteAgentSessionsResult } from "../ipc/agent";
 import type { EcosystemPhase } from "../stores/useAgentEcosystem";
 import {
   normalizeSidebarPath,
@@ -90,6 +91,7 @@ interface AppSidebarProps {
   onNewConversation: () => void;
   onNewSession: (cwd?: string) => void;
   onRemoveWorkspace: (cwd: string) => void | Promise<void>;
+  onDeleteSession: (sessionId: string) => Promise<DeleteAgentSessionsResult>;
   onRevealWorkspace: (cwd: string) => void | Promise<void>;
   onLoadWorktreeOptions: (cwd: string) => Promise<WorktreeOptions>;
   onCreateWorktree: (input: CreateWorktreeInput) => Promise<CreatedWorktree>;
@@ -127,9 +129,7 @@ type RenameTarget =
   | { kind: "thread"; session: SessionListItem; value: string };
 
 type ConfirmTarget =
-  | { kind: "archive-project"; cwd: string; name: string }
   | { kind: "remove-project"; cwd: string; name: string }
-  | { kind: "archive-thread"; session: SessionListItem; name: string }
   | { kind: "delete-thread"; session: SessionListItem; name: string };
 
 export function AppSidebar(props: AppSidebarProps) {
@@ -153,6 +153,7 @@ export function AppSidebar(props: AppSidebarProps) {
     onNewConversation,
     onNewSession,
     onRemoveWorkspace,
+    onDeleteSession,
     onRevealWorkspace,
     onLoadWorktreeOptions,
     onCreateWorktree,
@@ -375,15 +376,8 @@ export function AppSidebar(props: AppSidebarProps) {
       if (target.kind === "remove-project") {
         await onRemoveWorkspace(target.cwd);
         sidebar.removeProjectMetadata(target.cwd);
-      } else if (target.kind === "archive-project") {
-        sidebar.setProjectArchived(target.cwd, true);
-      } else if (target.kind === "archive-thread") {
-        const session = target.session;
-        sidebar.setThreadArchived(threadKey(session), true, {
-          title: threadTitle(session, preferences.threadAliases),
-          cwd: session.cwd,
-        });
       } else {
+        await onDeleteSession(threadKey(target.session));
         sidebar.deleteThread(threadKey(target.session));
       }
       setConfirmTarget(null);
@@ -556,10 +550,9 @@ export function AppSidebar(props: AppSidebarProps) {
         onSelect={() => chooseSession(session)}
         onPin={() => sidebar.togglePinnedThread(id)}
         onArchive={() =>
-          setConfirmTarget({
-            kind: "archive-thread",
-            session,
-            name: threadTitle(session, preferences.threadAliases),
+          sidebar.setThreadArchived(id, true, {
+            title: threadTitle(session, preferences.threadAliases),
+            cwd: session.cwd,
           })
         }
         onMenu={(event) => openMenuFromButton(event, { kind: "thread", session })}
@@ -938,11 +931,7 @@ export function AppSidebar(props: AppSidebarProps) {
             icon={<Archive size={14} />}
             label="归档项目"
             onSelect={() => {
-              setConfirmTarget({
-                kind: "archive-project",
-                cwd: selectedProject.cwd,
-                name: selectedProject.name,
-              });
+              sidebar.setProjectArchived(selectedProject.cwd, true);
               setMenu(null);
             }}
           />
@@ -1009,10 +998,9 @@ export function AppSidebar(props: AppSidebarProps) {
             icon={<Archive size={14} />}
             label="归档"
             onSelect={() => {
-              setConfirmTarget({
-                kind: "archive-thread",
-                session: selectedThread,
-                name: threadTitle(selectedThread, preferences.threadAliases),
+              sidebar.setThreadArchived(selectedThreadId, true, {
+                title: threadTitle(selectedThread, preferences.threadAliases),
+                cwd: selectedThread.cwd,
               });
               setMenu(null);
             }}
@@ -1092,13 +1080,9 @@ export function AppSidebar(props: AppSidebarProps) {
           title={confirmDialogTitle(confirmTarget.kind)}
           description={confirmDialogDescription(confirmTarget)}
           confirmLabel={
-            confirmTarget.kind.includes("archive")
-              ? "归档"
-              : confirmTarget.kind === "remove-project"
-                ? "移除"
-                : "删除"
+            confirmTarget.kind === "remove-project" ? "移除" : "删除"
           }
-          danger={!confirmTarget.kind.includes("archive")}
+          danger
           busy={confirmBusy}
           error={confirmError}
           onConfirm={() => void runConfirm()}
@@ -1458,23 +1442,15 @@ function readSidebarFixed(): boolean {
 }
 
 function confirmDialogTitle(kind: ConfirmTarget["kind"]): string {
-  if (kind === "archive-project") return "归档项目";
   if (kind === "remove-project") return "移除项目";
-  if (kind === "archive-thread") return "归档会话";
   return "删除会话";
 }
 
 function confirmDialogDescription(target: ConfirmTarget): string {
-  if (target.kind === "archive-project") {
-    return `归档“${target.name}”后，它会从侧边栏隐藏，但不会删除本机文件。`;
-  }
   if (target.kind === "remove-project") {
     return `从最近项目中移除“${target.name}”？项目文件和 Pi 会话不会被删除。`;
   }
-  if (target.kind === "archive-thread") {
-    return `归档“${target.name}”后，可在设置中恢复；Pi 原生会话文件不会被改写。`;
-  }
-  return `从侧边栏删除“${target.name}”？此操作只隐藏本机会话索引，不会删除 Pi 原生 JSONL。`;
+  return `将永久删除“${target.name}”及其 Pi 原生 JSONL 文件。此操作不可恢复。`;
 }
 
 function formatSidebarActionError(cause: unknown): string {

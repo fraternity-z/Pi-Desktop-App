@@ -69,6 +69,11 @@ export interface AgentSessionSummary {
   firstMessage: string;
 }
 
+export interface DeleteAgentSessionsResult {
+  deletedSessionIds: string[];
+  missingSessionIds: string[];
+}
+
 export interface AgentPackageSummary {
   source: string;
   scope: PackageScope;
@@ -132,6 +137,7 @@ const AGENT_EVENT_NAMES = new Set<AgentEventName>([
   "session.usageChanged",
 ]);
 const MAX_SESSION_ID_CHARS = 128;
+export const MAX_SESSION_DELETE_BATCH = 1024;
 const MAX_TOOL_CALL_ID_CHARS = 256;
 const MAX_TOOL_NAME_CHARS = 128;
 const MAX_EVENT_TEXT_CHARS = 1_048_576;
@@ -142,6 +148,25 @@ export async function createAgentSession(cwd: string): Promise<AgentSession> {
 
 export async function listAgentSessions(): Promise<AgentSessionSummary[]> {
   return invoke<AgentSessionSummary[]>("agent_list_sessions");
+}
+
+export async function deleteAgentSessions(
+  sessionIds: string[],
+): Promise<DeleteAgentSessionsResult> {
+  if (sessionIds.length <= MAX_SESSION_DELETE_BATCH) {
+    return invoke<DeleteAgentSessionsResult>("agent_delete_sessions", { sessionIds });
+  }
+
+  const deletedSessionIds: string[] = [];
+  const missingSessionIds: string[] = [];
+  for (let offset = 0; offset < sessionIds.length; offset += MAX_SESSION_DELETE_BATCH) {
+    const result = await invoke<DeleteAgentSessionsResult>("agent_delete_sessions", {
+      sessionIds: sessionIds.slice(offset, offset + MAX_SESSION_DELETE_BATCH),
+    });
+    deletedSessionIds.push(...result.deletedSessionIds);
+    missingSessionIds.push(...result.missingSessionIds);
+  }
+  return { deletedSessionIds, missingSessionIds };
 }
 
 export async function openAgentSession(sessionPath: string): Promise<AgentSession> {

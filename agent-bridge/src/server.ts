@@ -90,6 +90,9 @@ export class BridgeServer {
         case "session.list":
           data = await this.runtime.listSessions();
           break;
+        case "session.delete":
+          data = await this.runtime.deleteSessions(request.sessionIds);
+          break;
         case "session.open":
           data = await this.runtime.openSession(request.sessionPath);
           break;

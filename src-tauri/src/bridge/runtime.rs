@@ -13,9 +13,9 @@ use serde::Serialize;
 use crate::{
     bridge::{
         protocol::{
-            AgentModel, AgentSessionSummary, CreatedSession, PackageScope, PackageSummary,
-            PackageUpdateInfo, PromptStreamingBehavior, RequestHeaderSettings, ResourceSummary,
-            SessionConfiguration, SessionConfigurationUpdate,
+            AgentModel, AgentSessionSummary, CreatedSession, DeleteSessionsResult, PackageScope,
+            PackageSummary, PackageUpdateInfo, PromptStreamingBehavior, RequestHeaderSettings,
+            ResourceSummary, SessionConfiguration, SessionConfigurationUpdate,
         },
         supervisor::{
             BridgeEventSink, BridgeFaultSink, BridgeLaunchConfig, BridgeSupervisor,
@@ -129,6 +129,20 @@ impl BridgeRuntime {
 
     pub fn list_sessions(&self) -> Result<Vec<AgentSessionSummary>, AppError> {
         self.with_supervisor(|supervisor| supervisor.list_sessions())
+    }
+
+    pub fn delete_sessions(
+        &self,
+        session_ids: Vec<String>,
+    ) -> Result<DeleteSessionsResult, AppError> {
+        let session_ids = validate_session_ids(&session_ids)?;
+        let result = self.with_supervisor(|supervisor| supervisor.delete_sessions(&session_ids))?;
+        if let Ok(mut known_sessions) = self.known_sessions.lock() {
+            for session_id in &session_ids {
+                known_sessions.remove(session_id.trim());
+            }
+        }
+        Ok(result)
     }
 
     pub fn open_session(&self, session_path: String) -> Result<CreatedSession, AppError> {
@@ -524,6 +538,32 @@ fn validate_session_id(session_id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+fn validate_session_ids(session_ids: &[String]) -> Result<Vec<String>, AppError> {
+    if session_ids.is_empty() || session_ids.len() > 1024 {
+        return Err(AppError::new(
+            "SESSION_IDS_INVALID",
+            "会话 id 数量必须为 1-1024 项",
+        ));
+    }
+    let mut unique = HashSet::new();
+    let mut normalized = Vec::with_capacity(session_ids.len());
+    for session_id in session_ids {
+        validate_session_id(session_id)?;
+        let trimmed = session_id.trim();
+        if session_id.contains(['\r', '\n', '\0'])
+            || trimmed.is_empty()
+            || !unique.insert(trimmed.to_owned())
+        {
+            return Err(AppError::new(
+                "SESSION_IDS_INVALID",
+                "会话 id 包含换行、空字符或重复值",
+            ));
+        }
+        normalized.push(trimmed.to_owned());
+    }
+    Ok(normalized)
+}
+
 fn ensure_valid_prompt(text: &str) -> Result<(), AppError> {
     if text.trim().is_empty() || text.chars().count() > 200_000 {
         return Err(AppError::new(
@@ -811,6 +851,30 @@ mod tests {
                 .expect_err("未知思考强度必须被拒绝")
                 .code,
             "THINKING_LEVEL_INVALID"
+        );
+    }
+
+    #[test]
+    fn validates_and_normalizes_session_id_batches() {
+        let ids = vec![" saved ".to_owned(), "gone".to_owned()];
+        assert_eq!(validate_session_ids(&ids).unwrap(), ["saved", "gone"]);
+        assert_eq!(
+            validate_session_ids(&[])
+                .expect_err("空会话 id 列表必须被拒绝")
+                .code,
+            "SESSION_IDS_INVALID"
+        );
+        assert_eq!(
+            validate_session_ids(&["same".to_owned(), " same ".to_owned()])
+                .expect_err("规范化后重复的会话 id 必须被拒绝")
+                .code,
+            "SESSION_IDS_INVALID"
+        );
+        assert_eq!(
+            validate_session_ids(&["bad\nname".to_owned()])
+                .expect_err("包含换行的会话 id 必须被拒绝")
+                .code,
+            "SESSION_IDS_INVALID"
         );
     }
 

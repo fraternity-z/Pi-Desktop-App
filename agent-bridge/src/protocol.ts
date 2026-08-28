@@ -11,6 +11,8 @@ export const MAX_FRAME_BYTES = 1024 * 1024;
 export const MAX_PROMPT_CHARS = 200_000;
 export const MAX_ACTIVE_TOOLS = 256;
 export const MAX_TOOL_NAME_CHARS = 128;
+export const MAX_SESSION_IDS = 1024;
+export const MAX_SESSION_ID_CHARS = 128;
 
 export const THINKING_LEVELS = [
   "off",
@@ -36,6 +38,7 @@ export const BRIDGE_OPERATIONS = [
   "request-headers.configure",
   "session.create",
   "session.list",
+  "session.delete",
   "session.open",
   "session.configure",
   "prompt",
@@ -98,6 +101,7 @@ export type BridgeRequest =
   | (RequestBase & { op: "package.update"; cwd: string; source?: string })
   | (RequestBase & { op: "request-headers.configure" } & RequestHeaderSettings)
   | (RequestBase & { op: "session.create"; cwd: string })
+  | (RequestBase & { op: "session.delete"; sessionIds: string[] })
   | (RequestBase & { op: "session.open"; sessionPath: string })
   | (RequestBase & {
       op: "session.configure";
@@ -247,6 +251,30 @@ function readActiveTools(value: Record<string, unknown>): string[] | undefined {
   return [...names];
 }
 
+function readSessionIds(value: Record<string, unknown>): string[] {
+  if (!Array.isArray(value.sessionIds) || value.sessionIds.length === 0 || value.sessionIds.length > MAX_SESSION_IDS) {
+    throw new ProtocolError(
+      "INVALID_REQUEST",
+      `sessionIds 必须为 1-${MAX_SESSION_IDS} 项的数组`,
+    );
+  }
+  const ids = new Set<string>();
+  for (const item of value.sessionIds) {
+    const normalized = typeof item === "string" ? item.trim() : "";
+    if (
+      typeof item !== "string" ||
+      normalized.length === 0 ||
+      item.length > MAX_SESSION_ID_CHARS ||
+      /[\r\n\0]/.test(item) ||
+      ids.has(normalized)
+    ) {
+      throw new ProtocolError("INVALID_REQUEST", "sessionIds 包含无效或重复的会话 id");
+    }
+    ids.add(normalized);
+  }
+  return [...ids];
+}
+
 function readRequestHeaderSettings(value: Record<string, unknown>): RequestHeaderSettings {
   if (typeof value.enabled !== "boolean") {
     throw new ProtocolError("INVALID_REQUEST", "enabled 必须为布尔值");
@@ -370,6 +398,8 @@ export function parseRequest(line: string): BridgeRequest {
       const cwd = requireAbsolutePath(value, "cwd");
       return { v: PROTOCOL_VERSION, id, op: "session.create", cwd };
     }
+    case "session.delete":
+      return { v: PROTOCOL_VERSION, id, op: "session.delete", sessionIds: readSessionIds(value) };
     case "session.open": {
       const sessionPath = requireAbsolutePath(value, "sessionPath");
       return { v: PROTOCOL_VERSION, id, op: "session.open", sessionPath };

@@ -627,6 +627,7 @@ export function ChatWorkbenchView() {
           onNewConversation={() => void createConversation()}
           onNewSession={(cwd) => void createSession(cwd)}
           onRemoveWorkspace={(cwd) => void removeWorkspace(cwd)}
+          onDeleteSession={(sessionId) => session.deleteSessions([sessionId])}
           onRevealWorkspace={revealWorkspace}
           onLoadWorktreeOptions={getWorktreeOptions}
           onCreateWorktree={createWorkspaceWorktree}
@@ -663,6 +664,7 @@ export function ChatWorkbenchView() {
           onBack={leaveSettings}
           onSidebarWidthChange={setSidebarWidth}
           onPreferencesChange={updatePreferences}
+          onClearArchivedSessions={session.deleteSessions}
         />
       ) : activeView === "packages" ? (
         <PackageManagerView

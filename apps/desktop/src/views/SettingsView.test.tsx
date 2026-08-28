@@ -377,7 +377,7 @@ describe("SettingsView", () => {
     expect(onPreferencesChange).toHaveBeenNthCalledWith(4, { reduceMotion: true });
   });
 
-  it("已归档页面支持搜索、恢复和确认删除会话", async () => {
+  it("已归档页面支持搜索、恢复和删除原生会话", async () => {
     window.localStorage.setItem("pix.threads.archived", JSON.stringify(["saved", "remove"]));
     window.localStorage.setItem(
       "pix.threads.archivedMeta",
@@ -394,6 +394,10 @@ describe("SettingsView", () => {
         },
       }),
     );
+    const deleteArchived = vi.fn().mockResolvedValue({
+      deletedSessionIds: ["remove"],
+      missingSessionIds: [],
+    });
     render(
       <SettingsView
         section="archived"
@@ -408,6 +412,7 @@ describe("SettingsView", () => {
         onBack={vi.fn()}
         onSidebarWidthChange={vi.fn()}
         onPreferencesChange={vi.fn()}
+        onClearArchivedSessions={deleteArchived}
       />,
     );
 
@@ -424,10 +429,54 @@ describe("SettingsView", () => {
       target: { value: "" },
     });
     fireEvent.click(screen.getByRole("button", { name: "删除等待删除" }));
-    expect(screen.getByRole("dialog", { name: "删除已归档会话" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "删除已归档会话" })).toHaveTextContent("Pi 原生 JSONL");
     fireEvent.click(screen.getByRole("button", { name: "删除" }));
     await waitFor(() => expect(screen.queryByText("等待删除")).not.toBeInTheDocument());
+    expect(deleteArchived).toHaveBeenCalledWith(["remove"]);
     expect(JSON.parse(window.localStorage.getItem("pix.threads.deleted")!)).toContain("remove");
+  });
+
+  it("一键清理会删除 Pi 原生会话并清空归档索引", async () => {
+    window.localStorage.setItem("pix.threads.archived", JSON.stringify(["saved", "remove"]));
+    window.localStorage.setItem(
+      "pix.threads.archivedMeta",
+      JSON.stringify({
+        saved: { title: "待清理一", cwd: "C:\\projects\\alpha" },
+        remove: { title: "待清理二", cwd: "C:\\projects\\beta" },
+      }),
+    );
+    const clearArchived = vi.fn().mockResolvedValue({
+      deletedSessionIds: ["saved", "remove"],
+      missingSessionIds: [],
+    });
+    render(
+      <SettingsView
+        section="archived"
+        sidebarOpen
+        sidebarWidth={272}
+        preferences={DEFAULT_APP_PREFERENCES}
+        notifications={readyNotifications()}
+        requestHeaders={readyRequestHeaders()}
+        runtime={readyRuntime}
+        eventConnection="ready"
+        onOpenSidebar={vi.fn()}
+        onBack={vi.fn()}
+        onSidebarWidthChange={vi.fn()}
+        onPreferencesChange={vi.fn()}
+        onClearArchivedSessions={clearArchived}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "清理所有归档" }));
+    expect(screen.getByRole("dialog", { name: "清理所有归档" })).toHaveTextContent(
+      "Pi 原生 JSONL 文件",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "清理" }));
+
+    await waitFor(() => expect(clearArchived).toHaveBeenCalledWith(["saved", "remove"]));
+    await waitFor(() => expect(screen.getByText(/已清理 2 个归档会话/)).toBeInTheDocument());
+    expect(JSON.parse(window.localStorage.getItem("pix.threads.archived")!)).toEqual([]);
+    expect(JSON.parse(window.localStorage.getItem("pix.threads.archivedMeta")!)).toEqual({});
   });
 
   it("通知设置支持主开关、分类开关和系统操作", () => {

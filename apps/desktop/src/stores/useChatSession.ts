@@ -5,6 +5,7 @@ import {
   clearAgentQueue,
   configureAgentSession,
   createAgentSession,
+  deleteAgentSessions,
   listAgentModels,
   listAgentSessions,
   listenToAgentEvents,
@@ -15,6 +16,7 @@ import {
   type AgentSession,
   type AgentSessionSummary,
   type ContextUsage,
+  type DeleteAgentSessionsResult,
   type PromptStreamingBehavior,
   type QueuedMessages,
   type SessionConfiguration,
@@ -119,6 +121,7 @@ export interface ChatSessionState {
   createConversation: () => Promise<boolean>;
   openSession: (session: SessionListItem) => Promise<boolean>;
   removeWorkspace: (cwd: string) => Promise<void>;
+  deleteSessions: (sessionIds: string[]) => Promise<DeleteAgentSessionsResult>;
   prepareConfiguration: () => Promise<boolean>;
   updateModel: (provider: string, id: string) => Promise<void>;
   updateThinkingLevel: (level: ThinkingLevel) => Promise<void>;
@@ -414,6 +417,49 @@ export function useChatSession(): ChatSessionState {
       throw error;
     }
   }, []);
+
+  const deleteSessions = useCallback(
+    async (sessionIds: string[]): Promise<DeleteAgentSessionsResult> => {
+      const ids = [...new Set(sessionIds.map((id) => id.trim()).filter(Boolean))];
+      if (ids.length === 0) {
+        return { deletedSessionIds: [], missingSessionIds: [] };
+      }
+      // Ignore catalog requests that started before the files were removed.
+      const operationId = ++catalogRequestId.current;
+      try {
+        const result = await deleteAgentSessions(ids);
+        const handled = new Set([...result.deletedSessionIds, ...result.missingSessionIds]);
+        commitProjections((current) => {
+          const next = Object.fromEntries(
+            Object.entries(current).filter(([id]) => !handled.has(id)),
+          );
+          return Object.keys(next).length === Object.keys(current).length ? current : next;
+        });
+        setCatalogSessions((current) => current.filter((session) => !handled.has(session.id)));
+        for (const id of handled) {
+          promptRequests.current.delete(id);
+          materializingDrafts.current.delete(id);
+        }
+        setConfiguringSessionId((current) => (current && handled.has(current) ? null : current));
+        if (activeSessionIdRef.current && handled.has(activeSessionIdRef.current)) {
+          activeSessionIdRef.current = null;
+          setActiveSessionId(null);
+        }
+        if (catalogRequestId.current === operationId) {
+          setCatalogPhase("ready");
+          setCatalogError(null);
+        }
+        return result;
+      } catch (error) {
+        if (catalogRequestId.current === operationId) {
+          setCatalogPhase("error");
+          setCatalogError(formatError(error));
+        }
+        throw error;
+      }
+    },
+    [commitProjections],
+  );
 
   const materializeDraft = useCallback(
     async (draftSessionId: string): Promise<SessionProjection | null> => {
@@ -719,6 +765,7 @@ export function useChatSession(): ChatSessionState {
     createConversation,
     openSession,
     removeWorkspace,
+    deleteSessions,
     prepareConfiguration,
     updateModel,
     updateThinkingLevel,

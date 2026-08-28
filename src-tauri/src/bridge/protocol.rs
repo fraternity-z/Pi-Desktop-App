@@ -214,6 +214,13 @@ pub struct AgentSessionSummary {
     pub first_message: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteSessionsResult {
+    pub deleted_session_ids: Vec<String>,
+    pub missing_session_ids: Vec<String>,
+}
+
 pub fn validate_hello(hello: &BridgeHello) -> Result<(), AppError> {
     if hello.message_type != "hello" {
         return Err(AppError::new(

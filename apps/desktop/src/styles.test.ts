@@ -10,6 +10,8 @@ const radiusSectionMarker = "/* Unified rectangular UI corners */";
 const radiusSection = stylesheet.slice(
   stylesheet.indexOf(radiusSectionMarker) + radiusSectionMarker.length,
 );
+const appearanceStylesMarker = "/* Keep the range row in one column";
+const appearanceStyles = stylesheet.slice(stylesheet.indexOf(appearanceStylesMarker));
 
 function selectorsUsing(declaration: string): Set<string> {
   const selectors = new Set<string>();
@@ -53,5 +55,19 @@ describe("统一矩形圆角", () => {
   it("圆形与胶囊控件保持其形状语义", () => {
     expect(stylesheet).toMatch(/\.composer-submit\s*\{[^}]*border-radius:\s*50%;/s);
     expect(stylesheet).toMatch(/\.settings-toggle\s*\{[^}]*border-radius:\s*999px;/s);
+  });
+});
+
+describe("外观设置排版", () => {
+  it("沿用共享设置尺度并保留桌面设置顶栏", () => {
+    expect(stylesheet).not.toContain(".settings-main-appearance .settings-topbar");
+    expect(appearanceStyles).not.toMatch(/font-size:\s*(?:18|20|28|32)px/);
+    expect(appearanceStyles).not.toMatch(/min-height:\s*114px/);
+    expect(appearanceStyles).toMatch(
+      /\.appearance-theme-card strong\s*\{[^}]*font-size:\s*var\(--app-ui-font-size\);/s,
+    );
+    expect(appearanceStyles).toMatch(
+      /\.appearance-theme-actions button\s*\{[^}]*font-size:\s*var\(--app-ui-font-size\);/s,
+    );
   });
 });

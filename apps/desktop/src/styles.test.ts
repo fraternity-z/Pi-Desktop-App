@@ -21,8 +21,8 @@ function selectorsUsing(declaration: string): Set<string> {
 }
 
 describe("统一矩形圆角", () => {
-  it("以对话框的 8px 圆角作为全局矩形 UI token", () => {
-    expect(stylesheet).toMatch(/--radius-ui:\s*8px;/);
+  it("以对话框的 12px 圆角作为全局矩形 UI token", () => {
+    expect(stylesheet).toMatch(/--radius-ui:\s*12px;/);
     expect(stylesheet).toContain(radiusSectionMarker);
   });
 
@@ -36,6 +36,7 @@ describe("统一矩形圆角", () => {
     ["聊天消息", ".user-message-bubble"],
     ["聊天输入框", ".composer-frame"],
     ["浮层菜单", ".floating-menu"],
+    ["帮助面板", ".help-panel"],
     ["包列表", ".ecosystem-list"],
   ])("%s 使用统一圆角 token", (_label, selector) => {
     expect(selectorsUsing("border-radius: var(--radius-ui);")).toContain(selector);

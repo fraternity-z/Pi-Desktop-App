@@ -5,12 +5,12 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  CircleHelp,
   Ellipsis,
   ExternalLink,
   Folder,
   FolderGit2,
   FolderPlus,
-  GitFork,
   Layers3,
   List,
   MessageSquare,
@@ -28,6 +28,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -64,6 +65,7 @@ import {
   CreateWorktreeDialog,
   RenameSidebarDialog,
 } from "./SidebarDialog";
+import { HelpPanel } from "./HelpPanel";
 
 const PAGE_SIZE = 5;
 const CONVERSATION_TARGET = "__pix_conversation__";
@@ -166,6 +168,8 @@ export function AppSidebar(props: AppSidebarProps) {
   const sidebar = useSidebarPreferences();
   const { preferences } = sidebar;
   const [searchOpen, setSearchOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const closeHelpPanel = useCallback(() => setHelpOpen(false), []);
   const [query, setQuery] = useState("");
   const [menu, setMenu] = useState<SidebarMenu | null>(null);
   const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
@@ -304,6 +308,10 @@ export function AppSidebar(props: AppSidebarProps) {
   }, [searchOpen]);
 
   useEffect(() => {
+    if (!open) setHelpOpen(false);
+  }, [open]);
+
+  useEffect(() => {
     setConfirmError(null);
   }, [confirmTarget]);
 
@@ -347,7 +355,7 @@ export function AppSidebar(props: AppSidebarProps) {
   }
 
   function scheduleAutoClose() {
-    if (fixed || window.innerWidth <= 900) return;
+    if (helpOpen || fixed || window.innerWidth <= 900) return;
     closeTimer.current = window.setTimeout(onClose, 260);
   }
 
@@ -609,7 +617,7 @@ export function AppSidebar(props: AppSidebarProps) {
             />
           </label>
         ) : (
-          <strong className="sidebar-brand">Pix</strong>
+          <strong className="sidebar-brand">Pi Desktop</strong>
         )}
         <div className="sidebar-brand-actions">
           <button
@@ -773,15 +781,20 @@ export function AppSidebar(props: AppSidebarProps) {
           <Settings size={17} />
           <span>系统设置</span>
         </button>
-        <a
-          href="https://github.com/badlogic/pi-mono"
-          target="_blank"
-          rel="noreferrer"
-          aria-label="打开 Pi GitHub"
-          title="GitHub"
+        <button
+          className="sidebar-help-button"
+          type="button"
+          aria-label="帮助"
+          title="帮助"
+          aria-haspopup="dialog"
+          aria-expanded={helpOpen}
+          onClick={() => {
+            cancelAutoClose();
+            setHelpOpen(true);
+          }}
         >
-          <GitFork size={18} />
-        </a>
+          <CircleHelp size={18} aria-hidden="true" />
+        </button>
       </nav>
       {actionFeedback && (
         <div
@@ -1102,6 +1115,7 @@ export function AppSidebar(props: AppSidebarProps) {
           onClose={() => setWorktreeTarget(null)}
         />
       )}
+      <HelpPanel open={helpOpen} onClose={closeHelpPanel} />
     </aside>
   );
 }

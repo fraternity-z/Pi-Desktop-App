@@ -437,6 +437,7 @@ describe("ChatComposer", () => {
     const textarea = screen.getByLabelText("发送给 Pi 的消息");
     expect(textarea).toBeEnabled();
     expect(textarea).toHaveAttribute("placeholder", "继续输入可加入后续队列");
+    expect(screen.queryByText("Pi 正在处理")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "选择模型" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "选择思考强度" })).toBeDisabled();
     fireEvent.keyDown(textarea, { key: "Enter" });

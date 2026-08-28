@@ -492,6 +492,131 @@ describe("useChatSession", () => {
     expect(result.current.error).toBe("abort failed");
   });
 
+  it("从发送开始计时，并在 agent 正常结束时冻结时长", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    try {
+      const { result } = renderHook(() => useChatSession());
+      await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+      await act(() => result.current.createSession("C:\\work"));
+      await act(() => result.current.sendPrompt("计时任务"));
+
+      expect(result.current.timer).toEqual({
+        startedAt: 1_000,
+        endedAt: null,
+        durationMs: null,
+      });
+      now.mockReturnValue(4_250);
+      act(() => emit?.(event("agent.settled")));
+
+      await waitFor(() => expect(result.current.phase).toBe("ready"));
+      expect(result.current.timer).toEqual({
+        startedAt: 1_000,
+        endedAt: 4_250,
+        durationMs: 3_250,
+      });
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("为连续的 AI 回合分别计时并冻结各自时长", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    try {
+      const { result } = renderHook(() => useChatSession());
+      await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+      await act(() => result.current.createSession("C:\\work"));
+
+      await act(() => result.current.sendPrompt("第一问"));
+      now.mockReturnValue(4_000);
+      act(() => emit?.(event("agent.settled")));
+      await waitFor(() => expect(result.current.phase).toBe("ready"));
+
+      now.mockReturnValue(5_000);
+      await act(() => result.current.sendPrompt("第二问"));
+      now.mockReturnValue(9_000);
+      act(() => emit?.(event("agent.settled")));
+      await waitFor(() => expect(result.current.phase).toBe("ready"));
+
+      expect(result.current.messages.filter((item) => item.role === "user")).toEqual([
+        expect.objectContaining({
+          content: "第一问",
+          timer: { startedAt: 1_000, endedAt: 4_000, durationMs: 3_000 },
+        }),
+        expect.objectContaining({
+          content: "第二问",
+          timer: { startedAt: 5_000, endedAt: 9_000, durationMs: 4_000 },
+        }),
+      ]);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("排队的后续用户回合开始时结束上一回合计时", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    try {
+      const { result } = renderHook(() => useChatSession());
+      await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+      await act(() => result.current.createSession("C:\\work"));
+      await act(() => result.current.sendPrompt("第一问"));
+      await act(() => result.current.sendPrompt("第二问", "followUp"));
+
+      now.mockReturnValue(3_000);
+      act(() => emit?.(event("agent.settled")));
+      now.mockReturnValue(4_000);
+      act(() => emit?.(event("agent.started")));
+      now.mockReturnValue(4_500);
+      act(() => emit?.(event("user.message", { content: "第二问" })));
+      now.mockReturnValue(7_000);
+      act(() => emit?.(event("agent.settled")));
+
+      await waitFor(() => expect(result.current.phase).toBe("ready"));
+      expect(result.current.messages.filter((item) => item.role === "user")).toEqual([
+        expect.objectContaining({
+          content: "第一问",
+          timer: { startedAt: 1_000, endedAt: 3_000, durationMs: 2_000 },
+        }),
+        expect.objectContaining({
+          content: "第二问",
+          timer: { startedAt: 4_500, endedAt: 7_000, durationMs: 2_500 },
+        }),
+      ]);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("用户中断时停止计时，并保持已经经过的时长", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(2_000);
+    try {
+      const { result } = renderHook(() => useChatSession());
+      await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+      await act(() => result.current.createSession("C:\\work"));
+      await act(() => result.current.sendPrompt("中断任务"));
+
+      now.mockReturnValue(7_500);
+      await act(() => result.current.abort());
+
+      expect(result.current.phase).toBe("ready");
+      expect(result.current.timer).toEqual({
+        startedAt: 2_000,
+        endedAt: 7_500,
+        durationMs: 5_500,
+      });
+      act(() => emit?.(event("agent.started")));
+      act(() => emit?.(event("user.message", { content: "迟到消息" })));
+      expect(result.current.phase).toBe("ready");
+      expect(result.current.messages.filter((item) => item.role === "user")).toHaveLength(1);
+      expect(result.current.timer).toEqual({
+        startedAt: 2_000,
+        endedAt: 7_500,
+        durationMs: 5_500,
+      });
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it("prompt 响应先返回时继续接收事件直到 agent.settled", async () => {
     let resolvePrompt: ((finalSequence: number) => void) | undefined;
     vi.mocked(promptAgent).mockImplementation(

@@ -1700,6 +1700,38 @@ body {
   padding: 28px 0 64px;
 }
 
+.timeline-turn {
+  width: 100%;
+  min-width: 0;
+}
+
+.timeline-turn + .timeline-turn {
+  margin-top: 20px;
+}
+
+.conversation-run-timer {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 14px;
+  border-bottom: 1px solid var(--line);
+  padding: 0 0 11px;
+  color: var(--subtle);
+  font-size: 14px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
+.conversation-run-timer svg {
+  color: var(--subtle);
+  opacity: 0.78;
+}
+
+.conversation-run-timer[data-active="true"] {
+  color: var(--muted);
+}
+
 .timeline-row {
   width: 100%;
   min-width: 0;
@@ -1708,7 +1740,7 @@ body {
 .timeline-user {
   display: flex;
   justify-content: flex-end;
-  margin-bottom: 24px;
+  margin-bottom: 12px;
 }
 
 .user-message-bubble {
@@ -1959,87 +1991,171 @@ body {
   opacity: 1;
 }
 
-.timeline-activity-group {
-  display: grid;
-  width: 100%;
-  min-width: 0;
-  gap: 0;
-  margin: 0 0 8px;
-}
-
-.thinking-block {
-  width: 100%;
-  min-width: 0;
-  margin: 0;
-  border: 0;
-  background: transparent;
-}
-
-.thinking-block > summary {
+.timeline-thinking-inline {
   display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 24px;
+  align-items: flex-start;
+  margin: 7px 0 12px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.timeline-thinking-text {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  background-image: linear-gradient(110deg, var(--muted) 25%, var(--line) 50%, var(--muted) 75%);
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: timeline-thinking-sweep 1.4s linear infinite;
+}
+
+.timeline-thinking-text > *,
+.timeline-thinking-text > * * {
+  background-image: inherit;
+  background-size: inherit;
+  background-position: inherit;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: timeline-thinking-sweep 1.4s linear infinite;
+}
+
+.timeline-thinking-text > :first-child {
+  margin-top: 0;
+}
+
+.timeline-thinking-text > :last-child {
+  margin-bottom: 0;
+}
+
+@keyframes timeline-thinking-sweep {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .timeline-thinking-text,
+  .timeline-thinking-text * {
+    animation: none;
+    background-image: none;
+    color: var(--muted);
+    -webkit-text-fill-color: currentColor;
+  }
+}
+
+.timeline-tool-group {
+  width: 100%;
+  min-width: 0;
+  margin: 0 0 8px;
+  color: var(--muted);
+}
+
+.timeline-tool-group details {
+  display: block;
+}
+
+.timeline-tool-group summary,
+.timeline-tool > summary {
+  list-style: none;
+}
+
+.timeline-tool-group summary::-webkit-details-marker,
+.timeline-tool > summary::-webkit-details-marker {
+  display: none;
+}
+
+.timeline-tool-group-summary {
+  display: flex;
+  width: 100%;
+  min-width: 0;
   min-height: 24px;
   align-items: center;
   gap: 6px;
-  padding: 1px 0;
   color: var(--muted);
   font-size: 12.5px;
   line-height: 20px;
-  list-style: none;
   cursor: pointer;
   user-select: none;
 }
 
-.thinking-block > summary:hover,
-.thinking-block > summary:focus-visible,
+.timeline-tool-group-summary:hover,
+.timeline-tool-group-summary:focus-visible,
 .timeline-tool > summary:hover,
 .timeline-tool > summary:focus-visible {
   color: var(--text);
 }
 
-.thinking-block > summary:focus-visible,
+.timeline-tool-group-summary:focus-visible,
 .timeline-tool > summary:focus-visible {
   border-radius: 4px;
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 
-.thinking-block > summary::-webkit-details-marker {
-  display: none;
+.timeline-tool-group-icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  align-items: center;
+  justify-content: center;
+  color: var(--subtle);
 }
 
-.thinking-block[open] > summary {
-  color: var(--muted);
+.timeline-tool-group-summary-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.thinking-chevron {
-  margin-left: auto;
-  opacity: 0.6;
+.timeline-tool-group-chevron,
+.timeline-tool-chevron {
+  display: inline-flex;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  align-items: center;
+  justify-content: center;
+  color: var(--subtle);
   transition: transform 160ms ease;
 }
 
-.thinking-block[open] .thinking-chevron {
-  transform: rotate(180deg);
+.timeline-tool-group-chevron::before,
+.timeline-tool-chevron::before {
+  display: block;
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  content: "";
+  transform: rotate(-45deg);
 }
 
-.thinking-content {
-  max-height: 300px;
-  overflow: auto;
-  margin: 4px 0 7px 20px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--surface-subtle);
-  padding: 8px 10px;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-  overscroll-behavior: contain;
-  scrollbar-color: var(--scrollbar) transparent;
-  scrollbar-gutter: stable;
+.timeline-tool-group details[open] > .timeline-tool-group-summary .timeline-tool-group-chevron::before,
+.timeline-tool[open] .timeline-tool-chevron::before {
+  transform: rotate(45deg);
 }
 
-.thinking-block[data-live="true"] > summary > span {
-  color: var(--muted);
+.timeline-tool-group-body {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0 16px;
 }
 
 .timeline-tool {
@@ -2065,10 +2181,6 @@ body {
 .timeline-tool > summary {
   cursor: pointer;
   user-select: none;
-}
-
-.timeline-tool > summary::-webkit-details-marker {
-  display: none;
 }
 
 .timeline-tool-icon {
@@ -2109,13 +2221,7 @@ body {
 }
 
 .timeline-tool-chevron {
-  flex: 0 0 auto;
-  color: var(--subtle);
-  transition: transform 160ms ease;
-}
-
-.timeline-tool[open] .timeline-tool-chevron {
-  transform: rotate(180deg);
+  margin-left: 0;
 }
 
 .timeline-tool-details {
@@ -2163,44 +2269,20 @@ body {
   white-space: pre-wrap;
 }
 
-.timeline-tool-pending {
-  color: var(--warning);
-}
-
-.timeline-tool-pending .timeline-tool-icon {
-  color: var(--warning);
-}
-
-.timeline-tool-running {
-  color: var(--focus);
-}
-
-.timeline-tool-running .timeline-tool-icon {
-  color: var(--focus);
-}
-
-.timeline-tool-completed {
-  color: var(--success);
-}
-
-.timeline-tool-completed .timeline-tool-icon {
-  color: var(--success);
-}
-
-.timeline-tool-failed {
-  color: var(--danger);
-}
-
-.timeline-tool-failed .timeline-tool-icon {
-  color: var(--danger);
-}
-
+.timeline-tool-pending,
+.timeline-tool-running,
+.timeline-tool-completed,
+.timeline-tool-failed,
 .timeline-tool-cancelled {
   color: var(--muted);
 }
 
+.timeline-tool-pending .timeline-tool-icon,
+.timeline-tool-running .timeline-tool-icon,
+.timeline-tool-completed .timeline-tool-icon,
+.timeline-tool-failed .timeline-tool-icon,
 .timeline-tool-cancelled .timeline-tool-icon {
-  color: var(--muted);
+  color: var(--subtle);
 }
 
 .timeline-system {
@@ -2235,17 +2317,16 @@ body {
   color: var(--danger);
 }
 
-.timeline-activity-group + .timeline-assistant {
+.timeline-tool-group + .timeline-assistant {
   margin-top: 12px;
 }
 
 .timeline-assistant + .timeline-user,
-.timeline-activity-group + .timeline-user,
+.timeline-tool-group + .timeline-user,
 .timeline-turn-actions + .timeline-user {
   margin-top: 20px;
 }
 
-.timeline-live-status,
 .conversation-loading {
   display: inline-flex;
   align-items: center;
@@ -2254,10 +2335,6 @@ body {
   margin: 2px 0 12px;
   color: var(--subtle);
   font-size: 13px;
-}
-
-.timeline-live-label {
-  color: var(--subtle);
 }
 
 .conversation-loading {
@@ -2817,7 +2894,6 @@ body {
     max-width: 92%;
   }
 
-  .thinking-content,
   .timeline-tool-details {
     margin-left: 18px;
     padding: 8px 10px;
@@ -6618,9 +6694,7 @@ body,
 .status-list,
 .markdown-content code,
 .markdown-code-block,
-.thinking-block > summary:focus-visible,
 .timeline-tool > summary:focus-visible,
-.thinking-content,
 .timeline-tool-details,
 .timeline-system-error,
 .composer-queue-card,

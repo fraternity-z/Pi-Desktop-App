@@ -9,8 +9,15 @@ describe("appendMonotonicText", () => {
     expect(appendMonotonicText("Hello", "")).toBe("Hello");
   });
 
-  it("保留具有不同事件序号的重复文本块", () => {
-    expect(appendMonotonicText("ha", "ha")).toBe("haha");
-    expect(appendMonotonicText("\n", "\n")).toBe("\n\n");
+  it("忽略累计快照和重复块", () => {
+    expect(appendMonotonicText("Hel", "Hello")).toBe("Hello");
+    expect(appendMonotonicText("Hello", "Hello")).toBe("Hello");
+    expect(appendMonotonicText("Hello", "lo")).toBe("Hello");
+  });
+
+  it("合并重叠增量而不重复内容", () => {
+    expect(appendMonotonicText("Hello wor", "world!")).toBe("Hello world!");
+    expect(appendMonotonicText("ha", "ha")).toBe("ha");
+    expect(appendMonotonicText("\n", "\n")).toBe("\n");
   });
 });

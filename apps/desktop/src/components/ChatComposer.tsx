@@ -604,12 +604,7 @@ export function ChatComposer({
             </div>
 
             <div className="composer-operation-status" aria-live="polite">
-              {streaming ? (
-                <>
-                  <LoaderCircle className="spin" size={14} />
-                  <span>Pi 正在处理</span>
-                </>
-              ) : configuring ? (
+              {configuring ? (
                 <>
                   <LoaderCircle className="spin" size={14} />
                   <span>正在应用配置</span>

@@ -1,8 +1,7 @@
 import {
-  Brain,
   Check,
   CheckCircle2,
-  ChevronDown,
+  ChevronRight,
   Circle,
   CircleX,
   Copy,
@@ -10,75 +9,150 @@ import {
   Square,
   Wrench,
 } from "lucide-react";
-import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useEffect, useMemo, useState } from "react";
 
-import type { ChatMessage, TimelineStatus } from "../stores/useChatSession";
+import type {
+  ChatMessage,
+  SessionTimerState,
+  TimelineStatus,
+} from "../stores/useChatSession";
 import { MarkdownContent } from "./MarkdownContent";
 
 interface ConversationTimelineProps {
   messages: ChatMessage[];
   streaming: boolean;
+  timer?: SessionTimerState | null;
 }
 
 type TimelineGroup =
   | { kind: "message"; id: string; message: ChatMessage }
-  | { kind: "activity"; id: string; messages: ChatMessage[] };
+  | { kind: "tools"; id: string; messages: ChatMessage[] };
+
+type TimelineTurn = {
+  id: string;
+  user: ChatMessage | null;
+  messages: ChatMessage[];
+};
 
 export const ConversationTimeline = memo(function ConversationTimeline({
   messages,
   streaming,
+  timer = null,
 }: ConversationTimelineProps) {
-  const activeThinkingId = useMemo(
-    () => findActiveThinkingId(messages, streaming),
+  const turns = useMemo(() => {
+    const grouped = groupTimelineTurns(messages);
+    return grouped.length > 0
+      ? grouped
+      : [{ id: "empty", user: null, messages: [] } satisfies TimelineTurn];
+  }, [messages]);
+  const copyTargets = useMemo(
+    () => findTurnCopyTargets(messages, streaming),
     [messages, streaming],
   );
-  const groups = useMemo(() => groupTimelineMessages(messages), [messages]);
-  const copyTargets = useMemo(() => findTurnCopyTargets(messages, streaming), [messages, streaming]);
-  const showLiveStatus = streaming && activeThinkingId === null;
 
   return (
     <div className="message-stream" aria-busy={streaming}>
-      {groups.map((group) => {
-        const lastMessage = group.kind === "message" ? group.message : group.messages.at(-1);
-        const copyText = lastMessage ? copyTargets.get(lastMessage.id) : undefined;
+      {turns.map((turn, index) => {
+        const isCurrentTurn = streaming && index === turns.length - 1;
+        const groups = groupTimelineMessages(turn.messages);
+        const liveThinking = findLiveThinking(turn.messages, isCurrentTurn);
+        // The store attaches a timer to each user message. Keep the prop as a
+        // compatibility fallback for projections created before per-turn timers.
+        const turnTimer = resolveTurnTimer(
+          turn.user?.timer,
+          index === turns.length - 1 ? timer : null,
+        );
         return (
-          <Fragment key={`${group.kind}:${group.id}`}>
-            {group.kind === "message" ? (
-              <TimelineItem
-                message={group.message}
-                live={group.message.id === activeThinkingId}
-              />
-            ) : (
-              <div className="timeline-activity-group">
-                {group.messages.map((message) => (
-                  <TimelineItem
-                    key={message.id}
-                    message={message}
-                    live={message.id === activeThinkingId}
-                  />
-                ))}
-              </div>
-            )}
-            {copyText && <TurnCopyAction text={copyText} />}
-          </Fragment>
+          <section className="timeline-turn" data-turn-id={turn.id} key={turn.id}>
+            {turn.user && <TimelineItem message={turn.user} streaming={isCurrentTurn} />}
+            {turnTimer && <ConversationTimer timer={turnTimer} />}
+            {groups.map((group) => {
+              const lastMessage = group.kind === "message" ? group.message : group.messages.at(-1);
+              const copyText = lastMessage ? copyTargets.get(lastMessage.id) : undefined;
+              return (
+                <Fragment key={group.kind + ":" + group.id}>
+                  {group.kind === "message" ? (
+                    <TimelineItem message={group.message} streaming={isCurrentTurn} />
+                  ) : (
+                    <ToolGroup messages={group.messages} />
+                  )}
+                  {copyText && <TurnCopyAction text={copyText} />}
+                </Fragment>
+              );
+            })}
+            {isCurrentTurn && <ThinkingInline content={liveThinking?.content || "正在思考"} />}
+          </section>
         );
       })}
-      {showLiveStatus && (
-        <div className="timeline-live-status" role="status" aria-live="polite">
-          <LoaderCircle className="spin" size={14} />
-          <span className="timeline-live-label">Pi 正在处理</span>
-        </div>
-      )}
     </div>
   );
 });
 
+const ConversationTimer = memo(function ConversationTimer({
+  timer,
+}: {
+  timer: SessionTimerState | null;
+}) {
+  const startedAt = timer?.startedAt;
+  const active = startedAt !== null && startedAt !== undefined && timer?.endedAt === null;
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const interval = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(interval);
+  }, [active, startedAt]);
+
+  if (startedAt === null || startedAt === undefined) return null;
+  const elapsed = timer?.durationMs ?? Math.max(0, (timer?.endedAt ?? now) - startedAt);
+  const label = formatSessionDuration(elapsed);
+  return (
+    <div
+      className="conversation-run-timer"
+      data-active={active ? "true" : undefined}
+      role="status"
+      aria-live={active ? "polite" : undefined}
+      aria-label={"会话用时 " + label}
+    >
+      <span>用时 {label}</span>
+      <ChevronRight size={16} aria-hidden="true" />
+    </div>
+  );
+});
+
+export function formatSessionDuration(milliseconds: number): string {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1_000));
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor((totalSeconds % 86_400) / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  if (days > 0) return hours > 0 ? days + "d " + hours + "h" : days + "d";
+  if (hours > 0) return minutes > 0 ? hours + "h " + minutes + "m" : hours + "h";
+  if (minutes > 0) return seconds > 0 ? minutes + "m " + seconds + "s" : minutes + "m";
+  return seconds + "s";
+}
+
+function resolveTurnTimer(
+  userTimer: SessionTimerState | undefined,
+  fallback: SessionTimerState | null,
+): SessionTimerState | null {
+  if (!userTimer) return fallback;
+  if (
+    fallback?.endedAt === null &&
+    (userTimer.endedAt !== null || fallback.startedAt !== userTimer.startedAt)
+  ) {
+    return fallback;
+  }
+  return userTimer;
+}
+
 const TimelineItem = memo(function TimelineItem({
   message,
-  live,
+  streaming,
 }: {
   message: ChatMessage;
-  live: boolean;
+  streaming: boolean;
 }) {
   if (message.role === "user") {
     return (
@@ -90,17 +164,11 @@ const TimelineItem = memo(function TimelineItem({
       </article>
     );
   }
-  if (message.role === "thinking") {
-    return <ThinkingBlock content={message.content} live={live} />;
-  }
-  if (message.role === "tool") {
-    return <ToolRow message={message} />;
-  }
   if (message.role === "system") {
     const failed = message.status === "failed";
     return (
       <div
-        className={`timeline-system${failed ? " timeline-system-error" : ""}`}
+        className={"timeline-system" + (failed ? " timeline-system-error" : "")}
         role={failed ? "alert" : "status"}
       >
         {failed ? <CircleX size={14} /> : <Check size={14} />}
@@ -108,10 +176,21 @@ const TimelineItem = memo(function TimelineItem({
       </div>
     );
   }
-  return <AssistantMessage message={message} />;
+  if (message.role === "assistant") {
+    return <AssistantMessage message={message} streaming={streaming} />;
+  }
+  // Thinking is rendered once as the live inline indicator below the transcript.
+  return null;
 });
 
-const AssistantMessage = memo(function AssistantMessage({ message }: { message: ChatMessage }) {
+const AssistantMessage = memo(function AssistantMessage({
+  message,
+  streaming,
+}: {
+  message: ChatMessage;
+  streaming: boolean;
+}) {
+  if (!message.content && streaming) return null;
   return (
     <article className="timeline-row timeline-assistant" data-status={message.status}>
       <div className="assistant-message-content">
@@ -122,6 +201,14 @@ const AssistantMessage = memo(function AssistantMessage({ message }: { message: 
         )}
       </div>
     </article>
+  );
+});
+
+const ThinkingInline = memo(function ThinkingInline({ content }: { content: string }) {
+  return (
+    <div className="timeline-thinking-inline" role="status" aria-live="polite" aria-busy="true">
+      <MarkdownContent className="timeline-thinking-text">{content}</MarkdownContent>
+    </div>
   );
 });
 
@@ -151,39 +238,53 @@ const TurnCopyAction = memo(function TurnCopyAction({ text }: { text: string }) 
   );
 });
 
-function ThinkingBlock({ content, live }: { content: string; live: boolean }) {
-  const [open, setOpen] = useState(live);
-  const wasLive = useRef(live);
-
-  useEffect(() => {
-    if (live !== wasLive.current) {
-      setOpen(live);
-      wasLive.current = live;
-    }
-  }, [live]);
+const ToolGroup = memo(function ToolGroup({ messages }: { messages: ChatMessage[] }) {
+  const [open, setOpen] = useState(false);
+  const running = messages.some((message) => message.status === "running");
+  const failed = messages.some((message) => message.status === "failed");
+  const cancelled = messages.some((message) => message.status === "cancelled");
+  const names = [...new Set(messages.map((message) => message.toolName?.trim()).filter(Boolean))] as string[];
+  const summary = toolGroupLabel(names, messages.length);
 
   return (
-    <details
-      className="thinking-block"
-      data-live={live || undefined}
-      aria-busy={live}
-      open={open}
-      onToggle={(event) => setOpen(event.currentTarget.open)}
-    >
-      <summary>
-        {live ? <LoaderCircle className="spin" size={14} /> : <Brain size={14} />}
-        <span>{live ? "思考中" : "思考过程"}</span>
-        <ChevronDown className="thinking-chevron" size={14} />
-      </summary>
-      <MarkdownContent className="thinking-content">{content}</MarkdownContent>
-    </details>
+    <section className="timeline-tool-group" data-tool-count={messages.length}>
+      <details
+        open={open}
+        onToggle={(event) => setOpen(event.currentTarget.open)}
+        data-status={running ? "running" : failed ? "failed" : cancelled ? "cancelled" : "completed"}
+        aria-busy={running}
+      >
+        <summary
+          className="timeline-tool-group-summary"
+          onClick={(event) => {
+            event.preventDefault();
+            setOpen((current) => !current);
+          }}
+        >
+          <span className="timeline-tool-group-icon" aria-hidden="true">
+            <ToolGroupIcon running={running} failed={failed} cancelled={cancelled} />
+          </span>
+          <span className="timeline-tool-group-summary-text" title={summary}>
+            {summary}
+          </span>
+          <span className="timeline-tool-group-chevron" aria-hidden="true" />
+        </summary>
+        {open && (
+          <div className="timeline-tool-group-body">
+            {messages.map((message) => (
+              <ToolDetailRow key={message.id} message={message} />
+            ))}
+          </div>
+        )}
+      </details>
+    </section>
   );
-}
+});
 
-function ToolRow({ message }: { message: ChatMessage }) {
+function ToolDetailRow({ message }: { message: ChatMessage }) {
   const status = message.status ?? "pending";
+  const [open, setOpen] = useState(false);
   const hasDetails = Boolean(message.toolCallId || message.content);
-  const statusLabel = toolStatusLabel(status);
   const summary = (
     <>
       <span className="timeline-tool-icon" aria-hidden="true">
@@ -194,17 +295,17 @@ function ToolRow({ message }: { message: ChatMessage }) {
           {message.toolName ?? "tool"}
         </strong>
         <small className="timeline-tool-status" aria-live="polite">
-          {statusLabel}
+          {toolStatusLabel(status)}
         </small>
       </span>
-      {hasDetails && <ChevronDown className="timeline-tool-chevron" size={14} />}
+      {hasDetails && <span className="timeline-tool-chevron" aria-hidden="true" />}
     </>
   );
 
   if (!hasDetails) {
     return (
       <div
-        className={`timeline-tool timeline-tool-${status}`}
+        className={"timeline-tool timeline-tool-" + status}
         data-status={status}
         aria-busy={status === "running"}
       >
@@ -215,31 +316,57 @@ function ToolRow({ message }: { message: ChatMessage }) {
 
   return (
     <details
-      className={`timeline-tool timeline-tool-${status}`}
+      className={"timeline-tool timeline-tool-" + status}
       data-status={status}
       aria-busy={status === "running"}
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
     >
-      <summary>{summary}</summary>
-      <div
-        className="timeline-tool-details"
-        role="region"
-        aria-label={`${message.toolName ?? "tool"} 调用详情`}
+      <summary
+        onClick={(event) => {
+          event.preventDefault();
+          setOpen((current) => !current);
+        }}
       >
-        {message.content && (
-          <section>
-            <span>执行结果</span>
-            <pre>{message.content}</pre>
-          </section>
-        )}
-        {message.toolCallId && (
-          <section>
-            <span>调用 ID</span>
-            <code>{message.toolCallId}</code>
-          </section>
-        )}
-      </div>
+        {summary}
+      </summary>
+      {open && (
+        <div
+          className="timeline-tool-details"
+          role="region"
+          aria-label={(message.toolName ?? "tool") + " 调用详情"}
+        >
+          {message.content && (
+            <section>
+              <span>执行结果</span>
+              <pre>{message.content}</pre>
+            </section>
+          )}
+          {message.toolCallId && (
+            <section>
+              <span>调用 ID</span>
+              <code>{message.toolCallId}</code>
+            </section>
+          )}
+        </div>
+      )}
     </details>
   );
+}
+
+function ToolGroupIcon({
+  running,
+  failed,
+  cancelled,
+}: {
+  running: boolean;
+  failed: boolean;
+  cancelled: boolean;
+}) {
+  if (running) return <LoaderCircle className="spin" size={14} />;
+  if (failed) return <CircleX size={14} />;
+  if (cancelled) return <Square size={13} />;
+  return <Wrench size={14} />;
 }
 
 function ToolIcon({ status }: { status: TimelineStatus }) {
@@ -261,23 +388,62 @@ function toolStatusLabel(status: TimelineStatus): string {
   }[status];
 }
 
+function toolGroupLabel(names: string[], count: number): string {
+  if (count === 1) return "已使用 " + (names[0] ?? "工具");
+  return "已运行" + count + "个工具";
+}
+
 function groupTimelineMessages(messages: ChatMessage[]): TimelineGroup[] {
   const groups: TimelineGroup[] = [];
+  let previousWasTool = false;
   for (const message of messages) {
-    const activity =
-      message.role === "thinking" || message.role === "tool" || message.role === "system";
-    const previous = groups.at(-1);
-    if (activity && previous?.kind === "activity") {
-      previous.messages.push(message);
+    if (message.role === "thinking") {
+      // A hidden thinking segment still separates non-consecutive tool calls.
+      previousWasTool = false;
       continue;
     }
-    groups.push(
-      activity
-        ? { kind: "activity", id: message.id, messages: [message] }
-        : { kind: "message", id: message.id, message },
-    );
+    if (message.role === "tool") {
+      const previous = groups.at(-1);
+      if (previousWasTool && previous?.kind === "tools") {
+        previous.messages.push(message);
+      } else {
+        groups.push({ kind: "tools", id: message.id, messages: [message] });
+      }
+      previousWasTool = true;
+      continue;
+    }
+    groups.push({ kind: "message", id: message.id, message });
+    previousWasTool = false;
   }
   return groups;
+}
+
+function groupTimelineTurns(messages: ChatMessage[]): TimelineTurn[] {
+  const turns: TimelineTurn[] = [];
+  let current: TimelineTurn = { id: "prelude", user: null, messages: [] };
+
+  for (const message of messages) {
+    if (message.role === "user") {
+      if (current.user || current.messages.length > 0) turns.push(current);
+      current = { id: message.id, user: message, messages: [] };
+    } else {
+      current.messages.push(message);
+    }
+  }
+
+  if (current.user || current.messages.length > 0) turns.push(current);
+  return turns;
+}
+
+function findLiveThinking(messages: ChatMessage[], streaming: boolean): ChatMessage | null {
+  if (!streaming) return null;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message) continue;
+    if (message.role === "thinking" && message.content.trim()) return message;
+    if (message.role === "user") break;
+  }
+  return null;
 }
 
 function findTurnCopyTargets(messages: ChatMessage[], streaming: boolean): Map<string, string> {
@@ -302,14 +468,4 @@ function findTurnCopyTargets(messages: ChatMessage[], streaming: boolean): Map<s
   }
   addCompletedTurn(messages.length - 1, !streaming);
   return targets;
-}
-
-function findActiveThinkingId(messages: ChatMessage[], streaming: boolean): string | null {
-  if (!streaming) return null;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (!message || message.role === "user" || message.role === "assistant") return null;
-    if (message.role === "thinking") return message.id;
-  }
-  return null;
 }

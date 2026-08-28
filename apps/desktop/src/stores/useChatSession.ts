@@ -42,6 +42,7 @@ export interface ChatMessage {
   role: TimelineRole;
   content: string;
   timestamp?: string;
+  timer?: SessionTimerState;
   optimistic?: boolean;
   toolCallId?: string;
   toolName?: string;
@@ -58,6 +59,12 @@ export type ChatPhase = "idle" | "creating" | "ready" | "streaming";
 export type AgentEventConnection = "connecting" | "ready" | "error";
 export type CatalogPhase = "idle" | "loading" | "ready" | "error";
 export type SessionLifecycle = "draft" | "live" | "persisted";
+
+export interface SessionTimerState {
+  startedAt: number | null;
+  endedAt: number | null;
+  durationMs: number | null;
+}
 
 export interface SessionListItem extends Omit<AgentSessionSummary, "path"> {
   path: string | null;
@@ -79,6 +86,10 @@ interface SessionProjection {
   queuedMessages: QueuedMessages;
   queuePaused: boolean;
   contextUsage: ContextUsage | null;
+  runStartedAt: number | null;
+  runEndedAt: number | null;
+  runDurationMs: number | null;
+  activeRunUserId: string | null;
 }
 
 export interface ChatSessionState {
@@ -102,6 +113,7 @@ export interface ChatSessionState {
   queuedMessages: QueuedMessages;
   queuePaused: boolean;
   contextUsage: ContextUsage | null;
+  timer: SessionTimerState | null;
   loadCatalogs: () => Promise<void>;
   createSession: (cwd: string) => Promise<boolean>;
   createConversation: () => Promise<boolean>;
@@ -194,6 +206,14 @@ export function useChatSession(): ChatSessionState {
               error: existing.error,
               queuedMessages: existing.phase === "streaming" ? existing.queuedMessages : loaded.queuedMessages,
               queuePaused: existing.phase === "streaming" ? existing.queuePaused : loaded.queuePaused,
+              runStartedAt: existing.runStartedAt ?? loaded.runStartedAt,
+              runEndedAt: existing.runEndedAt ?? loaded.runEndedAt,
+              runDurationMs: existing.runDurationMs ?? loaded.runDurationMs,
+              activeRunUserId:
+                existing.messages.length > 0 &&
+                (existing.phase === "streaming" || existing.messages.length >= loaded.messages.length)
+                  ? existing.activeRunUserId
+                  : loaded.activeRunUserId,
             }
           : loaded;
         const next = { ...current, [session.sessionId]: projection };
@@ -500,6 +520,7 @@ export function useChatSession(): ChatSessionState {
       ) {
         return false;
       }
+      const requestStartedAt = Date.now();
       if (projection.lifecycle === "draft") {
         projection = await materializeDraft(sessionId);
         if (!projection) return false;
@@ -516,11 +537,19 @@ export function useChatSession(): ChatSessionState {
       commitProjections((current) => {
         const currentProjection = current[sessionId];
         if (!currentProjection) return current;
+        const startedAt = queued ? currentProjection.runStartedAt : requestStartedAt;
+        const userId = queued ? null : nextItemId(sessionId);
         return {
           ...current,
           [sessionId]: {
             ...currentProjection,
             phase: "streaming",
+            runStartedAt: startedAt,
+            runEndedAt: queued ? currentProjection.runEndedAt : null,
+            runDurationMs: queued ? currentProjection.runDurationMs : null,
+            activeRunUserId: queued
+              ? currentProjection.activeRunUserId
+              : userId,
             modifiedAt: new Date().toISOString(),
             error: null,
             queuePaused: false,
@@ -532,11 +561,12 @@ export function useChatSession(): ChatSessionState {
               : [
                   ...currentProjection.messages,
                   {
-                    id: nextItemId(sessionId),
+                    id: userId!,
                     role: "user",
                     content,
                     optimistic: true,
                     timestamp: new Date().toISOString(),
+                    timer: createRunningTimer(requestStartedAt),
                   },
                 ],
           },
@@ -552,15 +582,17 @@ export function useChatSession(): ChatSessionState {
         commitProjections((current) => {
           const currentProjection = current[sessionId];
           if (!currentProjection) return current;
+          const finished = queued ? null : finishProjectionTimer(currentProjection, Date.now());
           return {
             ...current,
             [sessionId]: {
               ...currentProjection,
               phase: queued ? "streaming" : "ready",
+              ...(finished ?? {}),
               error: message,
               queuedMessages: queued ? previousQueue : currentProjection.queuedMessages,
               messages: [
-                ...currentProjection.messages.map((item) =>
+                ...(finished?.messages ?? currentProjection.messages).map((item) =>
                   item.role === "tool" && item.status === "running"
                     ? { ...item, status: "failed" as const }
                     : item,
@@ -624,13 +656,15 @@ export function useChatSession(): ChatSessionState {
       commitProjections((current) => {
         const projection = current[sessionId];
         if (!projection) return current;
+        const finished = finishProjectionTimer(projection, Date.now());
         return {
           ...current,
           [sessionId]: {
             ...projection,
             phase: "ready",
+            ...finished,
             queuePaused: queueSize(projection.queuedMessages) > 0,
-            messages: projection.messages.map((item) =>
+            messages: finished.messages.map((item) =>
               item.role === "tool" && item.status === "running"
                 ? { ...item, status: "cancelled" as const }
                 : item,
@@ -679,6 +713,7 @@ export function useChatSession(): ChatSessionState {
     queuedMessages: active?.queuedMessages ?? emptyQueue(),
     queuePaused: active?.queuePaused ?? false,
     contextUsage: active?.contextUsage ?? null,
+    timer: active ? projectionTimer(active) : null,
     loadCatalogs,
     createSession,
     createConversation,
@@ -700,7 +735,7 @@ function projectionFromSession(
   lifecycle: Exclude<SessionLifecycle, "draft">,
   replaced?: SessionProjection,
 ): SessionProjection {
-  const messages = session.messages.map<ChatMessage>((message) => ({
+  let messages = session.messages.map<ChatMessage>((message) => ({
     id: nextId(session.sessionId),
     role: message.role,
     content: message.role === "user" ? displayPromptContent(message.content) : message.content,
@@ -711,6 +746,19 @@ function projectionFromSession(
       ? { status: message.isError ? ("failed" as const) : ("completed" as const) }
       : {}),
   }));
+  const restoredStartedAt = replaced?.runStartedAt ?? (session.streaming ? Date.now() : null);
+  let activeRunUserId = replaced?.activeRunUserId ?? null;
+  if (session.streaming) {
+    const lastUser = [...messages].reverse().find((message) => message.role === "user");
+    activeRunUserId = activeRunUserId ?? lastUser?.id ?? null;
+    if (lastUser && restoredStartedAt !== null && !lastUser.timer) {
+      messages = messages.map((message) =>
+        message.id === lastUser.id
+          ? { ...message, timer: createRunningTimer(restoredStartedAt) }
+          : message,
+      );
+    }
+  }
   return {
     sessionId: session.sessionId,
     sessionPath: session.sessionPath,
@@ -723,6 +771,10 @@ function projectionFromSession(
     queuedMessages: displayQueuedMessages(session.queuedMessages ?? emptyQueue()),
     queuePaused: !session.streaming && queueSize(session.queuedMessages ?? emptyQueue()) > 0,
     phase: session.streaming ? "streaming" : "ready",
+    runStartedAt: restoredStartedAt,
+    runEndedAt: replaced?.runEndedAt ?? null,
+    runDurationMs: replaced?.runDurationMs ?? null,
+    activeRunUserId,
     error: null,
     modelFallbackMessage: session.modelFallbackMessage,
     contextUsage: readContextUsage(session.contextUsage),
@@ -741,6 +793,10 @@ function createDraftProjection(sessionId: string, cwd: string): SessionProjectio
     createdAt: now,
     modifiedAt: now,
     phase: "ready",
+    runStartedAt: null,
+    runEndedAt: null,
+    runDurationMs: null,
+    activeRunUserId: null,
     error: null,
     modelFallbackMessage: null,
     queuedMessages: emptyQueue(),
@@ -797,13 +853,42 @@ function applyAgentEvent(
   nextId: () => string,
 ): SessionProjection {
   if (event.name === "agent.started") {
-    return { ...projection, phase: "streaming", error: null, queuePaused: false };
+    if (
+      projection.phase !== "streaming" &&
+      projection.runEndedAt !== null &&
+      (queueSize(projection.queuedMessages) === 0 || projection.queuePaused)
+    ) {
+      return projection;
+    }
+    const continuing =
+      projection.phase === "streaming" &&
+      projection.runStartedAt !== null &&
+      projection.runEndedAt === null;
+    const startedAt = continuing ? projection.runStartedAt! : Date.now();
+    const base = continuing
+      ? projection
+      : {
+          ...projection,
+          runStartedAt: startedAt,
+          runEndedAt: null,
+          runDurationMs: null,
+          activeRunUserId: null,
+        };
+    return {
+      ...ensureRunningProjectionTimer(base, startedAt),
+      phase: "streaming",
+      error: null,
+      queuePaused: false,
+    };
   }
   if (event.name === "agent.settled") {
+    const endedAt = Date.now();
+    const finished = finishProjectionTimer(projection, endedAt);
     return {
       ...projection,
       phase: "ready",
-      messages: projection.messages.map((item) =>
+      ...finished,
+      messages: finished.messages.map((item) =>
         item.role === "tool" && item.status === "running"
           ? { ...item, status: "completed" as const }
           : item,
@@ -828,28 +913,74 @@ function applyAgentEvent(
       : projection;
   }
   if (event.name === "user.message") {
+    if (projection.phase !== "streaming") return projection;
     const wireContent = readEventText(event.data, "content");
     if (!wireContent) return projection;
     const content = displayPromptContent(wireContent);
-    const match = findLastOptimisticUser(projection.messages, content);
-    return match < 0
-      ? {
-          ...projection,
-          messages: [...projection.messages, { id: nextId(), role: "user", content }],
-        }
-      : {
-          ...projection,
-          messages: projection.messages.map((item, index) =>
-            index === match ? { ...item, optimistic: false } : item,
-          ),
-        };
+    const receivedAt = Date.now();
+    const optimisticIndex = findLastOptimisticUser(projection.messages, content);
+    if (optimisticIndex >= 0) {
+      const optimistic = projection.messages[optimisticIndex]!;
+      const startedAt = optimistic.timer?.startedAt ?? projection.runStartedAt ?? receivedAt;
+      return {
+        ...projection,
+        phase: "streaming",
+        runStartedAt: projection.runStartedAt ?? startedAt,
+        runEndedAt: null,
+        runDurationMs: null,
+        activeRunUserId: optimistic.id,
+        messages: projection.messages.map((item, index) =>
+          index === optimisticIndex
+            ? {
+                ...item,
+                optimistic: false,
+                timer: item.timer ?? createRunningTimer(startedAt),
+              }
+            : item,
+        ),
+      };
+    }
+
+    const activeIndex = findActiveUserIndex(projection);
+    const activeUser = activeIndex >= 0 ? projection.messages[activeIndex] : undefined;
+    if (
+      activeUser?.role === "user" &&
+      activeUser.content === content &&
+      activeUser.timer?.endedAt === null &&
+      projection.runEndedAt === null
+    ) {
+      return {
+        ...projection,
+        phase: "streaming",
+        activeRunUserId: activeUser.id,
+      };
+    }
+
+    const previousMessages = finishPreviousUserTimer(projection, activeIndex, receivedAt);
+    const userId = nextId();
+    return {
+      ...projection,
+      phase: "streaming",
+      runStartedAt: receivedAt,
+      runEndedAt: null,
+      runDurationMs: null,
+      activeRunUserId: userId,
+      messages: [
+        ...previousMessages,
+        { id: userId, role: "user", content, timer: createRunningTimer(receivedAt) },
+      ],
+    };
   }
   if (event.name === "message.delta" || event.name === "thinking.delta") {
     if (projection.phase !== "streaming") return projection;
     const delta = readEventText(event.data, "delta");
     if (!delta) return projection;
     const role = event.name === "thinking.delta" ? "thinking" : "assistant";
-    return { ...projection, messages: appendTimelineText(projection.messages, role, delta, nextId) };
+    const runningProjection = ensureRunningProjectionTimer(projection, Date.now());
+    return {
+      ...runningProjection,
+      messages: appendTimelineText(runningProjection.messages, role, delta, nextId),
+    };
   }
   if (event.name.startsWith("tool.")) {
     if (projection.phase !== "streaming") return projection;
@@ -861,7 +992,11 @@ function applyAgentEvent(
         : event.name === "tool.failed"
           ? "failed"
           : "completed";
-    return { ...projection, messages: upsertTimelineTool(projection.messages, tool, status, nextId) };
+    const runningProjection = ensureRunningProjectionTimer(projection, Date.now());
+    return {
+      ...runningProjection,
+      messages: upsertTimelineTool(runningProjection.messages, tool, status, nextId),
+    };
   }
   if (event.name === "message.completed") {
     if (!isRecord(event.data) || event.data.reason === "toolUse") return projection;
@@ -951,6 +1086,158 @@ function updateProjectionError(
 ): Record<string, SessionProjection> {
   const projection = current[sessionId];
   return projection ? { ...current, [sessionId]: { ...projection, error } } : current;
+}
+
+function createRunningTimer(startedAt: number): SessionTimerState {
+  return { startedAt, endedAt: null, durationMs: null };
+}
+
+function finishTimerState(timer: SessionTimerState, endedAt: number): SessionTimerState {
+  if (timer.startedAt === null || timer.endedAt !== null) return timer;
+  return {
+    startedAt: timer.startedAt,
+    endedAt,
+    durationMs: Math.max(0, endedAt - timer.startedAt),
+  };
+}
+
+function findActiveUserIndex(projection: SessionProjection): number {
+  if (!projection.activeRunUserId) return -1;
+  return projection.messages.findIndex(
+    (message) => message.id === projection.activeRunUserId && message.role === "user",
+  );
+}
+
+function ensureRunningProjectionTimer(
+  projection: SessionProjection,
+  startedAt: number,
+): SessionProjection {
+  const restarting = projection.runStartedAt === null || projection.runEndedAt !== null;
+  let activeRunUserId = projection.activeRunUserId;
+  let activeIndex = findActiveUserIndex(projection);
+  let messages = projection.messages;
+
+  // A new agent loop must not reuse the completed user row while the SDK is
+  // still delivering its next user.message event.
+  if (projection.runEndedAt !== null && activeIndex >= 0) {
+    activeRunUserId = null;
+    activeIndex = -1;
+  }
+
+  if (!activeRunUserId && projection.runStartedAt === null) {
+    const lastUserIndex = findLastRole(messages, "user");
+    const lastUser = lastUserIndex >= 0 ? messages[lastUserIndex] : undefined;
+    if (lastUser?.timer && lastUser.timer.endedAt !== null) {
+      activeIndex = -1;
+    } else if (lastUser) {
+      activeRunUserId = lastUser.id;
+      activeIndex = lastUserIndex;
+    }
+  }
+
+  const runStartedAt = restarting ? startedAt : projection.runStartedAt!;
+  if (activeIndex >= 0) {
+    const currentTimer = messages[activeIndex]?.timer;
+    if (
+      !currentTimer ||
+      currentTimer.endedAt !== null ||
+      currentTimer.startedAt !== runStartedAt
+    ) {
+      messages = messages.map((message, index) =>
+        index === activeIndex ? { ...message, timer: createRunningTimer(runStartedAt) } : message,
+      );
+    }
+  }
+
+  return {
+    ...projection,
+    runStartedAt,
+    runEndedAt: null,
+    runDurationMs: null,
+    activeRunUserId,
+    messages,
+  };
+}
+
+function finishPreviousUserTimer(
+  projection: SessionProjection,
+  activeIndex: number,
+  endedAt: number,
+): ChatMessage[] {
+  if (activeIndex < 0) return projection.messages;
+  const previous = projection.messages[activeIndex];
+  if (!previous || previous.role !== "user") return projection.messages;
+  const startedAt = previous.timer?.startedAt ?? projection.runStartedAt;
+  if (startedAt === null || startedAt === undefined) return projection.messages;
+  const timer = finishTimerState(previous.timer ?? createRunningTimer(startedAt), endedAt);
+  return projection.messages.map((message, index) =>
+    index === activeIndex ? { ...message, timer } : message,
+  );
+}
+
+function finishProjectionTimer(
+  projection: SessionProjection,
+  endedAt: number,
+): Pick<SessionProjection, "runStartedAt" | "runEndedAt" | "runDurationMs" | "messages"> {
+  const fields = finishRunTimer(projection, endedAt);
+  let messages = projection.messages;
+  let activeIndex = findActiveUserIndex(projection);
+  if (activeIndex < 0 && projection.runStartedAt !== null) {
+    activeIndex = findLastRole(projection.messages, "user");
+  }
+  if (activeIndex >= 0) {
+    const current = projection.messages[activeIndex];
+    const startedAt = current?.timer?.startedAt ?? fields.runStartedAt;
+    if (current?.role === "user" && startedAt !== null && startedAt !== undefined) {
+      const end = fields.runEndedAt ?? endedAt;
+      const timer = finishTimerState(current.timer ?? createRunningTimer(startedAt), end);
+      messages = projection.messages.map((message, index) =>
+        index === activeIndex ? { ...message, timer } : message,
+      );
+      if (fields.runStartedAt === null) {
+        return {
+          runStartedAt: timer.startedAt,
+          runEndedAt: timer.endedAt,
+          runDurationMs: timer.durationMs,
+          messages,
+        };
+      }
+    }
+  }
+  return { ...fields, messages };
+}
+
+function projectionTimer(projection: SessionProjection): SessionTimerState {
+  const timer: SessionTimerState = {
+    startedAt: projection.runStartedAt,
+    endedAt: projection.runEndedAt,
+    durationMs: projection.runDurationMs,
+  };
+  const activeIndex = findActiveUserIndex(projection);
+  const userTimer = activeIndex >= 0 ? projection.messages[activeIndex]?.timer : undefined;
+  return userTimer &&
+    (timer.startedAt === null || userTimer.startedAt === timer.startedAt) &&
+    (timer.endedAt === null || userTimer.endedAt === timer.endedAt)
+    ? userTimer
+    : timer;
+}
+
+function finishRunTimer(
+  projection: SessionProjection,
+  endedAt: number,
+): Pick<SessionProjection, "runStartedAt" | "runEndedAt" | "runDurationMs"> {
+  if (projection.runStartedAt === null || projection.runEndedAt !== null) {
+    return {
+      runStartedAt: projection.runStartedAt,
+      runEndedAt: projection.runEndedAt,
+      runDurationMs: projection.runDurationMs,
+    };
+  }
+  return {
+    runStartedAt: projection.runStartedAt,
+    runEndedAt: endedAt,
+    runDurationMs: Math.max(0, endedAt - projection.runStartedAt),
+  };
 }
 
 function emptyQueue(): QueuedMessages {

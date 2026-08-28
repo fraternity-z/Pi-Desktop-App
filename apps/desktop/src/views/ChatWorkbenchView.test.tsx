@@ -287,7 +287,7 @@ describe("ChatWorkbenchView", () => {
   });
 
   it("通过项目弹窗创建会话、发送提示并合并流式文本", async () => {
-    render(<ChatWorkbenchView />);
+    const { container } = render(<ChatWorkbenchView />);
     expect(await screen.findByRole("status", { name: "状态正常" })).toBeInTheDocument();
     await addProject("C:\\work");
 
@@ -308,7 +308,13 @@ describe("ChatWorkbenchView", () => {
         agentEvent("tool.started", { toolCallId: "tool-1", toolName: "read_file" }, 1),
       );
     });
-    expect(await screen.findByText("执行中")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(container.querySelector(".timeline-tool-group > details")).toHaveAttribute(
+        "data-status",
+        "running",
+      ),
+    );
+    expect(container.querySelector(".timeline-tool-group-icon .spin")).not.toBeNull();
     act(() => {
       emitAgentEvent?.(agentEvent("thinking.delta", { delta: "分析项目" }, 2));
       emitAgentEvent?.(agentEvent("message.delta", { delta: "完成" }, 3));
@@ -323,10 +329,16 @@ describe("ChatWorkbenchView", () => {
     });
 
     expect(await screen.findByText("完成检查")).toBeInTheDocument();
-    expect(screen.getByText("思考过程")).toBeInTheDocument();
+    expect(screen.queryByText("分析项目")).not.toBeInTheDocument();
+    const readGroup = screen.getByText("已使用 read_file").closest("details");
+    const bashGroup = screen.getByText("已使用 bash").closest("details");
+    expect(readGroup).not.toBeNull();
+    expect(bashGroup).not.toBeNull();
+    fireEvent.click(readGroup!.querySelector("summary")!);
+    fireEvent.click(bashGroup!.querySelector("summary")!);
     expect(screen.getByText("read_file")).toBeInTheDocument();
-    expect(screen.getByText("已完成")).toBeInTheDocument();
-    expect(screen.getByText("失败")).toBeInTheDocument();
+    expect(screen.getAllByText("已完成").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("失败").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
   });
 
@@ -366,7 +378,7 @@ describe("ChatWorkbenchView", () => {
   });
 
   it("流式响应期间可停止任务", async () => {
-    render(<ChatWorkbenchView />);
+    const { container } = render(<ChatWorkbenchView />);
     await screen.findByRole("status", { name: "状态正常" });
     await addProject("C:\\work");
     const composer = await screen.findByLabelText("发送给 Pi 的消息");
@@ -382,7 +394,12 @@ describe("ChatWorkbenchView", () => {
     });
     fireEvent.click(await screen.findByRole("button", { name: "停止" }));
     await waitFor(() => expect(abortAgent).toHaveBeenCalledWith("s-1"));
-    expect(screen.getByText("已停止")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(container.querySelector(".timeline-tool-group > details")).toHaveAttribute(
+        "data-status",
+        "cancelled",
+      ),
+    );
   });
 
   it("流式期间将 Enter 与 Alt+Enter 分别加入引导和后续队列", async () => {
@@ -638,7 +655,7 @@ describe("ChatWorkbenchView", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
 
-    expect(await screen.findAllByText("Pi 正在处理")).not.toHaveLength(0);
+    expect(await screen.findByText("正在思考")).toBeInTheDocument();
     act(() => {
       emitAgentEvent?.(agentEvent("message.completed", { reason: "stop" }, 1));
       emitAgentEvent?.(agentEvent("agent.settled", undefined, 2));

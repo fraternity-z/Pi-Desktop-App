@@ -809,6 +809,7 @@ export function ChatWorkbenchView() {
                     <ConversationTimeline
                       messages={session.messages}
                       streaming={session.phase === "streaming"}
+                      timer={session.timer}
                     />
                     <div ref={messagesEnd} />
                   </>

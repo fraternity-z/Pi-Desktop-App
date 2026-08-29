@@ -56,6 +56,10 @@ pub fn run() {
                     )
                 });
             app.manage(runtime);
+            let warmup_app = app.handle().clone();
+            let _ = tauri::async_runtime::spawn_blocking(move || {
+                warmup_app.state::<BridgeRuntime>().warm_up()
+            });
             app.manage(request_header_store);
             let documents_dir = app
                 .path()

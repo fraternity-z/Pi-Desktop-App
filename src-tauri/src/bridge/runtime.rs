@@ -115,6 +115,11 @@ impl BridgeRuntime {
         }
     }
 
+    pub(crate) fn warm_up(&self) -> RuntimeSnapshot {
+        let _ = self.supervisor();
+        self.snapshot_value()
+    }
+
     pub fn bridge_status(&self) -> &'static str {
         self.snapshot().status
     }
@@ -448,15 +453,17 @@ fn start_bridge(
         event_sink,
         fault_sink,
     )?;
-    if let Err(error) = supervisor.health() {
-        let _ = supervisor.shutdown();
-        return Err(error);
-    }
-    if let Err(error) = supervisor.configure_request_headers(request_header_settings) {
+    if request_headers_need_startup_sync(request_header_settings)
+        && let Err(error) = supervisor.configure_request_headers(request_header_settings)
+    {
         let _ = supervisor.shutdown();
         return Err(error);
     }
     Ok((supervisor, source))
+}
+
+fn request_headers_need_startup_sync(settings: &RequestHeaderSettings) -> bool {
+    settings.enabled
 }
 
 fn canonical_workspace(path: &Path) -> Result<PathBuf, AppError> {
@@ -715,6 +722,34 @@ mod tests {
         let snapshot = runtime.snapshot_value();
         assert_eq!(snapshot.status, "unavailable");
         assert_eq!(snapshot.error.unwrap().code, "BRIDGE_STARTING");
+    }
+
+    #[test]
+    fn warm_up_preserves_a_stable_unavailable_snapshot() {
+        let runtime = BridgeRuntime::unavailable(
+            AppError::new("RUNTIME_NOT_FOUND", "未找到可用运行时"),
+            RequestHeaderSettings::default(),
+        );
+
+        let snapshot = runtime.warm_up();
+
+        assert_eq!(snapshot.status, "unavailable");
+        assert_eq!(snapshot.error.unwrap().code, "RUNTIME_NOT_FOUND");
+    }
+
+    #[test]
+    fn startup_syncs_request_headers_only_when_enabled() {
+        assert!(!request_headers_need_startup_sync(
+            &RequestHeaderSettings::default()
+        ));
+        assert!(!request_headers_need_startup_sync(&RequestHeaderSettings {
+            enabled: false,
+            client: crate::bridge::protocol::RequestHeaderClient::Codex,
+        }));
+        assert!(request_headers_need_startup_sync(&RequestHeaderSettings {
+            enabled: true,
+            client: crate::bridge::protocol::RequestHeaderClient::ClaudeCode,
+        }));
     }
 
     #[test]

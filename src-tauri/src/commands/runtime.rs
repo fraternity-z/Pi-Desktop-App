@@ -1,4 +1,4 @@
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 use crate::{
     bridge::{
@@ -14,10 +14,15 @@ use crate::{
 };
 
 #[tauri::command]
-pub async fn get_runtime_status(
-    runtime: State<'_, BridgeRuntime>,
-) -> Result<RuntimeSnapshot, AppError> {
-    Ok(runtime.snapshot())
+pub async fn get_runtime_status(app: AppHandle) -> Result<RuntimeSnapshot, AppError> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<BridgeRuntime>().snapshot())
+        .await
+        .map_err(|_| {
+            AppError::new(
+                "RUNTIME_STATUS_TASK_FAILED",
+                "检测 Pi 运行时状态时任务异常终止",
+            )
+        })
 }
 
 #[tauri::command]

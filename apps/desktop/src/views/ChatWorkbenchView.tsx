@@ -831,6 +831,7 @@ export function ChatWorkbenchView() {
                   eventConnection={session.eventConnection}
                   models={session.models}
                   configuration={session.configuration}
+                  displayThinkingLevel={session.displayThinkingLevel}
                   configuring={session.configuring}
                   catalogPhase={session.catalogPhase}
                   catalogError={session.catalogError}

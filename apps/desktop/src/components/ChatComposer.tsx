@@ -65,6 +65,7 @@ interface ChatComposerProps {
   eventConnection: AgentEventConnection;
   models: AgentModel[];
   configuration: SessionConfiguration | null;
+  displayThinkingLevel?: ThinkingLevel | null;
   configuring: boolean;
   catalogPhase?: CatalogPhase;
   catalogError?: string | null;
@@ -107,6 +108,7 @@ export function ChatComposer({
   eventConnection,
   models,
   configuration,
+  displayThinkingLevel = null,
   configuring,
   catalogPhase = "idle",
   catalogError = null,
@@ -190,6 +192,7 @@ export function ChatComposer({
     autoReviewSelected,
   );
   const selectedModel = configuration?.model ?? models[0] ?? null;
+  const selectedThinkingLevel = configuration?.thinkingLevel ?? displayThinkingLevel;
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -707,7 +710,7 @@ export function ChatComposer({
                   if (opening && !configuration) void onPrepareConfiguration?.();
                 }}
               >
-                <span>{configuration ? thinkingLevelShortLabel(configuration.thinkingLevel) : "思考"}</span>
+                <span>{selectedThinkingLevel ? thinkingLevelShortLabel(selectedThinkingLevel) : "思考"}</span>
                 <ChevronDown size={13} aria-hidden="true" />
               </button>
               {openMenu === "thinking" && (

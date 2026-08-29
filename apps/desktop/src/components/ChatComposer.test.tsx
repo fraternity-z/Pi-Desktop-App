@@ -164,6 +164,36 @@ describe("ChatComposer", () => {
     expect(screen.getByText("正在读取思考强度")).toBeInTheDocument();
   });
 
+  it("新草稿无需点击即可显示最近确认的思考强度", () => {
+    const onPrepareConfiguration = vi.fn(async () => true);
+    render(
+      <ChatComposer
+        workspaceName="workspace"
+        draft=""
+        phase="ready"
+        eventConnection="ready"
+        models={[]}
+        configuration={null}
+        displayThinkingLevel="max"
+        configuring={false}
+        canSend={false}
+        queuedMessages={{ steering: [], followUp: [] }}
+        queuePaused={false}
+        {...permissionProps}
+        onPrepareConfiguration={onPrepareConfiguration}
+        onDraftChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onThinkingLevelChange={vi.fn()}
+        onSend={vi.fn()}
+        onClearQueue={vi.fn()}
+        onAbort={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "选择思考强度" })).toHaveTextContent("Max");
+    expect(onPrepareConfiguration).not.toHaveBeenCalled();
+  });
+
   it("模型目录异常时显示真实错误并允许重试", () => {
     const onRetryModels = vi.fn();
     render(

@@ -9,7 +9,7 @@ import {
   Square,
   Wrench,
 } from "lucide-react";
-import { Fragment, memo, useEffect, useMemo, useState } from "react";
+import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
   ChatMessage,
@@ -34,6 +34,16 @@ type TimelineTurn = {
   messages: ChatMessage[];
 };
 
+type ThinkingSegment = {
+  id: string;
+  content: string;
+};
+
+const THINKING_CAROUSEL_INTERVAL_MS = 3_000;
+const PENDING_THINKING_SEGMENTS: readonly ThinkingSegment[] = [
+  { id: "thinking:pending", content: "正在思考" },
+];
+
 export const ConversationTimeline = memo(function ConversationTimeline({
   messages,
   streaming,
@@ -55,7 +65,7 @@ export const ConversationTimeline = memo(function ConversationTimeline({
       {turns.map((turn, index) => {
         const isCurrentTurn = streaming && index === turns.length - 1;
         const groups = groupTimelineMessages(turn.messages);
-        const liveThinking = findLiveThinking(turn.messages, isCurrentTurn);
+        const thinkingSegments = findLiveThinkingSegments(turn.messages, isCurrentTurn);
         // The store attaches a timer to each user message. Keep the prop as a
         // compatibility fallback for projections created before per-turn timers.
         const turnTimer = resolveTurnTimer(
@@ -80,7 +90,13 @@ export const ConversationTimeline = memo(function ConversationTimeline({
                 </Fragment>
               );
             })}
-            {isCurrentTurn && <ThinkingInline content={liveThinking?.content || "正在思考"} />}
+            {isCurrentTurn && (
+              <ThinkingInline
+                segments={
+                  thinkingSegments.length > 0 ? thinkingSegments : PENDING_THINKING_SEGMENTS
+                }
+              />
+            )}
           </section>
         );
       })}
@@ -204,10 +220,46 @@ const AssistantMessage = memo(function AssistantMessage({
   );
 });
 
-const ThinkingInline = memo(function ThinkingInline({ content }: { content: string }) {
+const ThinkingInline = memo(function ThinkingInline({
+  segments,
+}: {
+  segments: readonly ThinkingSegment[];
+}) {
+  const [activeIndex, setActiveIndex] = useState(0);
+  const firstSegmentId = segments[0]?.id;
+  const segmentCountRef = useRef(segments.length);
+  const hasMultipleSegments = segments.length > 1;
+  segmentCountRef.current = segments.length;
+
+  useEffect(() => setActiveIndex(0), [firstSegmentId]);
+
+  useEffect(() => {
+    setActiveIndex((current) => (current < segments.length ? current : 0));
+  }, [segments.length]);
+
+  useEffect(() => {
+    if (!hasMultipleSegments) return;
+    const interval = window.setInterval(
+      () => setActiveIndex((current) => (current + 1) % segmentCountRef.current),
+      THINKING_CAROUSEL_INTERVAL_MS,
+    );
+    return () => window.clearInterval(interval);
+  }, [firstSegmentId, hasMultipleSegments]);
+
+  const activeSegment = segments[activeIndex] ?? segments[0];
+  if (!activeSegment) return null;
   return (
-    <div className="timeline-thinking-inline" role="status" aria-live="polite" aria-busy="true">
-      <MarkdownContent className="timeline-thinking-text">{content}</MarkdownContent>
+    <div
+      className="timeline-thinking-inline"
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+      aria-atomic="true"
+      data-thinking-count={segments.length}
+    >
+      <MarkdownContent key={activeSegment.id} className="timeline-thinking-text">
+        {activeSegment.content}
+      </MarkdownContent>
     </div>
   );
 });
@@ -435,15 +487,55 @@ function groupTimelineTurns(messages: ChatMessage[]): TimelineTurn[] {
   return turns;
 }
 
-function findLiveThinking(messages: ChatMessage[], streaming: boolean): ChatMessage | null {
-  if (!streaming) return null;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (!message) continue;
-    if (message.role === "thinking" && message.content.trim()) return message;
-    if (message.role === "user") break;
+function findLiveThinkingSegments(
+  messages: ChatMessage[],
+  streaming: boolean,
+): ThinkingSegment[] {
+  if (!streaming) return [];
+  return messages.flatMap((message) =>
+    message.role === "thinking"
+      ? splitThinkingParagraphs(message.content).map((content, index) => ({
+          id: `${message.id}:${index}`,
+          content,
+        }))
+      : [],
+  );
+}
+
+function splitThinkingParagraphs(content: string): string[] {
+  const normalized = content.replace(/\r\n?/g, "\n").trim();
+  if (!normalized) return [];
+
+  const paragraphs: string[] = [];
+  let lines: string[] = [];
+  let fence: { marker: string; length: number } | null = null;
+
+  function flush() {
+    const paragraph = lines.join("\n").trim();
+    if (paragraph) paragraphs.push(paragraph);
+    lines = [];
   }
-  return null;
+
+  for (const line of normalized.split("\n")) {
+    const fenceMatch = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
+    if (fenceMatch?.[1]) {
+      const token = fenceMatch[1];
+      if (!fence) {
+        fence = { marker: token[0]!, length: token.length };
+      } else if (token[0] === fence.marker && token.length >= fence.length) {
+        fence = null;
+      }
+      lines.push(line);
+      continue;
+    }
+    if (!fence && line.trim() === "") {
+      flush();
+      continue;
+    }
+    lines.push(line);
+  }
+  flush();
+  return paragraphs;
 }
 
 function findTurnCopyTargets(messages: ChatMessage[], streaming: boolean): Map<string, string> {

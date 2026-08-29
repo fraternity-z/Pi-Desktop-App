@@ -107,6 +107,7 @@ export interface ChatSessionState {
   sessions: SessionListItem[];
   models: AgentModel[];
   configuration: SessionConfiguration | null;
+  displayThinkingLevel: ThinkingLevel | null;
   configuring: boolean;
   catalogPhase: CatalogPhase;
   catalogError: string | null;
@@ -168,6 +169,7 @@ export function useChatSession(): ChatSessionState {
   const materializingDrafts = useRef(new Set<string>());
   const draftSequence = useRef(1);
   const restoreAttempted = useRef(false);
+  const lastConfirmedThinkingLevel = useRef<ThinkingLevel | null>(null);
   const loadCatalogsRef = useRef<() => Promise<void>>(async () => undefined);
   const pendingProjectionRender = useRef<(() => void) | null>(null);
 
@@ -746,6 +748,10 @@ export function useChatSession(): ChatSessionState {
   }, []);
 
   const active = activeSessionId ? projections[activeSessionId] : undefined;
+  const activeThinkingLevel = active?.configuration?.thinkingLevel ?? null;
+  useEffect(() => {
+    if (activeThinkingLevel) lastConfirmedThinkingLevel.current = activeThinkingLevel;
+  }, [activeThinkingLevel]);
   const sessions = useMemo(
     () => mergeSessionItems(catalogSessions, Object.values(projections)),
     [catalogSessions, projections],
@@ -754,6 +760,7 @@ export function useChatSession(): ChatSessionState {
   const runningSessionIds = Object.values(projections)
     .filter((projection) => projection.phase === "streaming")
     .map((projection) => projection.sessionId);
+  const displayThinkingLevel = activeThinkingLevel ?? lastConfirmedThinkingLevel.current;
 
   return {
     phase,
@@ -764,6 +771,7 @@ export function useChatSession(): ChatSessionState {
     sessions,
     models,
     configuration: active?.configuration ?? null,
+    displayThinkingLevel,
     configuring: configuringSessionId === active?.sessionId,
     catalogPhase,
     catalogError,

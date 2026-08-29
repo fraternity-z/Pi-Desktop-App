@@ -274,6 +274,32 @@ describe("useChatSession", () => {
     });
   });
 
+  it("新草稿立即沿用最近确认的思考强度且保持按需实体化", async () => {
+    vi.mocked(createAgentSession).mockResolvedValueOnce(
+      agentSession({
+        configuration: {
+          model: { provider: "openai", id: "gpt", name: "GPT", reasoning: true },
+          thinkingLevel: "max",
+          availableThinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+          availableTools,
+          activeToolNames: defaultToolNames,
+          defaultToolNames,
+        },
+      }),
+    );
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:\\work"));
+    await act(() => result.current.prepareConfiguration());
+    expect(result.current.displayThinkingLevel).toBe("max");
+
+    await act(() => result.current.createConversation());
+
+    expect(result.current.configuration).toBeNull();
+    expect(result.current.displayThinkingLevel).toBe("max");
+    expect(createAgentSession).toHaveBeenCalledTimes(1);
+  });
+
   it("将附加路径写入真实提示载荷，但时间线只展示用户正文", async () => {
     const { result } = renderHook(() => useChatSession());
     await waitFor(() => expect(result.current.eventConnection).toBe("ready"));

@@ -82,6 +82,50 @@ describe("ConversationTimeline", () => {
     expect(screen.queryByText("思考过程")).not.toBeInTheDocument();
   });
 
+  it("将多个思考消息和段落合并到单一区域并按顺序循环轮播", () => {
+    vi.useFakeTimers();
+    try {
+      const { container } = render(
+        <ConversationTimeline
+          messages={[
+            { id: "thinking-1", role: "thinking", content: "第一段思考\n\n第二段思考" },
+            {
+              id: "tool",
+              role: "tool",
+              content: "",
+              toolName: "read",
+              toolCallId: "tool-1",
+              status: "completed",
+            },
+            { id: "thinking-2", role: "thinking", content: "第三段思考" },
+          ]}
+          streaming
+        />,
+      );
+
+      const thinkingRegion = container.querySelector(".timeline-thinking-inline");
+      expect(container.querySelectorAll(".timeline-thinking-inline")).toHaveLength(1);
+      expect(container.querySelectorAll(".timeline-thinking-text")).toHaveLength(1);
+      expect(thinkingRegion).toHaveAttribute("data-thinking-count", "3");
+      expect(screen.getByText("第一段思考")).toBeInTheDocument();
+      expect(screen.queryByText("第二段思考")).not.toBeInTheDocument();
+      expect(screen.queryByText("第三段思考")).not.toBeInTheDocument();
+
+      act(() => vi.advanceTimersByTime(3_000));
+      expect(screen.queryByText("第一段思考")).not.toBeInTheDocument();
+      expect(screen.getByText("第二段思考")).toBeInTheDocument();
+
+      act(() => vi.advanceTimersByTime(3_000));
+      expect(screen.getByText("第三段思考")).toBeInTheDocument();
+
+      act(() => vi.advanceTimersByTime(3_000));
+      expect(screen.getByText("第一段思考")).toBeInTheDocument();
+      expect(container.querySelectorAll(".timeline-thinking-text")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("没有思考增量时展示单一流式思考状态", () => {
     render(
       <ConversationTimeline

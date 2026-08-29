@@ -199,11 +199,19 @@ export interface AgentModel {
   reasoning: boolean;
 }
 
+export interface ToolDisplayPayload {
+  text: string;
+  format: "text" | "json";
+  truncated: boolean;
+}
+
 export interface AgentMessageSummary {
   role: "user" | "assistant" | "thinking" | "tool" | "system";
   content: string;
   toolCallId?: string;
   toolName?: string;
+  toolInput?: ToolDisplayPayload;
+  toolOutput?: ToolDisplayPayload;
   isError?: boolean;
   timestamp?: string;
 }
@@ -349,6 +357,13 @@ const MAX_TOOL_CALL_ID_CHARS = 256;
 const MAX_TOOL_NAME_CHARS = 128;
 const MAX_TOOL_DESCRIPTION_CHARS = 1_024;
 const MAX_AVAILABLE_TOOLS = 256;
+const MAX_TOOL_DISPLAY_CHARS = 120_000;
+const MAX_TOOL_DISPLAY_DEPTH = 8;
+const MAX_TOOL_DISPLAY_ENTRIES = 100;
+const REDACTED_TOOL_VALUE = "[REDACTED]";
+const TRUNCATED_TOOL_VALUE = "[TRUNCATED]";
+const SENSITIVE_TOOL_KEY =
+  /^(?:api[-_]?key|token|access[-_]?token|refresh[-_]?token|authorization|cookie|password|passwd|secret|client[-_]?secret|credentials?)$/i;
 
 const DEFAULT_SESSION_FILE_DEPENDENCIES: SessionFileDependencies = {
   realpath,
@@ -1322,7 +1337,7 @@ export class PiSessionRuntime implements SessionRuntime {
     } else if (event.type === "message_end" && isRecord(event.message)) {
       runtimeEvent = projectMessageEnd(session.sessionId, event.message);
     } else if (event.type === "tool_execution_start") {
-      const tool = readToolEvent(event);
+      const tool = readToolEvent(event, "input");
       if (tool) {
         runtimeEvent = {
           sessionId: session.sessionId,
@@ -1331,7 +1346,7 @@ export class PiSessionRuntime implements SessionRuntime {
         };
       }
     } else if (event.type === "tool_execution_end") {
-      const tool = readToolEvent(event);
+      const tool = readToolEvent(event, "output");
       if (tool) {
         runtimeEvent = {
           sessionId: session.sessionId,
@@ -1421,13 +1436,25 @@ function readUserMessage(value: unknown): string {
   return readMessageText(value.content);
 }
 
-function readToolEvent(event: Record<string, unknown>): {
+function readToolEvent(
+  event: Record<string, unknown>,
+  detail: "input" | "output",
+): {
   toolCallId: string;
   toolName: string;
+  input?: ToolDisplayPayload;
+  output?: ToolDisplayPayload;
 } | null {
   const toolCallId = readBoundedText(event.toolCallId, MAX_TOOL_CALL_ID_CHARS);
   const toolName = readBoundedText(event.toolName, MAX_TOOL_NAME_CHARS);
-  return toolCallId && toolName ? { toolCallId, toolName } : null;
+  if (!toolCallId || !toolName) return null;
+  const display =
+    detail === "input"
+      ? projectToolDisplay(event.args ?? event.arguments ?? event.input)
+      : projectToolOutput(event.result ?? event.output);
+  return detail === "input"
+    ? { toolCallId, toolName, ...(display ? { input: display } : {}) }
+    : { toolCallId, toolName, ...(display ? { output: display } : {}) };
 }
 
 function describeQueue(session: PiSessionLike): QueuedMessages {
@@ -1721,22 +1748,54 @@ function toIsoString(value: Date | string): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+interface PendingToolCall {
+  toolName: string;
+  input?: ToolDisplayPayload;
+}
+
 function summarizeMessages(messages: unknown[]): AgentMessageSummary[] {
-  const summaries = messages.flatMap(projectHistoryMessage);
+  const pendingTools = new Map<string, PendingToolCall>();
+  const summaries: AgentMessageSummary[] = [];
+  for (const message of messages) {
+    collectPendingToolCalls(message, pendingTools);
+    summaries.push(...projectHistoryMessage(message, pendingTools));
+  }
 
   const selected: AgentMessageSummary[] = [];
   let characters = 0;
   for (const message of summaries.slice(-MAX_HISTORY_MESSAGES).reverse()) {
-    if (characters + message.content.length > MAX_HISTORY_CHARS) {
+    const messageCharacters =
+      message.content.length +
+      (message.toolInput?.text.length ?? 0) +
+      (message.toolOutput?.text.length ?? 0);
+    if (characters + messageCharacters > MAX_HISTORY_CHARS) {
       break;
     }
-    characters += message.content.length;
+    characters += messageCharacters;
     selected.push(message);
   }
   return selected.reverse();
 }
 
-function projectHistoryMessage(message: unknown): AgentMessageSummary[] {
+function collectPendingToolCalls(
+  message: unknown,
+  pendingTools: Map<string, PendingToolCall>,
+): void {
+  if (!isRecord(message) || message.role !== "assistant" || !Array.isArray(message.content)) return;
+  for (const part of message.content) {
+    if (!isRecord(part) || (part.type !== "toolCall" && part.type !== "tool_use")) continue;
+    const toolCallId = readBoundedText(part.id ?? part.toolCallId, MAX_TOOL_CALL_ID_CHARS);
+    const toolName = readBoundedText(part.name ?? part.toolName, MAX_TOOL_NAME_CHARS);
+    if (!toolCallId || !toolName) continue;
+    const input = projectToolDisplay(part.arguments ?? part.args ?? part.input);
+    pendingTools.set(toolCallId, { toolName, ...(input ? { input } : {}) });
+  }
+}
+
+function projectHistoryMessage(
+  message: unknown,
+  pendingTools: Map<string, PendingToolCall>,
+): AgentMessageSummary[] {
   if (!isRecord(message)) return [];
   const timestamp = readTimestamp(message.timestamp);
   if (message.role === "user") {
@@ -1761,14 +1820,20 @@ function projectHistoryMessage(message: unknown): AgentMessageSummary[] {
   }
   if (message.role === "toolResult") {
     const toolCallId = readBoundedText(message.toolCallId, MAX_TOOL_CALL_ID_CHARS);
-    const toolName = readBoundedText(message.toolName, MAX_TOOL_NAME_CHARS);
+    const pending = toolCallId ? pendingTools.get(toolCallId) : undefined;
+    const toolName =
+      readBoundedText(message.toolName, MAX_TOOL_NAME_CHARS) ?? pending?.toolName ?? null;
     if (!toolCallId || !toolName) return [];
+    pendingTools.delete(toolCallId);
+    const toolOutput = projectToolOutput(message.content ?? message.result ?? message.output);
     return [
       {
         role: "tool",
         content: "",
         toolCallId,
         toolName,
+        ...(pending?.input ? { toolInput: pending.input } : {}),
+        ...(toolOutput ? { toolOutput } : {}),
         isError: message.isError === true,
         ...(timestamp ? { timestamp } : {}),
       },
@@ -1793,6 +1858,133 @@ function readMessageText(content: unknown): string {
     .filter((block) => isRecord(block) && block.type === "text" && typeof block.text === "string")
     .map((block) => String(block.text))
     .join("");
+}
+
+type SanitizedToolValue =
+  | null
+  | boolean
+  | number
+  | string
+  | SanitizedToolValue[]
+  | { [key: string]: SanitizedToolValue };
+
+interface ToolSanitizeState {
+  seen: WeakSet<object>;
+  truncated: boolean;
+}
+
+function projectToolOutput(value: unknown): ToolDisplayPayload | undefined {
+  const displayValue = isRecord(value) && "content" in value ? value.content : value;
+  const content = readToolOutputText(displayValue);
+  if (content) return createToolDisplayPayload(content, "text", false);
+  return projectToolDisplay(displayValue);
+}
+
+function readToolOutputText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .flatMap((block) => {
+      if (!isRecord(block)) return [];
+      if (block.type === "text" && typeof block.text === "string") return [block.text];
+      if (block.type === "image" || block.type === "image_url") return ["[image omitted]"];
+      return [];
+    })
+    .join("");
+}
+
+function projectToolDisplay(value: unknown): ToolDisplayPayload | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string") return createToolDisplayPayload(value, "text", false);
+  const state: ToolSanitizeState = { seen: new WeakSet(), truncated: false };
+  const sanitized = sanitizeToolValue(value, 0, state);
+  if (sanitized === undefined) return undefined;
+  let text: string | undefined;
+  try {
+    text = JSON.stringify(sanitized, null, 2);
+  } catch {
+    return undefined;
+  }
+  return text ? createToolDisplayPayload(text, "json", state.truncated) : undefined;
+}
+
+function sanitizeToolValue(
+  value: unknown,
+  depth: number,
+  state: ToolSanitizeState,
+): SanitizedToolValue | undefined {
+  if (value === null) return null;
+  if (typeof value === "string") return redactInlineSecrets(value);
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : String(value);
+  if (typeof value === "bigint") return String(value);
+  if (typeof value !== "object") return undefined;
+  if (depth >= MAX_TOOL_DISPLAY_DEPTH) {
+    state.truncated = true;
+    return TRUNCATED_TOOL_VALUE;
+  }
+  if (state.seen.has(value)) {
+    state.truncated = true;
+    return "[CIRCULAR]";
+  }
+
+  if (isRecord(value) && (value.type === "image" || value.type === "image_url")) {
+    state.truncated = true;
+    return "[image omitted]";
+  }
+
+  state.seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      if (value.length > MAX_TOOL_DISPLAY_ENTRIES) state.truncated = true;
+      return value.slice(0, MAX_TOOL_DISPLAY_ENTRIES).map((item) => {
+        return sanitizeToolValue(item, depth + 1, state) ?? null;
+      });
+    }
+
+    const entries = Object.entries(value);
+    if (entries.length > MAX_TOOL_DISPLAY_ENTRIES) state.truncated = true;
+    const sanitized: { [key: string]: SanitizedToolValue } = {};
+    for (const [key, item] of entries.slice(0, MAX_TOOL_DISPLAY_ENTRIES)) {
+      if (SENSITIVE_TOOL_KEY.test(key)) {
+        sanitized[key] = REDACTED_TOOL_VALUE;
+        continue;
+      }
+      const projected = sanitizeToolValue(item, depth + 1, state);
+      if (projected !== undefined) sanitized[key] = projected;
+    }
+    return sanitized;
+  } finally {
+    state.seen.delete(value);
+  }
+}
+
+function createToolDisplayPayload(
+  value: string,
+  format: ToolDisplayPayload["format"],
+  structurallyTruncated: boolean,
+): ToolDisplayPayload | undefined {
+  const redacted = redactInlineSecrets(value);
+  if (!redacted.trim()) return undefined;
+  const truncated = redacted.length > MAX_TOOL_DISPLAY_CHARS;
+  return {
+    text: truncated ? redacted.slice(0, MAX_TOOL_DISPLAY_CHARS) : redacted,
+    format,
+    truncated: structurallyTruncated || truncated,
+  };
+}
+
+function redactInlineSecrets(value: string): string {
+  return value
+    .replace(
+      /\b(authorization)(\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\r\n,;]+)/gi,
+      (_match, label: string, separator: string) => `${label}${separator}${REDACTED_TOOL_VALUE}`,
+    )
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
+    .replace(
+      /\b(api[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|client[-_ ]?secret|password|passwd|credentials?|cookie|secret|token)(\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)/gi,
+      (_match, label: string, separator: string) => `${label}${separator}${REDACTED_TOOL_VALUE}`,
+    );
 }
 
 function clipText(value: unknown, maximumLength: number): string {

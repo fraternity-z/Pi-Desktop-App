@@ -24,6 +24,7 @@ import {
   type QueuedMessages,
   type SessionConfiguration,
   type ThinkingLevel,
+  type ToolDisplayPayload,
   isThinkingLevel,
 } from "../ipc/agent";
 import {
@@ -52,6 +53,8 @@ export interface ChatMessage {
   optimistic?: boolean;
   toolCallId?: string;
   toolName?: string;
+  toolInput?: ToolDisplayPayload;
+  toolOutput?: ToolDisplayPayload;
   status?: TimelineStatus;
 }
 
@@ -807,17 +810,23 @@ function projectionFromSession(
   lifecycle: Exclude<SessionLifecycle, "draft">,
   replaced?: SessionProjection,
 ): SessionProjection {
-  let messages = session.messages.map<ChatMessage>((message) => ({
-    id: nextId(session.sessionId),
-    role: message.role,
-    content: message.role === "user" ? displayPromptContent(message.content) : message.content,
-    ...(message.timestamp ? { timestamp: message.timestamp } : {}),
-    ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
-    ...(message.toolName ? { toolName: message.toolName } : {}),
-    ...(message.role === "tool"
-      ? { status: message.isError ? ("failed" as const) : ("completed" as const) }
-      : {}),
-  }));
+  let messages = session.messages.map<ChatMessage>((message) => {
+    const toolInput = readToolDisplayPayload(message.toolInput);
+    const toolOutput = readToolDisplayPayload(message.toolOutput);
+    return {
+      id: nextId(session.sessionId),
+      role: message.role,
+      content: message.role === "user" ? displayPromptContent(message.content) : message.content,
+      ...(message.timestamp ? { timestamp: message.timestamp } : {}),
+      ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
+      ...(message.toolName ? { toolName: message.toolName } : {}),
+      ...(toolInput ? { toolInput } : {}),
+      ...(toolOutput ? { toolOutput } : {}),
+      ...(message.role === "tool"
+        ? { status: message.isError ? ("failed" as const) : ("completed" as const) }
+        : {}),
+    };
+  });
   const restoredStartedAt = replaced?.runStartedAt ?? (session.streaming ? Date.now() : null);
   let activeRunUserId = replaced?.activeRunUserId ?? null;
   if (session.streaming) {
@@ -1056,7 +1065,7 @@ function applyAgentEvent(
   }
   if (event.name.startsWith("tool.")) {
     if (projection.phase !== "streaming") return projection;
-    const tool = readToolEvent(event.data);
+    const tool = readToolEvent(event.data, event.name);
     if (!tool) return projection;
     const status: TimelineStatus =
       event.name === "tool.started"
@@ -1111,7 +1120,12 @@ function appendTimelineText(
 
 function upsertTimelineTool(
   messages: ChatMessage[],
-  tool: { toolCallId: string; toolName: string },
+  tool: {
+    toolCallId: string;
+    toolName: string;
+    toolInput?: ToolDisplayPayload;
+    toolOutput?: ToolDisplayPayload;
+  },
   status: TimelineStatus,
   nextId: () => string,
 ): ChatMessage[] {
@@ -1127,12 +1141,22 @@ function upsertTimelineTool(
         content: "",
         toolCallId: tool.toolCallId,
         toolName: tool.toolName,
+        ...(tool.toolInput ? { toolInput: tool.toolInput } : {}),
+        ...(tool.toolOutput ? { toolOutput: tool.toolOutput } : {}),
         status,
       },
     ];
   }
   return messages.map((item, index) =>
-    index === existing ? { ...item, toolName: tool.toolName, status } : item,
+    index === existing
+      ? {
+          ...item,
+          toolName: tool.toolName,
+          ...(tool.toolInput ? { toolInput: tool.toolInput } : {}),
+          ...(tool.toolOutput ? { toolOutput: tool.toolOutput } : {}),
+          status,
+        }
+      : item,
   );
 }
 
@@ -1365,11 +1389,47 @@ function readContextUsage(data: unknown): ContextUsage | null {
     : null;
 }
 
-function readToolEvent(data: unknown): { toolCallId: string; toolName: string } | null {
+function readToolEvent(
+  data: unknown,
+  name: AgentEvent["name"],
+): {
+  toolCallId: string;
+  toolName: string;
+  toolInput?: ToolDisplayPayload;
+  toolOutput?: ToolDisplayPayload;
+} | null {
   if (!isRecord(data) || typeof data.toolCallId !== "string" || typeof data.toolName !== "string") {
     return null;
   }
-  return { toolCallId: data.toolCallId, toolName: data.toolName };
+  const detailKey = name === "tool.started" ? "input" : "output";
+  const detail = data[detailKey];
+  const display = detail === undefined ? null : readToolDisplayPayload(detail);
+  if (detail !== undefined && !display) return null;
+  return {
+    toolCallId: data.toolCallId,
+    toolName: data.toolName,
+    ...(display && detailKey === "input" ? { toolInput: display } : {}),
+    ...(display && detailKey === "output" ? { toolOutput: display } : {}),
+  };
+}
+
+function readToolDisplayPayload(value: unknown): ToolDisplayPayload | null {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).length !== 3 ||
+    typeof value.text !== "string" ||
+    !value.text.trim() ||
+    value.text.length > 120_000 ||
+    (value.format !== "text" && value.format !== "json") ||
+    typeof value.truncated !== "boolean"
+  ) {
+    return null;
+  }
+  return {
+    text: value.text,
+    format: value.format,
+    truncated: value.truncated,
+  };
 }
 
 function readEventText(data: unknown, field: "content" | "delta" | "message"): string | null {

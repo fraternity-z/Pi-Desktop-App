@@ -439,6 +439,28 @@ describe("useChatSession", () => {
 
   it("加载 SDK 目录、恢复会话并同步模型与思考强度", async () => {
     vi.mocked(listAgentSessions).mockResolvedValueOnce([savedSummary]);
+    vi.mocked(openAgentSession).mockResolvedValueOnce(
+      agentSession({
+        sessionId: "saved",
+        sessionPath: savedSummary.path,
+        modelFallbackMessage: null,
+        messages: [
+          { role: "user", content: "saved prompt" },
+          {
+            role: "tool",
+            content: "",
+            toolCallId: "tool-1",
+            toolName: "read",
+            toolInput: {
+              text: '{\n  "path": "C:\\\\work\\\\README.md"\n}',
+              format: "json",
+              truncated: false,
+            },
+            toolOutput: { text: "读取完成", format: "text", truncated: false },
+          },
+        ],
+      }),
+    );
     const { result } = renderHook(() => useChatSession());
     await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
 
@@ -451,6 +473,13 @@ describe("useChatSession", () => {
     expect(result.current.sessionId).toBe("saved");
     expect(result.current.messages).toEqual([
       expect.objectContaining({ role: "user", content: "saved prompt" }),
+      expect.objectContaining({
+        role: "tool",
+        toolCallId: "tool-1",
+        toolInput: expect.objectContaining({ format: "json" }),
+        toolOutput: expect.objectContaining({ text: "读取完成" }),
+        status: "completed",
+      }),
     ]);
 
     await act(() => result.current.updateThinkingLevel("high"));
@@ -527,10 +556,32 @@ describe("useChatSession", () => {
     act(() => {
       emit?.(event("agent.started"));
       emit?.(event("user.message", { content: "stream" }));
-      emit?.(event("tool.started", { toolCallId: "tool-1", toolName: "read" }));
+      emit?.(
+        event("tool.started", {
+          toolCallId: "tool-1",
+          toolName: "read",
+          input: {
+            text: '{\n  "path": "C:\\\\work\\\\README.md"\n}',
+            format: "json",
+            truncated: false,
+          },
+        }),
+      );
       emit?.(event("message.delta", { delta: "A" }));
-      emit?.(event("tool.completed", { toolCallId: "tool-1", toolName: "read" }));
-      emit?.(event("tool.failed", { toolCallId: "tool-2", toolName: "bash" }));
+      emit?.(
+        event("tool.completed", {
+          toolCallId: "tool-1",
+          toolName: "read",
+          output: { text: "读取完成", format: "text", truncated: false },
+        }),
+      );
+      emit?.(
+        event("tool.failed", {
+          toolCallId: "tool-2",
+          toolName: "bash",
+          output: { text: "命令失败", format: "text", truncated: true },
+        }),
+      );
       emit?.(event("agent.settled"));
     });
     await waitFor(() => {
@@ -538,8 +589,19 @@ describe("useChatSession", () => {
       expect(result.current.messages.filter((item) => item.role === "user")).toHaveLength(1);
       expect(result.current.messages.find((item) => item.role === "assistant")?.content).toBe("A");
       expect(result.current.messages.filter((item) => item.role === "tool")).toEqual([
-        expect.objectContaining({ toolCallId: "tool-1", toolName: "read", status: "completed" }),
-        expect.objectContaining({ toolCallId: "tool-2", toolName: "bash", status: "failed" }),
+        expect.objectContaining({
+          toolCallId: "tool-1",
+          toolName: "read",
+          toolInput: expect.objectContaining({ format: "json" }),
+          toolOutput: expect.objectContaining({ text: "读取完成" }),
+          status: "completed",
+        }),
+        expect.objectContaining({
+          toolCallId: "tool-2",
+          toolName: "bash",
+          toolOutput: expect.objectContaining({ text: "命令失败", truncated: true }),
+          status: "failed",
+        }),
       ]);
     });
 

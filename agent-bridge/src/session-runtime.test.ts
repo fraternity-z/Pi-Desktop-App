@@ -290,20 +290,20 @@ describe("PiSessionRuntime", () => {
       type: "tool_execution_start",
       toolCallId: "tool-1",
       toolName: "read",
-      args: { path: "C:\\secret" },
+      args: { path: "C:\\work\\README.md", token: "sk-live-token" },
     });
     sessionMock.emit({
       type: "tool_execution_end",
       toolCallId: "tool-1",
       toolName: "read",
-      result: { content: "secret result" },
+      result: { content: "read ok\nAuthorization: Bearer live-secret\ntoken=plain-secret" },
       isError: false,
     });
     sessionMock.emit({
       type: "tool_execution_end",
       toolCallId: "tool-2",
       toolName: "bash",
-      result: { content: "secret error" },
+      result: { content: "failed with apiKey=failed-secret" },
       isError: true,
     });
     sessionMock.emit({ type: "tool_execution_start" });
@@ -320,21 +320,48 @@ describe("PiSessionRuntime", () => {
       {
         sessionId: "s-1",
         name: "tool.started",
-        data: { toolCallId: "tool-1", toolName: "read" },
+        data: {
+          toolCallId: "tool-1",
+          toolName: "read",
+          input: {
+            text: '{\n  "path": "C:\\\\work\\\\README.md",\n  "token": "[REDACTED]"\n}',
+            format: "json",
+            truncated: false,
+          },
+        },
       },
       {
         sessionId: "s-1",
         name: "tool.completed",
-        data: { toolCallId: "tool-1", toolName: "read" },
+        data: {
+          toolCallId: "tool-1",
+          toolName: "read",
+          output: {
+            text: "read ok\nAuthorization: [REDACTED]\ntoken=[REDACTED]",
+            format: "text",
+            truncated: false,
+          },
+        },
       },
       {
         sessionId: "s-1",
         name: "tool.failed",
-        data: { toolCallId: "tool-2", toolName: "bash" },
+        data: {
+          toolCallId: "tool-2",
+          toolName: "bash",
+          output: {
+            text: "failed with apiKey=[REDACTED]",
+            format: "text",
+            truncated: false,
+          },
+        },
       },
       { sessionId: "s-1", name: "agent.settled" },
     ]);
-    expect(JSON.stringify(events)).not.toContain("secret");
+    expect(JSON.stringify(events)).not.toContain("sk-live-token");
+    expect(JSON.stringify(events)).not.toContain("live-secret");
+    expect(JSON.stringify(events)).not.toContain("plain-secret");
+    expect(JSON.stringify(events)).not.toContain("failed-secret");
   });
 
   it("能力 API 缺失时按模型 map 计算完整、部分和不支持档位", async () => {
@@ -973,6 +1000,12 @@ describe("PiSessionRuntime", () => {
           content: [
             { type: "thinking", text: "reasoning" },
             { type: "text", text: "done" },
+            {
+              type: "toolCall",
+              id: "tool-1",
+              name: "read",
+              arguments: { path: "C:\\work\\README.md", apiKey: "sk-history-token" },
+            },
           ],
         },
         {
@@ -988,7 +1021,8 @@ describe("PiSessionRuntime", () => {
     const runtime = new PiSessionRuntime(sdk, "C:\\agent");
     await runtime.createSession("C:\\one");
 
-    await expect(runtime.openSession("C:\\agent\\sessions\\work\\saved.jsonl")).resolves.toEqual(
+    const restored = await runtime.openSession("C:\\agent\\sessions\\work\\saved.jsonl");
+    expect(restored).toEqual(
       expect.objectContaining({
         sessionId: "opened",
         cwd: "C:\\work",
@@ -1002,11 +1036,22 @@ describe("PiSessionRuntime", () => {
             content: "",
             toolCallId: "tool-1",
             toolName: "read",
+            toolInput: {
+              text: '{\n  "path": "C:\\\\work\\\\README.md",\n  "apiKey": "[REDACTED]"\n}',
+              format: "json",
+              truncated: false,
+            },
+            toolOutput: {
+              text: "sensitive output",
+              format: "text",
+              truncated: false,
+            },
             isError: false,
           },
         ],
       }),
     );
+    expect(JSON.stringify(restored)).not.toContain("sk-history-token");
     expect(first.unsubscribe).not.toHaveBeenCalled();
     expect(first.dispose).not.toHaveBeenCalled();
     await expect(runtime.openSession("C:\\agent\\sessions\\work\\saved.jsonl")).resolves.toEqual(

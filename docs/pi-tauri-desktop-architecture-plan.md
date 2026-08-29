@@ -301,7 +301,8 @@ Renderer 不应获得启动任意进程的权限。
 事件：
 
     {"v":1,"kind":"event","seq":101,"sessionId":"s1","name":"message.delta","data":{"delta":"正在分析"}}
-    {"v":1,"kind":"event","seq":102,"sessionId":"s1","name":"tool.started","data":{"toolCallId":"tool-1","toolName":"read_file"}}
+    {"v":1,"kind":"event","seq":102,"sessionId":"s1","name":"tool.started","data":{"toolCallId":"tool-1","toolName":"read_file","input":{"text":"{\n  \"path\": \"C:\\\\work\\\\README.md\"\n}","format":"json","truncated":false}}}
+    {"v":1,"kind":"event","seq":103,"sessionId":"s1","name":"tool.completed","data":{"toolCallId":"tool-1","toolName":"read_file","output":{"text":"# Project","format":"text","truncated":false}}}
 
 响应：
 
@@ -320,8 +321,11 @@ Bridge 先通过官方 Pi SDK 的会话清单解析 ID，再校验目标是 `~/.
 `finalSeq` 仅表示 Bridge 写出响应时已经发出的事件高水位，用于协议兼容和诊断，
 不表示该 prompt 的事件已经全部到达。RPC 响应与事件流是两个独立通道；Renderer
 必须继续接收响应后到达的事件，并且只在收到 `agent.settled`、prompt 失败或成功
-中止后结束流式状态。工具事件只传 `toolCallId`、`toolName` 和事件名表达的状态，
-不传工具参数或执行结果。
+中止后结束流式状态。工具事件始终传 `toolCallId`、`toolName`，并可附带经过
+Bridge 脱敏和截断的展示载荷：`tool.started.data.input` 表示调用参数，
+`tool.completed.data.output` 或 `tool.failed.data.output` 表示执行结果。展示载荷固定包含
+`text`、`format` 和 `truncated`，不得透传任意 SDK 对象、二进制内容或无限制 Base64。
+该变更在协议版本 1 内保持向后兼容；Rust 和 Renderer 必须继续接受仅含 ID 与名称的旧事件。
 
 协议必须定义：
 

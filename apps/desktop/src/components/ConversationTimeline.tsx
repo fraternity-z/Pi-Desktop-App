@@ -39,6 +39,8 @@ type ThinkingSegment = {
   content: string;
 };
 
+type ToolDisplayValue = NonNullable<ChatMessage["toolInput"]>;
+
 const THINKING_CAROUSEL_INTERVAL_MS = 3_000;
 const PENDING_THINKING_SEGMENTS: readonly ThinkingSegment[] = [
   { id: "thinking:pending", content: "正在思考" },
@@ -336,16 +338,28 @@ const ToolGroup = memo(function ToolGroup({ messages }: { messages: ChatMessage[
 function ToolDetailRow({ message }: { message: ChatMessage }) {
   const status = message.status ?? "pending";
   const [open, setOpen] = useState(false);
-  const hasDetails = Boolean(message.toolCallId || message.content);
+  const legacyOutput = message.content.trim()
+    ? ({ text: message.content, format: "text", truncated: false } satisfies ToolDisplayValue)
+    : undefined;
+  const output = message.toolOutput ?? legacyOutput;
+  const hasDetails = Boolean(message.toolInput || output);
+  const inputSummary = toolDisplaySummary(message.toolInput);
   const summary = (
     <>
       <span className="timeline-tool-icon" aria-hidden="true">
         <ToolIcon status={status} />
       </span>
       <span className="timeline-tool-copy">
-        <strong className="timeline-tool-name" title={message.toolName ?? "tool"}>
-          {message.toolName ?? "tool"}
-        </strong>
+        <span className="timeline-tool-heading">
+          <strong className="timeline-tool-name" title={message.toolName ?? "tool"}>
+            调用 {message.toolName ?? "tool"}
+          </strong>
+          {inputSummary && (
+            <span className="timeline-tool-summary" title={inputSummary}>
+              {inputSummary}
+            </span>
+          )}
+        </span>
         <small className="timeline-tool-status" aria-live="polite">
           {toolStatusLabel(status)}
         </small>
@@ -388,22 +402,102 @@ function ToolDetailRow({ message }: { message: ChatMessage }) {
           role="region"
           aria-label={(message.toolName ?? "tool") + " 调用详情"}
         >
-          {message.content && (
-            <section>
-              <span>执行结果</span>
-              <pre>{message.content}</pre>
-            </section>
-          )}
-          {message.toolCallId && (
-            <section>
-              <span>调用 ID</span>
-              <code>{message.toolCallId}</code>
-            </section>
-          )}
+          {message.toolInput && <ToolPayloadPanel label="调用参数" payload={message.toolInput} />}
+          {output && <ToolPayloadPanel label="执行结果" payload={output} />}
         </div>
       )}
     </details>
   );
+}
+
+function ToolPayloadPanel({ label, payload }: { label: string; payload: ToolDisplayValue }) {
+  const [copied, setCopied] = useState(false);
+
+  async function copyPayload() {
+    try {
+      await navigator.clipboard.writeText(payload.text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1_200);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <section className="timeline-tool-panel" data-format={payload.format}>
+      <header className="timeline-tool-panel-header">
+        <span className="timeline-tool-panel-label">{label}</span>
+        <span className="timeline-tool-panel-actions">
+          {payload.truncated && <small>已截断</small>}
+          <button
+            type="button"
+            className="icon-button timeline-tool-payload-copy"
+            onClick={() => void copyPayload()}
+            aria-label={copied ? label + "已复制" : "复制" + label}
+            title={copied ? "已复制" : "复制" + label}
+          >
+            {copied ? <Check size={13} /> : <Copy size={13} />}
+          </button>
+        </span>
+      </header>
+      <pre>{payload.text}</pre>
+    </section>
+  );
+}
+
+function toolDisplaySummary(payload: ToolDisplayValue | undefined): string | null {
+  if (!payload) return null;
+  if (payload.format === "json") {
+    try {
+      const parsed: unknown = JSON.parse(payload.text);
+      if (isPlainRecord(parsed)) {
+        for (const key of [
+          "path",
+          "filePath",
+          "file_path",
+          "command",
+          "cmd",
+          "query",
+          "pattern",
+          "url",
+          "target",
+        ]) {
+          const value = compactToolValue(parsed[key]);
+          if (value) return truncateToolSummary(value);
+        }
+        for (const [key, rawValue] of Object.entries(parsed)) {
+          const value = compactToolValue(rawValue);
+          if (value) return truncateToolSummary(key + ": " + value);
+        }
+      }
+    } catch {
+      // The protocol marks preferred formatting; malformed JSON still remains displayable as text.
+    }
+  }
+  const firstLine = payload.text.split(/\r?\n/, 1)[0]?.trim();
+  return firstLine ? truncateToolSummary(firstLine) : null;
+}
+
+function compactToolValue(value: unknown): string | null {
+  if (typeof value === "string") return value.trim() || null;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((item) => ["string", "number", "boolean"].includes(typeof item))
+  ) {
+    return value.map(String).join(" ");
+  }
+  return null;
+}
+
+function truncateToolSummary(value: string): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact.length <= 160 ? compact : compact.slice(0, 157) + "...";
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function ToolGroupIcon({

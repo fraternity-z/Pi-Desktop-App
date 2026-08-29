@@ -4,6 +4,7 @@ use crate::error::AppError;
 
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
+pub const MAX_TOOL_DISPLAY_CHARS: usize = 120_000;
 pub const THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -157,6 +158,21 @@ pub struct QueuedMessages {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolDisplayFormat {
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolDisplayPayload {
+    pub text: String,
+    pub format: ToolDisplayFormat,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentMessageSummary {
     pub role: String,
@@ -165,6 +181,10 @@ pub struct AgentMessageSummary {
     pub tool_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_input: Option<ToolDisplayPayload>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_output: Option<ToolDisplayPayload>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -401,7 +421,16 @@ pub fn validate_event(event: &BridgeEvent) -> Result<(), AppError> {
                 .as_ref()
                 .and_then(serde_json::Value::as_object)
                 .ok_or_else(|| invalid_event_data(&event.name))?;
-            if data.len() != 2
+            let detail_key = if event.name == "tool.started" {
+                "input"
+            } else {
+                "output"
+            };
+            let valid_shape = data.len() == 2
+                || (data.len() == 3
+                    && data.contains_key(detail_key)
+                    && valid_tool_display_payload(data.get(detail_key)));
+            if !valid_shape
                 || !valid_bounded_text(data.get("toolCallId"), 256)
                 || !valid_bounded_text(data.get("toolName"), 128)
             {
@@ -550,6 +579,15 @@ fn valid_bounded_text(value: Option<&serde_json::Value>, maximum_length: usize) 
     value
         .and_then(serde_json::Value::as_str)
         .is_some_and(|value| !value.trim().is_empty() && value.len() <= maximum_length)
+}
+
+fn valid_tool_display_payload(value: Option<&serde_json::Value>) -> bool {
+    value
+        .and_then(|value| serde_json::from_value::<ToolDisplayPayload>(value.clone()).ok())
+        .is_some_and(|payload| {
+            !payload.text.trim().is_empty()
+                && payload.text.chars().count() <= MAX_TOOL_DISPLAY_CHARS
+        })
 }
 
 fn valid_queue_messages(value: &serde_json::Value) -> bool {
@@ -765,11 +803,23 @@ mod tests {
 
     #[test]
     fn validates_tool_event_contract() {
-        let event: BridgeEvent = serde_json::from_str(
+        let legacy: BridgeEvent = serde_json::from_str(
             r#"{"v":1,"kind":"event","seq":1,"sessionId":"s-1","name":"tool.started","data":{"toolCallId":"tool-1","toolName":"read"}}"#,
         )
         .unwrap();
-        assert_eq!(validate_event(&event), Ok(()));
+        assert_eq!(validate_event(&legacy), Ok(()));
+
+        let started: BridgeEvent = serde_json::from_str(
+            r#"{"v":1,"kind":"event","seq":2,"sessionId":"s-1","name":"tool.started","data":{"toolCallId":"tool-1","toolName":"read","input":{"text":"{\n  \"path\": \"C:\\\\work\\\\README.md\"\n}","format":"json","truncated":false}}}"#,
+        )
+        .unwrap();
+        assert_eq!(validate_event(&started), Ok(()));
+
+        let completed: BridgeEvent = serde_json::from_str(
+            r#"{"v":1,"kind":"event","seq":3,"sessionId":"s-1","name":"tool.completed","data":{"toolCallId":"tool-1","toolName":"read","output":{"text":"read ok","format":"text","truncated":false}}}"#,
+        )
+        .unwrap();
+        assert_eq!(validate_event(&completed), Ok(()));
 
         let invalid: BridgeEvent = serde_json::from_str(
             r#"{"v":1,"kind":"event","seq":1,"sessionId":"s-1","name":"tool.started","data":{"toolCallId":"tool-1","toolName":"read","args":{"path":"secret"}}}"#,
@@ -778,6 +828,43 @@ mod tests {
         assert_eq!(
             validate_event(&invalid)
                 .expect_err("额外工具参数必须失败")
+                .code,
+            "BRIDGE_EVENT_INVALID"
+        );
+
+        for invalid in [
+            r#"{"v":1,"kind":"event","seq":4,"sessionId":"s-1","name":"tool.started","data":{"toolCallId":"tool-1","toolName":"read","output":{"text":"wrong phase","format":"text","truncated":false}}}"#,
+            r#"{"v":1,"kind":"event","seq":5,"sessionId":"s-1","name":"tool.completed","data":{"toolCallId":"tool-1","toolName":"read","output":{"text":"bad shape","format":"text","truncated":false,"raw":true}}}"#,
+            r#"{"v":1,"kind":"event","seq":6,"sessionId":"s-1","name":"tool.completed","data":{"toolCallId":"tool-1","toolName":"read","output":{"text":"bad format","format":"markdown","truncated":false}}}"#,
+        ] {
+            let event: BridgeEvent = serde_json::from_str(invalid).unwrap();
+            assert_eq!(
+                validate_event(&event)
+                    .expect_err("错误的工具展示载荷必须失败")
+                    .code,
+                "BRIDGE_EVENT_INVALID"
+            );
+        }
+
+        let oversized = BridgeEvent {
+            v: 1,
+            kind: "event".to_owned(),
+            seq: 7,
+            session_id: "s-1".to_owned(),
+            name: "tool.completed".to_owned(),
+            data: Some(serde_json::json!({
+                "toolCallId": "tool-1",
+                "toolName": "read",
+                "output": {
+                    "text": "x".repeat(MAX_TOOL_DISPLAY_CHARS + 1),
+                    "format": "text",
+                    "truncated": true
+                }
+            })),
+        };
+        assert_eq!(
+            validate_event(&oversized)
+                .expect_err("超长工具展示载荷必须失败")
                 .code,
             "BRIDGE_EVENT_INVALID"
         );

@@ -26,7 +26,7 @@ use crate::{
 
 const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
-const DEFAULT_PROMPT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const DEFAULT_PROMPT_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const DEFAULT_PACKAGE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const DEFAULT_SESSION_DELETE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -539,14 +539,19 @@ impl BridgeSupervisor {
                     .map_err(|_| AppError::new("BRIDGE_REQUEST_INVALID", "无法序列化工具权限"))?,
             );
         }
-        self.request("prompt", Value::Object(fields), DEFAULT_PROMPT_TIMEOUT)?
-            .and_then(|data| data.get("finalSeq").and_then(Value::as_u64))
-            .ok_or_else(|| {
-                AppError::new(
-                    "BRIDGE_PROMPT_RESPONSE_INVALID",
-                    "Bridge prompt 响应缺少 finalSeq",
-                )
-            })
+        self.request_with_inactivity_timeout(
+            "prompt",
+            Value::Object(fields),
+            session_id,
+            DEFAULT_PROMPT_INACTIVITY_TIMEOUT,
+        )?
+        .and_then(|data| data.get("finalSeq").and_then(Value::as_u64))
+        .ok_or_else(|| {
+            AppError::new(
+                "BRIDGE_PROMPT_RESPONSE_INVALID",
+                "Bridge prompt 响应缺少 finalSeq",
+            )
+        })
     }
 
     pub fn clear_queue(&self, session_id: &str) -> Result<(), AppError> {
@@ -579,7 +584,11 @@ impl BridgeSupervisor {
         drop(closed);
 
         let response = self
-            .request_inner("shutdown", json!({}), self.response_timeout)
+            .request_inner(
+                "shutdown",
+                json!({}),
+                RequestTimeoutPolicy::Fixed(self.response_timeout),
+            )
             .map(|_| ());
         let stopped = self.stop_worker();
         response.and(stopped)
@@ -645,6 +654,32 @@ impl BridgeSupervisor {
         fields: Value,
         timeout: Duration,
     ) -> Result<Option<Value>, AppError> {
+        self.request_with_timeout_policy(operation, fields, RequestTimeoutPolicy::Fixed(timeout))
+    }
+
+    fn request_with_inactivity_timeout(
+        &self,
+        operation: &'static str,
+        fields: Value,
+        session_id: &str,
+        timeout: Duration,
+    ) -> Result<Option<Value>, AppError> {
+        self.request_with_timeout_policy(
+            operation,
+            fields,
+            RequestTimeoutPolicy::Inactivity {
+                timeout,
+                session_id: session_id.to_owned(),
+            },
+        )
+    }
+
+    fn request_with_timeout_policy(
+        &self,
+        operation: &'static str,
+        fields: Value,
+        timeout_policy: RequestTimeoutPolicy,
+    ) -> Result<Option<Value>, AppError> {
         if *self
             .closed
             .lock()
@@ -652,14 +687,14 @@ impl BridgeSupervisor {
         {
             return Err(AppError::new("BRIDGE_CLOSED", "Bridge supervisor 已关闭"));
         }
-        self.request_inner(operation, fields, timeout)
+        self.request_inner(operation, fields, timeout_policy)
     }
 
     fn request_inner(
         &self,
         operation: &'static str,
         fields: Value,
-        timeout: Duration,
+        timeout_policy: RequestTimeoutPolicy,
     ) -> Result<Option<Value>, AppError> {
         let request_id = format!(
             "rust-{}",
@@ -676,21 +711,30 @@ impl BridgeSupervisor {
         frame.extend(fields.clone());
 
         let (reply, receiver) = mpsc::channel();
+        let timeout = timeout_policy.timeout();
+        let renewable = timeout_policy.is_renewable();
         self.commands
             .send(WorkerCommand::Request {
                 id: request_id,
                 operation,
                 frame: Value::Object(frame).to_string(),
                 deadline: Instant::now() + timeout,
+                timeout_policy,
                 reply,
             })
             .map_err(|_| AppError::new("BRIDGE_CLOSED", "Bridge supervisor 已关闭"))?;
 
-        match receiver.recv_timeout(timeout + WORKER_POLL_INTERVAL * 2) {
-            Ok(result) => result,
-            Err(RecvTimeoutError::Timeout) => Err(request_timeout(operation)),
-            Err(RecvTimeoutError::Disconnected) => {
-                Err(AppError::new("BRIDGE_EXITED", "Bridge 请求通道已断开"))
+        if renewable {
+            receiver
+                .recv()
+                .map_err(|_| AppError::new("BRIDGE_EXITED", "Bridge 请求通道已断开"))?
+        } else {
+            match receiver.recv_timeout(timeout + WORKER_POLL_INTERVAL * 2) {
+                Ok(result) => result,
+                Err(RecvTimeoutError::Timeout) => Err(request_timeout(operation)),
+                Err(RecvTimeoutError::Disconnected) => {
+                    Err(AppError::new("BRIDGE_EXITED", "Bridge 请求通道已断开"))
+                }
             }
         }
     }
@@ -729,9 +773,41 @@ impl Drop for BridgeSupervisor {
     }
 }
 
+#[derive(Debug, Clone)]
+enum RequestTimeoutPolicy {
+    Fixed(Duration),
+    Inactivity {
+        timeout: Duration,
+        session_id: String,
+    },
+}
+
+impl RequestTimeoutPolicy {
+    fn timeout(&self) -> Duration {
+        match self {
+            Self::Fixed(timeout) | Self::Inactivity { timeout, .. } => *timeout,
+        }
+    }
+
+    fn is_renewable(&self) -> bool {
+        matches!(self, Self::Inactivity { .. })
+    }
+
+    fn renewal_timeout(&self, event: &BridgeEvent) -> Option<Duration> {
+        match self {
+            Self::Inactivity {
+                timeout,
+                session_id,
+            } if session_id == &event.session_id => Some(*timeout),
+            _ => None,
+        }
+    }
+}
+
 struct PendingRequest {
     operation: &'static str,
     deadline: Instant,
+    timeout_policy: RequestTimeoutPolicy,
     reply: Sender<Result<Option<Value>, AppError>>,
 }
 
@@ -741,6 +817,7 @@ enum WorkerCommand {
         operation: &'static str,
         frame: String,
         deadline: Instant,
+        timeout_policy: RequestTimeoutPolicy,
         reply: Sender<Result<Option<Value>, AppError>>,
     },
     Stop {
@@ -833,6 +910,7 @@ fn handle_worker_command(
             operation,
             frame,
             deadline,
+            timeout_policy,
             reply,
         } => match transport.write_frame(&frame) {
             Ok(()) => {
@@ -841,6 +919,7 @@ fn handle_worker_command(
                     PendingRequest {
                         operation,
                         deadline,
+                        timeout_policy,
                         reply,
                     },
                 );
@@ -880,6 +959,7 @@ fn handle_inbound_frame(
             let event: BridgeEvent = serde_json::from_value(value)
                 .map_err(|_| AppError::new("BRIDGE_EVENT_INVALID", "Bridge event 字段无效"))?;
             accept_event(&event, last_event_sequence)?;
+            renew_inactivity_deadlines(pending, &event, Instant::now());
             event_sink(event);
             Ok(())
         }
@@ -930,6 +1010,21 @@ fn accept_event(event: &BridgeEvent, last_event_sequence: &mut u64) -> Result<()
     }
     *last_event_sequence = event.seq;
     Ok(())
+}
+
+fn renew_inactivity_deadlines(
+    pending: &mut HashMap<String, PendingRequest>,
+    event: &BridgeEvent,
+    now: Instant,
+) -> usize {
+    let mut renewed = 0;
+    for request in pending.values_mut() {
+        if let Some(timeout) = request.timeout_policy.renewal_timeout(event) {
+            request.deadline = now + timeout;
+            renewed += 1;
+        }
+    }
+    renewed
 }
 
 fn accept_response(operation: &str, response: BridgeResponse) -> Result<Option<Value>, AppError> {
@@ -1530,6 +1625,124 @@ mod tests {
 
         assert_eq!(error.code, "BRIDGE_TIMEOUT");
         assert_eq!(*stop_calls.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn renews_prompt_inactivity_deadline_without_a_hard_limit() {
+        let started = Instant::now();
+        let timeout = Duration::from_secs(10 * 60);
+        let original_deadline = started + timeout;
+        let (reply, _receiver) = mpsc::channel();
+        let mut pending = HashMap::from([(
+            "rust-1".to_owned(),
+            PendingRequest {
+                operation: "prompt",
+                deadline: original_deadline,
+                timeout_policy: RequestTimeoutPolicy::Inactivity {
+                    timeout,
+                    session_id: "s-1".to_owned(),
+                },
+                reply,
+            },
+        )]);
+        let event: BridgeEvent = serde_json::from_value(json!({
+            "v": 1,
+            "kind": "event",
+            "seq": 1,
+            "sessionId": "s-1",
+            "name": "agent.started"
+        }))
+        .unwrap();
+
+        let first_activity = started + Duration::from_secs(60 * 60);
+        assert_eq!(
+            renew_inactivity_deadlines(&mut pending, &event, first_activity),
+            1
+        );
+        assert_eq!(pending["rust-1"].deadline, first_activity + timeout);
+
+        let later_activity = started + Duration::from_secs(3 * 60 * 60);
+        assert_eq!(
+            renew_inactivity_deadlines(&mut pending, &event, later_activity),
+            1
+        );
+        assert_eq!(pending["rust-1"].deadline, later_activity + timeout);
+        assert!(pending["rust-1"].deadline > original_deadline);
+    }
+
+    #[test]
+    fn does_not_renew_fixed_or_other_session_deadlines() {
+        let started = Instant::now();
+        let timeout = Duration::from_secs(10 * 60);
+        let fixed_deadline = started + Duration::from_secs(10);
+        let other_session_deadline = started + Duration::from_secs(20);
+        let (fixed_reply, _fixed_receiver) = mpsc::channel();
+        let (other_reply, _other_receiver) = mpsc::channel();
+        let mut pending = HashMap::from([
+            (
+                "rust-1".to_owned(),
+                PendingRequest {
+                    operation: "ping",
+                    deadline: fixed_deadline,
+                    timeout_policy: RequestTimeoutPolicy::Fixed(Duration::from_secs(10)),
+                    reply: fixed_reply,
+                },
+            ),
+            (
+                "rust-2".to_owned(),
+                PendingRequest {
+                    operation: "prompt",
+                    deadline: other_session_deadline,
+                    timeout_policy: RequestTimeoutPolicy::Inactivity {
+                        timeout,
+                        session_id: "s-2".to_owned(),
+                    },
+                    reply: other_reply,
+                },
+            ),
+        ]);
+        let event: BridgeEvent = serde_json::from_value(json!({
+            "v": 1,
+            "kind": "event",
+            "seq": 1,
+            "sessionId": "s-1",
+            "name": "agent.started"
+        }))
+        .unwrap();
+
+        assert_eq!(
+            renew_inactivity_deadlines(
+                &mut pending,
+                &event,
+                started + Duration::from_secs(60 * 60)
+            ),
+            0
+        );
+        assert_eq!(pending["rust-1"].deadline, fixed_deadline);
+        assert_eq!(pending["rust-2"].deadline, other_session_deadline);
+    }
+
+    #[test]
+    fn expires_prompt_after_inactivity_deadline() {
+        let (reply, receiver) = mpsc::channel();
+        let mut pending = HashMap::from([(
+            "rust-1".to_owned(),
+            PendingRequest {
+                operation: "prompt",
+                deadline: Instant::now(),
+                timeout_policy: RequestTimeoutPolicy::Inactivity {
+                    timeout: Duration::from_secs(10 * 60),
+                    session_id: "s-1".to_owned(),
+                },
+                reply,
+            },
+        )]);
+
+        assert!(expire_requests(&mut pending));
+        assert!(pending.is_empty());
+        let error = receiver.recv().unwrap().unwrap_err();
+        assert_eq!(error.code, "BRIDGE_TIMEOUT");
+        assert!(error.message.contains("prompt"));
     }
 
     #[test]

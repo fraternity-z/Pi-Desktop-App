@@ -366,7 +366,7 @@ describe("ChatWorkbenchView", () => {
     expect(bashGroup).not.toBeNull();
     fireEvent.click(readGroup!.querySelector("summary")!);
     fireEvent.click(bashGroup!.querySelector("summary")!);
-    expect(screen.getByText("read_file")).toBeInTheDocument();
+    expect(screen.getByText("调用 read_file")).toBeInTheDocument();
     expect(screen.getAllByText("已完成").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("失败").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();

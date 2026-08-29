@@ -79,11 +79,19 @@ export interface ContextUsage {
   percent: number;
 }
 
+export interface ToolDisplayPayload {
+  text: string;
+  format: "text" | "json";
+  truncated: boolean;
+}
+
 export interface AgentMessageSummary {
   role: "user" | "assistant" | "thinking" | "tool" | "system";
   content: string;
   toolCallId?: string;
   toolName?: string;
+  toolInput?: ToolDisplayPayload;
+  toolOutput?: ToolDisplayPayload;
   isError?: boolean;
   timestamp?: string;
 }
@@ -191,6 +199,7 @@ const MAX_SESSION_ID_CHARS = 128;
 export const MAX_SESSION_DELETE_BATCH = 1024;
 const MAX_TOOL_CALL_ID_CHARS = 256;
 const MAX_TOOL_NAME_CHARS = 128;
+const MAX_TOOL_DISPLAY_CHARS = 120_000;
 const MAX_EVENT_TEXT_CHARS = 1_048_576;
 
 export async function createAgentSession(cwd: string): Promise<AgentSession> {
@@ -377,9 +386,14 @@ function hasValidEventData(name: AgentEventName, data: unknown): boolean {
     );
   }
   if (name.startsWith("tool.")) {
+    if (!isRecord(data)) return false;
+    const detailKey = name === "tool.started" ? "input" : "output";
+    const keys = Object.keys(data);
     return (
-      isRecord(data) &&
-      Object.keys(data).length === 2 &&
+      (keys.length === 2 ||
+        (keys.length === 3 &&
+          detailKey in data &&
+          isToolDisplayPayload(data[detailKey]))) &&
       isBoundedText(data.toolCallId, MAX_TOOL_CALL_ID_CHARS) &&
       isBoundedText(data.toolName, MAX_TOOL_NAME_CHARS)
     );
@@ -465,6 +479,16 @@ function isToolNameList(value: unknown): value is string[] {
     names.add(name);
   }
   return true;
+}
+
+function isToolDisplayPayload(value: unknown): value is ToolDisplayPayload {
+  return (
+    isRecord(value) &&
+    Object.keys(value).length === 3 &&
+    isBoundedText(value.text, MAX_TOOL_DISPLAY_CHARS) &&
+    (value.format === "text" || value.format === "json") &&
+    typeof value.truncated === "boolean"
+  );
 }
 
 function isQueuedMessageList(value: unknown): value is string[] {

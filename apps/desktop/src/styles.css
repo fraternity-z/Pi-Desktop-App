@@ -2196,19 +2196,40 @@ body {
   display: inline-flex;
   min-width: 0;
   flex: 1 1 auto;
-  align-items: baseline;
-  gap: 5px;
+  align-items: center;
+  gap: 8px;
   overflow: hidden;
   line-height: 20px;
 }
 
+.timeline-tool-heading {
+  display: inline-flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: 7px;
+  overflow: hidden;
+}
+
 .timeline-tool-name {
   min-width: 0;
+  flex: 0 1 auto;
   overflow: hidden;
   color: var(--muted);
   font-family: inherit;
   font-size: 12.5px;
   font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-tool-summary {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: var(--subtle);
+  font-family: var(--app-code-font);
+  font-size: 11.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2226,47 +2247,77 @@ body {
 
 .timeline-tool-details {
   display: grid;
-  max-height: min(320px, 45vh);
   gap: 8px;
-  overflow: auto;
   margin: 4px 0 7px 20px;
+}
+
+.timeline-tool-panel {
+  min-width: 0;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--surface-subtle);
-  padding: 8px 10px;
-  overscroll-behavior: contain;
-  scrollbar-color: var(--scrollbar) transparent;
-  scrollbar-gutter: stable;
 }
 
-.timeline-tool-details section {
-  display: grid;
+.timeline-tool-panel-header {
+  display: flex;
   min-width: 0;
-  gap: 5px;
+  min-height: 30px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 5px 3px 10px;
+  border-bottom: 1px solid var(--line);
 }
 
-.timeline-tool-details section > span {
+.timeline-tool-panel-label {
   color: var(--subtle);
   font-size: 10.5px;
   font-weight: 600;
 }
 
-.timeline-tool-details pre,
-.timeline-tool-details code {
+.timeline-tool-panel-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+}
+
+.timeline-tool-panel-actions small {
+  color: var(--subtle);
+  font-size: 10px;
+}
+
+.timeline-tool-payload-copy {
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  color: var(--subtle);
+}
+
+.timeline-tool-payload-copy:not(:disabled):hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.timeline-tool-panel pre {
   max-width: 100%;
+  max-height: min(280px, 38vh);
   margin: 0;
   overflow: auto;
   border: 0;
   border-radius: 0;
   background: transparent;
-  padding: 0;
+  padding: 9px 10px 10px;
   color: var(--code-text);
   font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
   font-size: 11.5px;
   line-height: 1.55;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  white-space: pre-wrap;
+  overscroll-behavior: contain;
+  scrollbar-color: var(--scrollbar) transparent;
+  scrollbar-gutter: stable;
+  white-space: pre;
 }
 
 .timeline-tool-pending,
@@ -2896,11 +2947,10 @@ body {
 
   .timeline-tool-details {
     margin-left: 18px;
-    padding: 8px 10px;
   }
 
-  .timeline-tool-details {
-    max-height: min(280px, 42vh);
+  .timeline-tool-panel pre {
+    max-height: min(240px, 36vh);
   }
 
   .composer-dock {
@@ -2966,7 +3016,8 @@ body {
 @media (hover: none) {
   .project-remove,
   .message-copy-button,
-  .markdown-code-copy {
+  .markdown-code-copy,
+  .timeline-tool-payload-copy {
     opacity: 0.7;
     pointer-events: auto;
   }
@@ -6806,7 +6857,7 @@ body,
 .markdown-content code,
 .markdown-code-block,
 .timeline-tool > summary:focus-visible,
-.timeline-tool-details,
+.timeline-tool-panel,
 .timeline-system-error,
 .composer-queue-card,
 .composer-queue-toolbar button,

@@ -235,6 +235,91 @@ describe("agent IPC", () => {
     ).toBeNull();
   });
 
+  it("兼容旧工具事件并校验可展示的调用参数与执行结果", () => {
+    const base = {
+      v: 1,
+      kind: "event",
+      sessionId: "s-1",
+    } as const;
+    expect(
+      parseAgentEvent({
+        ...base,
+        seq: 1,
+        name: "tool.started",
+        data: {
+          toolCallId: "tool-1",
+          toolName: "read",
+          input: {
+            text: '{\n  "path": "C:\\\\work\\\\README.md"\n}',
+            format: "json",
+            truncated: false,
+          },
+        },
+      }),
+    ).toEqual(expect.objectContaining({ name: "tool.started" }));
+    expect(
+      parseAgentEvent({
+        ...base,
+        seq: 2,
+        name: "tool.completed",
+        data: {
+          toolCallId: "tool-1",
+          toolName: "read",
+          output: { text: "读取完成", format: "text", truncated: false },
+        },
+      }),
+    ).toEqual(expect.objectContaining({ name: "tool.completed" }));
+    expect(
+      parseAgentEvent({
+        ...base,
+        seq: 3,
+        name: "tool.completed",
+        data: { toolCallId: "tool-1", toolName: "read" },
+      }),
+    ).toEqual(expect.objectContaining({ name: "tool.completed" }));
+
+    for (const [seq, name, data] of [
+      [
+        4,
+        "tool.started",
+        {
+          toolCallId: "tool-1",
+          toolName: "read",
+          output: { text: "阶段错误", format: "text", truncated: false },
+        },
+      ],
+      [
+        5,
+        "tool.completed",
+        {
+          toolCallId: "tool-1",
+          toolName: "read",
+          output: { text: "格式错误", format: "markdown", truncated: false },
+        },
+      ],
+      [
+        6,
+        "tool.completed",
+        {
+          toolCallId: "tool-1",
+          toolName: "read",
+          output: { text: "字段错误", format: "text", truncated: false, raw: true },
+        },
+      ],
+      [
+        7,
+        "tool.completed",
+        {
+          toolCallId: "tool-1",
+          toolName: "read",
+          output: { text: "x".repeat(120_001), format: "text", truncated: true },
+        },
+      ],
+    ] as const) {
+      expect(parseAgentEvent({ ...base, seq, name, data })).toBeNull();
+    }
+  });
+
   it("接受合法文本、空数据、会话配置和上下文事件", () => {
     expect(
       parseAgentEvent({

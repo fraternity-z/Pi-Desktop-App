@@ -147,7 +147,12 @@ describe("ConversationTimeline", () => {
     );
   });
 
-  it("工具状态更新复用同一节点并保留展开状态", () => {
+  it("工具状态更新复用同一节点、保留展开状态并展示可复制的参数与结果", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
     const { container, rerender } = render(
       <ConversationTimeline
         messages={[
@@ -157,6 +162,11 @@ describe("ConversationTimeline", () => {
             content: "",
             toolName: "read",
             toolCallId: "tool-1",
+            toolInput: {
+              text: '{\n  "path": "C:\\\\work\\\\README.md"\n}',
+              format: "json",
+              truncated: false,
+            },
             status: "running",
           },
         ]}
@@ -178,9 +188,19 @@ describe("ConversationTimeline", () => {
           {
             id: "tool",
             role: "tool",
-            content: "读取完成",
+            content: "",
             toolName: "read",
             toolCallId: "tool-1",
+            toolInput: {
+              text: '{\n  "path": "C:\\\\work\\\\README.md"\n}',
+              format: "json",
+              truncated: false,
+            },
+            toolOutput: {
+              text: "读取完成",
+              format: "text",
+              truncated: true,
+            },
             status: "completed",
           },
           {
@@ -203,9 +223,15 @@ describe("ConversationTimeline", () => {
     expect(updatedTool).toHaveAttribute("open");
     expect(updatedTool).toHaveAttribute("aria-busy", "false");
     expect(screen.getByRole("region", { name: "read 调用详情" })).toBeInTheDocument();
+    expect(screen.getByText("调用参数")).toBeInTheDocument();
+    expect(screen.getByText("执行结果")).toBeInTheDocument();
+    expect(screen.getByText("C:\\work\\README.md")).toBeInTheDocument();
     expect(screen.getByText("读取完成")).toBeInTheDocument();
-    expect(screen.getByText("tool-1")).toBeInTheDocument();
+    expect(screen.getByText("已截断")).toBeInTheDocument();
+    expect(screen.queryByText("tool-1")).not.toBeInTheDocument();
     expect(screen.getByText("已完成")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "复制执行结果" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("读取完成"));
   });
 
   it("思考内容复用 Markdown 渲染并隐藏原始强调标记", () => {

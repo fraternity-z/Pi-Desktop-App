@@ -1006,24 +1006,24 @@ function formatError(error: unknown): string {
 
 function thinkingLevelShortLabel(level: ThinkingLevel): string {
   return {
-    off: "关闭",
-    minimal: "极简",
-    low: "低",
-    medium: "中",
-    high: "高",
-    xhigh: "强化",
-    max: "最大",
+    off: "Off",
+    minimal: "Minimal",
+    low: "Low",
+    medium: "Medium",
+    high: "High",
+    xhigh: "XHigh",
+    max: "Max",
   }[level];
 }
 
 function thinkingLevelLabel(level: ThinkingLevel): string {
   return {
-    off: "关闭思考",
-    minimal: "极简思考",
-    low: "轻度思考",
-    medium: "标准思考",
-    high: "深度思考",
-    xhigh: "强化思考",
-    max: "最大思考",
+    off: "Off",
+    minimal: "Minimal",
+    low: "Low",
+    medium: "Medium",
+    high: "High",
+    xhigh: "XHigh",
+    max: "Max",
   }[level];
 }

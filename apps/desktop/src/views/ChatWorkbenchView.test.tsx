@@ -58,6 +58,21 @@ import { ChatWorkbenchView } from "./ChatWorkbenchView";
 
 vi.mock("../ipc/agent", () => ({
   abortAgent: vi.fn(),
+  clampThinkingLevel: (requested: unknown, available: string[]) => {
+    const ordered = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+    const normalized = ordered.filter((level) => available.includes(level));
+    if (normalized.includes(String(requested))) return String(requested);
+    const requestedIndex = ordered.indexOf(String(requested));
+    if (requestedIndex >= 0) {
+      for (let index = requestedIndex; index < ordered.length; index += 1) {
+        if (normalized.includes(ordered[index]!)) return ordered[index];
+      }
+      for (let index = requestedIndex - 1; index >= 0; index -= 1) {
+        if (normalized.includes(ordered[index]!)) return ordered[index];
+      }
+    }
+    return normalized[0] ?? "off";
+  },
   checkAgentPackageUpdates: vi.fn(),
   clearAgentQueue: vi.fn(),
   configureAgentSession: vi.fn(),
@@ -69,10 +84,20 @@ vi.mock("../ipc/agent", () => ({
   listAgentResources: vi.fn(),
   listAgentSessions: vi.fn(),
   listenToAgentEvents: vi.fn(),
+  normalizeThinkingLevels: (value: unknown) =>
+    Array.isArray(value)
+      ? ["off", "minimal", "low", "medium", "high", "xhigh", "max"].filter((level) =>
+          value.includes(level),
+        )
+      : [],
   openAgentSession: vi.fn(),
   promptAgent: vi.fn(),
   removeAgentPackage: vi.fn(),
   setAgentPackageEnabled: vi.fn(),
+  THINKING_LEVELS: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+  isThinkingLevel: (value: unknown) =>
+    typeof value === "string" &&
+    ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(value),
   updateAgentPackage: vi.fn(),
 }));
 vi.mock("../ipc/project", () => ({ selectProjectDirectory: vi.fn() }));
@@ -607,7 +632,7 @@ describe("ChatWorkbenchView", () => {
       thinkingLevel: "high",
     });
     fireEvent.click(screen.getByRole("button", { name: "选择思考强度" }));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "深度思考" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "High" }));
     await waitFor(() =>
       expect(configureAgentSession).toHaveBeenCalledWith("saved", { thinkingLevel: "high" }),
     );

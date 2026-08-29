@@ -19,7 +19,7 @@ use crate::{
         AgentModel, AgentSessionSummary, BridgeEvent, BridgeHello, BridgeResponse, CreatedSession,
         DeleteSessionsResult, PROTOCOL_VERSION, PackageScope, PackageSummary, PackageUpdateInfo,
         PromptStreamingBehavior, RequestHeaderSettings, ResourceSummary, SessionConfiguration,
-        parse_hello_frame, validate_event, validate_frame_size,
+        parse_hello_frame, valid_session_configuration, validate_event, validate_frame_size,
     },
     error::AppError,
 };
@@ -203,12 +203,19 @@ impl BridgeSupervisor {
                     "Bridge session.create 响应缺少会话数据",
                 )
             })?;
-        serde_json::from_value(data).map_err(|_| {
+        let session: CreatedSession = serde_json::from_value(data).map_err(|_| {
             AppError::new(
                 "BRIDGE_SESSION_INVALID",
                 "Bridge session.create 响应字段无效",
             )
-        })
+        })?;
+        if !valid_session_configuration(&session.configuration) {
+            return Err(AppError::new(
+                "BRIDGE_SESSION_INVALID",
+                "Bridge session.create 返回了无效的思考强度配置",
+            ));
+        }
+        Ok(session)
     }
 
     pub fn list_sessions(&self) -> Result<Vec<AgentSessionSummary>, AppError> {
@@ -282,9 +289,16 @@ impl BridgeSupervisor {
                     "Bridge session.open 响应缺少会话数据",
                 )
             })?;
-        serde_json::from_value(data).map_err(|_| {
+        let session: CreatedSession = serde_json::from_value(data).map_err(|_| {
             AppError::new("BRIDGE_SESSION_INVALID", "Bridge session.open 响应字段无效")
-        })
+        })?;
+        if !valid_session_configuration(&session.configuration) {
+            return Err(AppError::new(
+                "BRIDGE_SESSION_INVALID",
+                "Bridge session.open 返回了无效的思考强度配置",
+            ));
+        }
+        Ok(session)
     }
 
     pub fn list_models(&self) -> Result<Vec<AgentModel>, AppError> {
@@ -484,12 +498,19 @@ impl BridgeSupervisor {
                     "Bridge session.configure 响应缺少配置数据",
                 )
             })?;
-        serde_json::from_value(data).map_err(|_| {
+        let configuration: SessionConfiguration = serde_json::from_value(data).map_err(|_| {
             AppError::new(
                 "BRIDGE_SESSION_CONFIG_INVALID",
                 "Bridge session.configure 响应字段无效",
             )
-        })
+        })?;
+        if !valid_session_configuration(&configuration) {
+            return Err(AppError::new(
+                "BRIDGE_SESSION_CONFIG_INVALID",
+                "Bridge session.configure 返回了无效的思考强度配置",
+            ));
+        }
+        Ok(configuration)
     }
 
     pub fn prompt(
@@ -1533,15 +1554,16 @@ mod tests {
             Ok(HELLO),
             Ok(r#"{"v":1,"kind":"event","seq":2,"sessionId":"s-1","name":"agent.started"}"#),
         ]);
-        let faults = Arc::new(Mutex::new(Vec::new()));
-        let received_faults = faults.clone();
+        let (fault_sender, fault_receiver) = mpsc::channel();
         let supervisor = BridgeSupervisor::connect_with_sinks(
             Box::new(transport),
             Duration::from_secs(1),
             Duration::from_secs(1),
             Duration::from_secs(1),
             Arc::new(|_| {}),
-            Arc::new(move |error| received_faults.lock().unwrap().push(error)),
+            Arc::new(move |error| {
+                let _ = fault_sender.send(error);
+            }),
         )
         .expect("有效 hello 应连接成功");
 
@@ -1550,9 +1572,10 @@ mod tests {
             .expect_err("非法事件序号必须使 worker 退出");
 
         assert_eq!(error.code, "BRIDGE_EVENT_SEQUENCE_INVALID");
-        let faults = faults.lock().unwrap();
-        assert_eq!(faults.len(), 1);
-        assert_eq!(faults[0].code, "BRIDGE_EVENT_SEQUENCE_INVALID");
+        let fault = fault_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker 故障必须通知 fault sink");
+        assert_eq!(fault.code, "BRIDGE_EVENT_SEQUENCE_INVALID");
     }
 
     #[test]
@@ -1713,7 +1736,7 @@ mod tests {
                 r#"{"v":1,"kind":"response","id":"rust-2","ok":true,"data":[{"id":"saved","path":"C:\\agent\\sessions\\saved.jsonl","cwd":"C:\\work","name":null,"created":"2026-08-20T08:00:00.000Z","modified":"2026-08-20T09:00:00.000Z","messageCount":2,"firstMessage":"hello"}]}"#,
             ),
             Ok(
-                r#"{"v":1,"kind":"response","id":"rust-3","ok":true,"data":{"model":{"provider":"openai","id":"gpt","name":"GPT","reasoning":true},"thinkingLevel":"high","availableThinkingLevels":["off","high"]}}"#,
+                r#"{"v":1,"kind":"response","id":"rust-3","ok":true,"data":{"model":{"provider":"openai","id":"gpt","name":"GPT","reasoning":true},"thinkingLevel":"max","availableThinkingLevels":["off","minimal","low","medium","high","xhigh","max"]}}"#,
             ),
         ]);
         let writes = transport.writes.clone();
@@ -1723,10 +1746,10 @@ mod tests {
         assert_eq!(supervisor.list_sessions().unwrap()[0].id, "saved");
         assert_eq!(
             supervisor
-                .configure_session("s-1", Some(("openai", "gpt")), Some("high"))
+                .configure_session("s-1", Some(("openai", "gpt")), Some("max"))
                 .unwrap()
                 .thinking_level,
-            "high"
+            "max"
         );
 
         let frames: Vec<Value> = writes
@@ -1751,9 +1774,25 @@ mod tests {
                 "op": "session.configure",
                 "sessionId": "s-1",
                 "model": {"provider": "openai", "id": "gpt"},
-                "thinkingLevel": "high"
+                "thinkingLevel": "max"
             })
         );
+    }
+
+    #[test]
+    fn rejects_invalid_thinking_configuration_response() {
+        let transport = MockTransport::new([
+            Ok(HELLO),
+            Ok(
+                r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":{"model":null,"thinkingLevel":"high","availableThinkingLevels":["off"]}}"#,
+            ),
+        ]);
+        let supervisor = connect(transport);
+
+        let error = supervisor
+            .configure_session("s-1", None, Some("high"))
+            .expect_err("响应中的当前档位不在能力集合中必须失败");
+        assert_eq!(error.code, "BRIDGE_SESSION_CONFIG_INVALID");
     }
 
     #[test]

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   abortAgent,
+  clampThinkingLevel,
   clearAgentQueue,
   configureAgentSession,
   createAgentSession,
@@ -9,8 +10,10 @@ import {
   listAgentModels,
   listAgentSessions,
   listenToAgentEvents,
+  normalizeThinkingLevels,
   openAgentSession,
   promptAgent,
+  THINKING_LEVELS,
   type AgentEvent,
   type AgentModel,
   type AgentSession,
@@ -21,6 +24,7 @@ import {
   type QueuedMessages,
   type SessionConfiguration,
   type ThinkingLevel,
+  isThinkingLevel,
 } from "../ipc/agent";
 import {
   ensureConversationWorkspace,
@@ -1354,12 +1358,18 @@ function readEventText(data: unknown, field: "content" | "delta" | "message"): s
 function readConfiguration(data: unknown): SessionConfiguration | null {
   if (
     !isRecord(data) ||
-    !isThinkingLevel(data.thinkingLevel) ||
     !Array.isArray(data.availableThinkingLevels) ||
+    data.availableThinkingLevels.length === 0 ||
+    data.availableThinkingLevels.length > THINKING_LEVELS.length ||
     !data.availableThinkingLevels.every(isThinkingLevel) ||
+    new Set(data.availableThinkingLevels).size !== data.availableThinkingLevels.length ||
     !("model" in data) ||
     !isAgentModel(data.model)
   ) {
+    return null;
+  }
+  const availableThinkingLevels = normalizeThinkingLevels(data.availableThinkingLevels);
+  if (availableThinkingLevels.length === 0 || !isThinkingLevel(data.thinkingLevel)) {
     return null;
   }
   const availableTools = readAgentTools(data.availableTools);
@@ -1378,8 +1388,8 @@ function readConfiguration(data: unknown): SessionConfiguration | null {
   }
   return {
     model: data.model,
-    thinkingLevel: data.thinkingLevel,
-    availableThinkingLevels: data.availableThinkingLevels,
+    thinkingLevel: clampThinkingLevel(data.thinkingLevel, availableThinkingLevels),
+    availableThinkingLevels,
     availableTools,
     activeToolNames: activeToolNames ?? [],
     defaultToolNames: defaultToolNames ?? [],
@@ -1447,13 +1457,6 @@ function emptyConfiguration(): SessionConfiguration {
     activeToolNames: [],
     defaultToolNames: [],
   };
-}
-
-function isThinkingLevel(value: unknown): value is ThinkingLevel {
-  return (
-    typeof value === "string" &&
-    ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(value)
-  );
 }
 
 function isAgentModel(value: unknown): value is AgentModel | null {

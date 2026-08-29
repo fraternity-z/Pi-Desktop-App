@@ -17,11 +17,19 @@ import {
   type RequestHeaderSettings,
 } from "./request-headers.js";
 
+export type ThinkingLevelMap = Partial<Record<ThinkingLevel, string | null>>;
+
 export interface PiModelLike {
   readonly provider: string;
   readonly id: string;
   readonly name?: string;
   readonly reasoning?: boolean;
+  /**
+   * Pi's model-level mapping is intentionally kept at the SDK boundary.
+   * Omitted standard levels use the provider default; xhigh/max need an
+   * explicit mapping, and null means the level is unsupported.
+   */
+  readonly thinkingLevelMap?: ThinkingLevelMap;
 }
 
 export interface PiModelRuntimeLike {
@@ -126,8 +134,8 @@ export interface PiSessionLike {
   subscribe(listener: (event: unknown) => void): () => void;
   abort(): Promise<void>;
   setModel(model: PiModelLike): Promise<void>;
-  setThinkingLevel(level: ThinkingLevel): void;
-  getAvailableThinkingLevels(): ThinkingLevel[];
+  setThinkingLevel?(level: ThinkingLevel): void;
+  getAvailableThinkingLevels?(): readonly ThinkingLevel[];
   getActiveToolNames?(): string[];
   getAllTools?(): PiToolLike[];
   getContextUsage?(): unknown;
@@ -347,6 +355,70 @@ const DEFAULT_SESSION_FILE_DEPENDENCIES: SessionFileDependencies = {
   stat,
   unlink,
 };
+
+/**
+ * Return the levels Pi exposes for a model when the session capability method
+ * is unavailable. This mirrors pi-ai's getSupportedThinkingLevels semantics.
+ */
+export function getSupportedThinkingLevels(
+  model?: Pick<PiModelLike, "reasoning" | "thinkingLevelMap">,
+): ThinkingLevel[] {
+  if (!model) return [...THINKING_LEVELS];
+  try {
+    if (model.reasoning !== true) return ["off"];
+
+    return THINKING_LEVELS.filter((level) => {
+      const mapped = model.thinkingLevelMap?.[level];
+      // A malformed provider map must never advertise a value that the SDK
+      // cannot serialize as a provider effort.
+      if (mapped !== undefined && mapped !== null && typeof mapped !== "string") return false;
+      if (mapped === null) return false;
+      return level !== "xhigh" && level !== "max" ? true : mapped !== undefined;
+    });
+  } catch {
+    return ["off"];
+  }
+}
+
+/**
+ * Normalize SDK capability output to the canonical Pi order. Unknown values,
+ * duplicates and provider-specific strings never cross the desktop boundary.
+ */
+export function normalizeThinkingLevels(value: unknown): ThinkingLevel[] {
+  if (!Array.isArray(value)) return [];
+  const supplied = new Set(value);
+  return THINKING_LEVELS.filter((level) => supplied.has(level));
+}
+
+/**
+ * Match Pi's clampThinkingLevel rule: prefer the requested level, then search
+ * upward, then downward, and finally use the first available level.
+ */
+export function clampThinkingLevel(
+  requested: unknown,
+  available: readonly ThinkingLevel[],
+): ThinkingLevel {
+  const levels = normalizeThinkingLevels(available);
+  if (typeof requested === "string" && levels.includes(requested as ThinkingLevel)) {
+    return requested as ThinkingLevel;
+  }
+
+  const requestedIndex =
+    typeof requested === "string"
+      ? THINKING_LEVELS.indexOf(requested as ThinkingLevel)
+      : -1;
+  if (requestedIndex < 0) return levels[0] ?? "off";
+
+  for (let index = requestedIndex; index < THINKING_LEVELS.length; index += 1) {
+    const candidate = THINKING_LEVELS[index];
+    if (levels.includes(candidate)) return candidate;
+  }
+  for (let index = requestedIndex - 1; index >= 0; index -= 1) {
+    const candidate = THINKING_LEVELS[index];
+    if (levels.includes(candidate)) return candidate;
+  }
+  return levels[0] ?? "off";
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -917,6 +989,7 @@ export class PiSessionRuntime implements SessionRuntime {
       throw new RuntimeError("SESSION_BUSY", "Pi 正在处理任务，暂时无法更改会话配置");
     }
 
+    let modelChanged = false;
     if (update.model) {
       const model = (await this.getModelRuntime()).getModel(update.model.provider, update.model.id);
       if (!model) {
@@ -924,16 +997,44 @@ export class PiSessionRuntime implements SessionRuntime {
       }
       try {
         await managed.session.setModel(model);
+        modelChanged = true;
       } catch {
         throw new RuntimeError("MODEL_UPDATE_FAILED", "无法切换到所选模型");
       }
     }
 
-    if (update.thinkingLevel) {
+    // The SDK clamps internally, but clamp before calling it as well. This
+    // keeps older/custom SDK builds from receiving a level they cannot parse
+    // after a model switch.
+    if (update.thinkingLevel !== undefined || modelChanged) {
+      const availability = resolveThinkingAvailability(managed.session);
+      const current = readSessionThinkingLevel(managed.session);
+      const requested = update.thinkingLevel ?? current;
+      const effective = clampThinkingLevel(requested, availability.levels);
+      const shouldApply = update.thinkingLevel !== undefined || effective !== current;
+
+      let setThinkingLevel: PiSessionLike["setThinkingLevel"];
       try {
-        managed.session.setThinkingLevel(update.thinkingLevel);
+        setThinkingLevel = managed.session.setThinkingLevel;
       } catch {
-        throw new RuntimeError("THINKING_LEVEL_UPDATE_FAILED", "无法更新思考强度");
+        setThinkingLevel = undefined;
+      }
+      if (shouldApply && typeof setThinkingLevel === "function") {
+        try {
+          setThinkingLevel.call(managed.session, effective);
+        } catch {
+          // A capability-less legacy session is allowed to keep its SDK
+          // default. A session that reports capabilities still gets a stable
+          // error so genuine provider failures remain diagnosable.
+          const hasSelectableThinking = availability.levels.some((level) => level !== "off");
+          if (
+            availability.source !== "fallback" &&
+            readModelSupportsThinking(managed.session) &&
+            hasSelectableThinking
+          ) {
+            throw new RuntimeError("THINKING_LEVEL_UPDATE_FAILED", "无法更新思考强度");
+          }
+        }
       }
     }
     return describeConfiguration(managed.session, managed.defaultToolNames);
@@ -1375,19 +1476,118 @@ function describeConfiguration(
   session: PiSessionLike,
   defaultToolNames: string[],
 ): SessionConfiguration {
-  const available = session
-    .getAvailableThinkingLevels()
-    .filter((level): level is ThinkingLevel => THINKING_LEVELS.includes(level));
+  const available = resolveThinkingAvailability(session).levels;
+  const current = readSessionThinkingLevel(session);
+  const model = readSessionModel(session);
   const availableTools = readAvailableTools(session);
   const availableToolNames = new Set(availableTools.map((tool) => tool.name));
   return {
-    model: session.model ? (toAgentModel(session.model)[0] ?? null) : null,
-    thinkingLevel: THINKING_LEVELS.includes(session.thinkingLevel) ? session.thinkingLevel : "off",
-    availableThinkingLevels: available.length > 0 ? available : ["off"],
+    model: model ? (toAgentModel(model)[0] ?? null) : null,
+    thinkingLevel: clampThinkingLevel(current, available),
+    availableThinkingLevels: available,
     availableTools,
     activeToolNames: readActiveToolNames(session).filter((name) => availableToolNames.has(name)),
     defaultToolNames: defaultToolNames.filter((name) => availableToolNames.has(name)),
   };
+}
+
+type ThinkingAvailabilitySource = "sdk" | "model" | "fallback";
+
+interface ThinkingAvailability {
+  levels: ThinkingLevel[];
+  source: ThinkingAvailabilitySource;
+}
+
+function resolveThinkingAvailability(session: PiSessionLike): ThinkingAvailability {
+  let capabilityGetter: PiSessionLike["getAvailableThinkingLevels"];
+  try {
+    capabilityGetter = session.getAvailableThinkingLevels;
+  } catch {
+    capabilityGetter = undefined;
+  }
+  if (typeof capabilityGetter === "function") {
+    try {
+      const candidate = capabilityGetter.call(session);
+      if (isValidThinkingLevelList(candidate)) {
+        return { levels: normalizeThinkingLevels(candidate), source: "sdk" };
+      }
+    } catch {
+      // Fall through to the model metadata. Pi model metadata is the
+      // compatible fallback for SDK versions without the capability method.
+    }
+  }
+
+  let model: PiModelLike | undefined;
+  try {
+    model = session.model;
+  } catch {
+    return { levels: ["off"], source: "fallback" };
+  }
+  try {
+    const derived = getSupportedThinkingLevels(model);
+    if (derived.length > 0) {
+      // Without an SDK capability method, a model that omits its map only
+      // supplies Pi's conservative standard inference. Keep setter failures
+      // non-fatal in that compatibility mode; an explicit map is authoritative.
+      return {
+        levels: derived,
+        source: hasExplicitThinkingLevelMap(model) ? "model" : "fallback",
+      };
+    }
+  } catch {
+    // A malformed model object is treated like an SDK without capability data.
+  }
+  return { levels: ["off"], source: "fallback" };
+}
+
+function isValidThinkingLevelList(value: unknown): value is ThinkingLevel[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > THINKING_LEVELS.length) {
+    return false;
+  }
+  const seen = new Set<ThinkingLevel>();
+  for (const level of value) {
+    if (!isThinkingLevel(level) || seen.has(level)) return false;
+    seen.add(level);
+  }
+  return true;
+}
+
+function isThinkingLevel(value: unknown): value is ThinkingLevel {
+  return typeof value === "string" && THINKING_LEVELS.includes(value as ThinkingLevel);
+}
+
+function readSessionModel(session: PiSessionLike): PiModelLike | undefined {
+  try {
+    return session.model;
+  } catch {
+    return undefined;
+  }
+}
+
+function readSessionThinkingLevel(session: PiSessionLike): ThinkingLevel {
+  try {
+    return isThinkingLevel(session.thinkingLevel) ? session.thinkingLevel : "off";
+  } catch {
+    return "off";
+  }
+}
+
+function readModelSupportsThinking(session: PiSessionLike): boolean {
+  const model = readSessionModel(session);
+  try {
+    return model?.reasoning === true;
+  } catch {
+    return false;
+  }
+}
+
+function hasExplicitThinkingLevelMap(model: PiModelLike | undefined): boolean {
+  try {
+    const map = model?.thinkingLevelMap;
+    return typeof map === "object" && map !== null && !Array.isArray(map);
+  } catch {
+    return false;
+  }
 }
 
 function readAvailableTools(session: PiSessionLike): AgentTool[] {

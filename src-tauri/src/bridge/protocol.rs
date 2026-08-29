@@ -4,6 +4,7 @@ use crate::error::AppError;
 
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
+pub const THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -486,8 +487,7 @@ fn valid_model_value(value: Option<&serde_json::Value>) -> bool {
     })
 }
 
-fn valid_session_configuration(configuration: &SessionConfiguration) -> bool {
-    const THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+pub(crate) fn valid_session_configuration(configuration: &SessionConfiguration) -> bool {
     let model_valid = configuration.model.as_ref().is_none_or(|model| {
         !model.provider.trim().is_empty()
             && model.provider.len() <= 128
@@ -507,13 +507,19 @@ fn valid_session_configuration(configuration: &SessionConfiguration) -> bool {
             .available_tools
             .iter()
             .all(|tool| valid_tool_name(&tool.name) && tool.description.chars().count() <= 1_024);
+    let mut thinking_names = std::collections::HashSet::new();
+    let thinking_levels_valid = !configuration.available_thinking_levels.is_empty()
+        && configuration.available_thinking_levels.len() <= THINKING_LEVELS.len()
+        && configuration.available_thinking_levels.iter().all(|level| {
+            THINKING_LEVELS.contains(&level.as_str()) && thinking_names.insert(level.as_str())
+        });
     model_valid
         && THINKING_LEVELS.contains(&configuration.thinking_level.as_str())
-        && !configuration.available_thinking_levels.is_empty()
+        && thinking_levels_valid
         && configuration
             .available_thinking_levels
             .iter()
-            .all(|level| THINKING_LEVELS.contains(&level.as_str()))
+            .any(|level| level == &configuration.thinking_level)
         && tools_valid
         && valid_tool_selection(&configuration.active_tool_names, &available_names)
         && valid_tool_selection(&configuration.default_tool_names, &available_names)
@@ -861,6 +867,37 @@ mod tests {
         assert_eq!(
             validate_event(&invalid)
                 .expect_err("未知活动工具必须失败")
+                .code,
+            "BRIDGE_EVENT_INVALID"
+        );
+    }
+
+    #[test]
+    fn validates_complete_thinking_levels_and_current_membership() {
+        let full: BridgeEvent = serde_json::from_str(
+            r#"{"v":1,"kind":"event","seq":1,"sessionId":"s-1","name":"session.configurationChanged","data":{"model":null,"thinkingLevel":"max","availableThinkingLevels":["off","minimal","low","medium","high","xhigh","max"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(validate_event(&full), Ok(()));
+
+        let mismatch: BridgeEvent = serde_json::from_str(
+            r#"{"v":1,"kind":"event","seq":1,"sessionId":"s-1","name":"session.configurationChanged","data":{"model":null,"thinkingLevel":"high","availableThinkingLevels":["off"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            validate_event(&mismatch)
+                .expect_err("当前档位不在能力集合中必须失败")
+                .code,
+            "BRIDGE_EVENT_INVALID"
+        );
+
+        let duplicate: BridgeEvent = serde_json::from_str(
+            r#"{"v":1,"kind":"event","seq":1,"sessionId":"s-1","name":"session.configurationChanged","data":{"model":null,"thinkingLevel":"off","availableThinkingLevels":["off","off"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            validate_event(&duplicate)
+                .expect_err("重复的思考档位必须失败")
                 .code,
             "BRIDGE_EVENT_INVALID"
         );

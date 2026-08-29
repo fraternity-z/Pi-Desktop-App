@@ -82,6 +82,16 @@ describe("parseRequest", () => {
       },
     ],
     [
+      '{"v":1,"id":"r-8b","op":"session.configure","sessionId":"s-1","thinkingLevel":"xhigh"}',
+      {
+        v: 1,
+        id: "r-8b",
+        op: "session.configure",
+        sessionId: "s-1",
+        thinkingLevel: "xhigh",
+      },
+    ],
+    [
       JSON.stringify({ v: 1, id: "r-9", op: "package.list", cwd: "C:\\work" }),
       { v: 1, id: "r-9", op: "package.list", cwd: "C:\\work" },
     ],

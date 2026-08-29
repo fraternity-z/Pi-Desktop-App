@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  clampThinkingLevel,
+  getSupportedThinkingLevels,
+  normalizeThinkingLevels,
   PiSessionRuntime,
   RuntimeError,
   type PiModelLike,
@@ -28,6 +31,53 @@ const plainModel: PiModelLike = {
   id: "plain",
   reasoning: false,
 };
+
+describe("Pi thinking levels", () => {
+  it("按 Pi SDK 的 map 语义支持完整档位、空洞和不支持思考的模型", () => {
+    const fullModel: PiModelLike = {
+      provider: "openai",
+      id: "full",
+      reasoning: true,
+      thinkingLevelMap: {
+        off: "off",
+        minimal: "minimal",
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: "xhigh",
+        max: "max",
+      },
+    };
+    const partialModel: PiModelLike = {
+      provider: "openai",
+      id: "partial",
+      reasoning: true,
+      thinkingLevelMap: {
+        minimal: null,
+        low: null,
+        medium: null,
+        high: "high",
+        xhigh: null,
+        max: "max",
+      },
+    };
+
+    expect(getSupportedThinkingLevels(fullModel)).toEqual([
+      "off",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+    expect(getSupportedThinkingLevels(partialModel)).toEqual(["off", "high", "max"]);
+    expect(getSupportedThinkingLevels(plainModel)).toEqual(["off"]);
+    expect(normalizeThinkingLevels(["max", "bogus", "off", "off"])).toEqual(["off", "max"]);
+    expect(clampThinkingLevel("xhigh", ["off", "high", "max"])).toBe("max");
+    expect(clampThinkingLevel("minimal", ["off", "high"])).toBe("high");
+  });
+});
 
 interface SessionMock {
   session: PiSessionLike;
@@ -285,6 +335,161 @@ describe("PiSessionRuntime", () => {
       { sessionId: "s-1", name: "agent.settled" },
     ]);
     expect(JSON.stringify(events)).not.toContain("secret");
+  });
+
+  it("能力 API 缺失时按模型 map 计算完整、部分和不支持档位", async () => {
+    const fullModel: PiModelLike = {
+      provider: "openai",
+      id: "full",
+      reasoning: true,
+      thinkingLevelMap: {
+        off: "off",
+        minimal: "minimal",
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: "xhigh",
+        max: "max",
+      },
+    };
+    const partialModel: PiModelLike = {
+      provider: "openai",
+      id: "partial",
+      reasoning: true,
+      thinkingLevelMap: {
+        minimal: null,
+        low: null,
+        medium: null,
+        high: "high",
+        xhigh: null,
+        max: "max",
+      },
+    };
+    const full = createSessionMock("full", { model: fullModel, thinkingLevel: "max" });
+    const partial = createSessionMock("partial", { model: partialModel, thinkingLevel: "xhigh" });
+    const plain = createSessionMock("plain", { model: plainModel, thinkingLevel: "off" });
+    full.session.getAvailableThinkingLevels = () =>
+      ["low", "low"] as unknown as PiSessionLike["thinkingLevel"][];
+    delete partial.session.getAvailableThinkingLevels;
+    plain.session.getAvailableThinkingLevels = () => {
+      throw new Error("capability probe unavailable");
+    };
+    const sdk = sdkReturning(full, partial, plain);
+    const runtime = new PiSessionRuntime(sdk, "C:\\\\agent");
+
+    await expect(runtime.createSession("C:\\\\full")).resolves.toEqual(
+      expect.objectContaining({
+        configuration: expect.objectContaining({
+          thinkingLevel: "max",
+          availableThinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+        }),
+      }),
+    );
+    await expect(runtime.createSession("C:\\\\partial")).resolves.toEqual(
+      expect.objectContaining({
+        configuration: expect.objectContaining({
+          thinkingLevel: "max",
+          availableThinkingLevels: ["off", "high", "max"],
+        }),
+      }),
+    );
+    await expect(runtime.createSession("C:\\\\plain")).resolves.toEqual(
+      expect.objectContaining({
+        configuration: expect.objectContaining({
+          thinkingLevel: "off",
+          availableThinkingLevels: ["off"],
+        }),
+      }),
+    );
+
+    await expect(runtime.configureSession("plain", { thinkingLevel: "max" })).resolves.toEqual(
+      expect.objectContaining({ thinkingLevel: "off", availableThinkingLevels: ["off"] }),
+    );
+    expect(plain.setThinkingLevel).toHaveBeenCalledWith("off");
+  });
+
+  it("模型切换后重新读取能力并把当前值回退到合法档位", async () => {
+    const broadModel: PiModelLike = {
+      provider: "openai",
+      id: "broad",
+      reasoning: true,
+      thinkingLevelMap: { xhigh: "xhigh", max: "max" },
+    };
+    const narrowModel: PiModelLike = {
+      provider: "openai",
+      id: "narrow",
+      reasoning: true,
+      thinkingLevelMap: {
+        minimal: null,
+        low: null,
+        medium: null,
+        high: "high",
+        xhigh: null,
+        max: null,
+      },
+    };
+    const session = createSessionMock("switch", { model: broadModel, thinkingLevel: "max" });
+    session.session.getAvailableThinkingLevels = () =>
+      getSupportedThinkingLevels(session.session.model);
+    const sdk = sdkReturning(session);
+    sdk.modelRuntime.getModel.mockImplementation((provider: string, id: string) =>
+      [broadModel, narrowModel].find((model) => model.provider === provider && model.id === id),
+    );
+    const runtime = new PiSessionRuntime(sdk, "C:\\\\agent");
+    await runtime.createSession("C:\\\\work");
+    session.setThinkingLevel.mockClear();
+
+    await expect(
+      runtime.configureSession("switch", {
+        model: { provider: "openai", id: "narrow" },
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        thinkingLevel: "high",
+        availableThinkingLevels: ["off", "high"],
+      }),
+    );
+    expect(session.setThinkingLevel).toHaveBeenCalledWith("high");
+
+    session.setThinkingLevel.mockClear();
+    await expect(runtime.configureSession("switch", { thinkingLevel: "xhigh" })).resolves.toEqual(
+      expect.objectContaining({ thinkingLevel: "high", availableThinkingLevels: ["off", "high"] }),
+    );
+    expect(session.setThinkingLevel).toHaveBeenCalledWith("high");
+    expect(session.setThinkingLevel).not.toHaveBeenCalledWith("xhigh");
+  });
+
+  it("仅有 off 能力的兼容会话即使 setter 失败也不阻断请求", async () => {
+    const session = createSessionMock("off-only");
+    session.session.getAvailableThinkingLevels = () => ["off"];
+    session.setThinkingLevel.mockImplementationOnce(() => {
+      throw new Error("legacy setter unavailable");
+    });
+    const runtime = new PiSessionRuntime(sdkReturning(session), "C:\\agent");
+    await runtime.createSession("C:\\work");
+
+    await expect(runtime.configureSession("off-only", { thinkingLevel: "max" })).resolves.toEqual(
+      expect.objectContaining({ thinkingLevel: "off", availableThinkingLevels: ["off"] }),
+    );
+  });
+
+  it("能力探测失败且模型未提供 map 时兼容旧版 setter 异常", async () => {
+    const session = createSessionMock("unknown-capability");
+    delete session.session.getAvailableThinkingLevels;
+    session.setThinkingLevel.mockImplementationOnce(() => {
+      throw new Error("legacy setter unavailable");
+    });
+    const runtime = new PiSessionRuntime(sdkReturning(session), "C:\\agent");
+    await runtime.createSession("C:\\work");
+
+    await expect(
+      runtime.configureSession("unknown-capability", { thinkingLevel: "max" }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        thinkingLevel: "medium",
+        availableThinkingLevels: ["off", "minimal", "low", "medium", "high"],
+      }),
+    );
   });
 
   it("可用性探测失败时回退到真实模型目录并去重", async () => {
@@ -834,7 +1039,7 @@ describe("PiSessionRuntime", () => {
       defaultToolNames: ["read", "bash", "edit", "write"],
     });
     expect(sessionMock.setModel).toHaveBeenCalledWith(plainModel);
-    expect(sessionMock.setThinkingLevel).toHaveBeenCalledWith("high");
+    expect(sessionMock.setThinkingLevel).toHaveBeenCalledWith("off");
 
     await expect(
       runtime.configureSession("s-1", { model: { provider: "missing", id: "none" } }),

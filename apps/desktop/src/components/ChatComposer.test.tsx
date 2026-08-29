@@ -316,7 +316,7 @@ describe("ChatComposer", () => {
     fireEvent.click(screen.getByRole("menuitemradio", { name: "Claude" }));
     expect(onModelChange).toHaveBeenCalledWith("anthropic", "claude");
     fireEvent.click(screen.getByRole("button", { name: "选择思考强度" }));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "深度思考" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "High" }));
     expect(onThinkingLevelChange).toHaveBeenCalledWith("high");
 
     const textarea = screen.getByLabelText("发送给 Pi 的消息");
@@ -363,6 +363,7 @@ describe("ChatComposer", () => {
   });
 
   it("将模型和思考强度菜单渲染到顶层，避免被输入框裁切", () => {
+    const onThinkingLevelChange = vi.fn();
     render(
       <ChatComposer
         workspaceName="workspace"
@@ -386,7 +387,7 @@ describe("ChatComposer", () => {
         {...permissionProps}
         onDraftChange={vi.fn()}
         onModelChange={vi.fn()}
-        onThinkingLevelChange={vi.fn()}
+        onThinkingLevelChange={onThinkingLevelChange}
         onSend={vi.fn()}
         onClearQueue={vi.fn()}
         onAbort={vi.fn()}
@@ -402,6 +403,9 @@ describe("ChatComposer", () => {
     const thinkingMenu = screen.getByRole("menu", { name: "思考强度列表" });
     expect(thinkingMenu.parentElement).toBe(document.body);
     expect(thinkingMenu).toHaveAttribute("data-floating-menu");
+    expect(screen.getAllByRole("menuitemradio")).toHaveLength(7);
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Max" }));
+    expect(onThinkingLevelChange).toHaveBeenCalledWith("max");
   });
 
   it("流式阶段允许追加输入并提供停止操作", () => {

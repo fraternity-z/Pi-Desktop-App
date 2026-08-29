@@ -1,9 +1,60 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+/** Pi SDK 的标准思考强度顺序；模型能力只负责从中筛选可用项。 */
+export const THINKING_LEVELS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export type PromptStreamingBehavior = "steer" | "followUp";
 export type PackageScope = "global" | "project";
+
+export function isThinkingLevel(value: unknown): value is ThinkingLevel {
+  return typeof value === "string" && THINKING_LEVELS.includes(value as ThinkingLevel);
+}
+
+/**
+ * Keep SDK capability data in the canonical Pi order and discard malformed
+ * or provider-specific values before they reach UI state.
+ */
+export function normalizeThinkingLevels(value: unknown): ThinkingLevel[] {
+  if (!Array.isArray(value)) return [];
+  const supplied = new Set(value);
+  return THINKING_LEVELS.filter((level) => supplied.has(level));
+}
+
+/** 与 Pi SDK 一致：请求值无效时先向上，再向下寻找最近可用档位。 */
+export function clampThinkingLevel(
+  requested: unknown,
+  available: readonly ThinkingLevel[],
+): ThinkingLevel {
+  const levels = normalizeThinkingLevels(available);
+  if (typeof requested === "string" && levels.includes(requested as ThinkingLevel)) {
+    return requested as ThinkingLevel;
+  }
+
+  const requestedIndex =
+    typeof requested === "string"
+      ? THINKING_LEVELS.indexOf(requested as ThinkingLevel)
+      : -1;
+  if (requestedIndex < 0) return levels[0] ?? "off";
+
+  for (let index = requestedIndex; index < THINKING_LEVELS.length; index += 1) {
+    const candidate = THINKING_LEVELS[index];
+    if (levels.includes(candidate)) return candidate;
+  }
+  for (let index = requestedIndex - 1; index >= 0; index -= 1) {
+    const candidate = THINKING_LEVELS[index];
+    if (levels.includes(candidate)) return candidate;
+  }
+  return levels[0] ?? "off";
+}
 
 export interface QueuedMessages {
   steering: string[];
@@ -342,17 +393,24 @@ function hasValidEventData(name: AgentEventName, data: unknown): boolean {
     );
   }
   if (name === "session.configurationChanged") {
-    const keys = isRecord(data) ? Object.keys(data) : [];
+    if (!isRecord(data)) return false;
+    const keys = Object.keys(data);
+    if (
+      (keys.length !== 3 && keys.length !== 6) ||
+      !("model" in data) ||
+      !("thinkingLevel" in data) ||
+      !("availableThinkingLevels" in data) ||
+      !isThinkingLevel(data.thinkingLevel) ||
+      !isThinkingLevelList(data.availableThinkingLevels) ||
+      !data.availableThinkingLevels.includes(data.thinkingLevel)
+    ) {
+      return false;
+    }
     return (
-      isRecord(data) &&
-      (keys.length === 3 || keys.length === 6) &&
-      "model" in data &&
-      "thinkingLevel" in data &&
-      "availableThinkingLevels" in data &&
-      (keys.length === 3 ||
-        (isAgentToolList(data.availableTools) &&
-          isToolNameList(data.activeToolNames) &&
-          isToolNameList(data.defaultToolNames)))
+      keys.length === 3 ||
+      (isAgentToolList(data.availableTools) &&
+        isToolNameList(data.activeToolNames) &&
+        isToolNameList(data.defaultToolNames))
     );
   }
   if (name === "session.usageChanged") {
@@ -418,6 +476,16 @@ function isQueuedMessageList(value: unknown): value is string[] {
     if (total > 400_000) return false;
   }
   return true;
+}
+
+function isThinkingLevelList(value: unknown): value is ThinkingLevel[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.length <= THINKING_LEVELS.length &&
+    value.every(isThinkingLevel) &&
+    new Set(value).size === value.length
+  );
 }
 
 function isBoundedText(value: unknown, maximumLength: number): value is string {

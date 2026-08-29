@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   abortAgent,
+  clampThinkingLevel,
   checkAgentPackageUpdates,
   clearAgentQueue,
   configureAgentSession,
@@ -20,6 +21,8 @@ import {
   promptAgent,
   removeAgentPackage,
   setAgentPackageEnabled,
+  THINKING_LEVELS,
+  normalizeThinkingLevels,
   updateAgentPackage,
 } from "./agent";
 
@@ -30,6 +33,21 @@ describe("agent IPC", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
     vi.mocked(listen).mockReset();
+  });
+
+  it("按 Pi 标准顺序归一化多档能力并使用兼容 clamp 规则", () => {
+    expect(THINKING_LEVELS).toEqual([
+      "off",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+    expect(normalizeThinkingLevels(["max", "low", "unknown", "low"])).toEqual(["low", "max"]);
+    expect(clampThinkingLevel("xhigh", ["off", "high", "max"])).toBe("max");
+    expect(clampThinkingLevel("minimal", ["off", "high"])).toBe("high");
   });
 
   it("只调用固定、类型化的插件与资源命令", async () => {
@@ -248,6 +266,40 @@ describe("agent IPC", () => {
         data: { model: null, thinkingLevel: "off", availableThinkingLevels: ["off"] },
       }),
     ).toEqual(expect.objectContaining({ name: "session.configurationChanged" }));
+    expect(
+      parseAgentEvent({
+        v: 1,
+        kind: "event",
+        seq: 6,
+        sessionId: "s-1",
+        name: "session.configurationChanged",
+        data: {
+          model: null,
+          thinkingLevel: "max",
+          availableThinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+        },
+      }),
+    ).toEqual(expect.objectContaining({ name: "session.configurationChanged" }));
+    expect(
+      parseAgentEvent({
+        v: 1,
+        kind: "event",
+        seq: 7,
+        sessionId: "s-1",
+        name: "session.configurationChanged",
+        data: { model: null, thinkingLevel: "high", availableThinkingLevels: ["off"] },
+      }),
+    ).toBeNull();
+    expect(
+      parseAgentEvent({
+        v: 1,
+        kind: "event",
+        seq: 8,
+        sessionId: "s-1",
+        name: "session.configurationChanged",
+        data: { model: null, thinkingLevel: "off", availableThinkingLevels: ["off", "off"] },
+      }),
+    ).toBeNull();
     expect(
       parseAgentEvent({
         v: 1,

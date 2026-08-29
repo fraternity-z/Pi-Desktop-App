@@ -26,6 +26,21 @@ import { useChatSession } from "./useChatSession";
 
 vi.mock("../ipc/agent", () => ({
   abortAgent: vi.fn(),
+  clampThinkingLevel: (requested: unknown, available: string[]) => {
+    const ordered = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+    const normalized = ordered.filter((level) => available.includes(level));
+    if (normalized.includes(String(requested))) return String(requested);
+    const requestedIndex = ordered.indexOf(String(requested));
+    if (requestedIndex >= 0) {
+      for (let index = requestedIndex; index < ordered.length; index += 1) {
+        if (normalized.includes(ordered[index]!)) return ordered[index];
+      }
+      for (let index = requestedIndex - 1; index >= 0; index -= 1) {
+        if (normalized.includes(ordered[index]!)) return ordered[index];
+      }
+    }
+    return normalized[0] ?? "off";
+  },
   clearAgentQueue: vi.fn(),
   configureAgentSession: vi.fn(),
   createAgentSession: vi.fn(),
@@ -33,8 +48,18 @@ vi.mock("../ipc/agent", () => ({
   listAgentModels: vi.fn(),
   listAgentSessions: vi.fn(),
   listenToAgentEvents: vi.fn(),
+  normalizeThinkingLevels: (value: unknown) =>
+    Array.isArray(value)
+      ? ["off", "minimal", "low", "medium", "high", "xhigh", "max"].filter((level) =>
+          value.includes(level),
+        )
+      : [],
+  THINKING_LEVELS: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
   openAgentSession: vi.fn(),
   promptAgent: vi.fn(),
+  isThinkingLevel: (value: unknown) =>
+    typeof value === "string" &&
+    ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(value),
 }));
 vi.mock("../ipc/workspace", () => ({
   ensureConversationWorkspace: vi.fn(),
@@ -709,12 +734,28 @@ describe("useChatSession", () => {
       emit?.(
         event("session.configurationChanged", {
           model: null,
+          // A provider may report a current value that disappeared after a
+          // model switch. The store must apply Pi's nearest-level fallback.
+          thinkingLevel: "max",
+          availableThinkingLevels: ["off", "high"],
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(result.current.configuration?.thinkingLevel).toBe("high");
+      expect(result.current.configuration?.availableThinkingLevels).toEqual(["off", "high"]);
+    });
+
+    act(() => {
+      emit?.(
+        event("session.configurationChanged", {
+          model: null,
           thinkingLevel: "ultra",
           availableThinkingLevels: [],
         }),
       );
     });
-    expect(result.current.configuration?.thinkingLevel).toBe("off");
+    expect(result.current.configuration?.thinkingLevel).toBe("high");
   });
 
   it("报告监听失败，并处理异步订阅晚于卸载的情况", async () => {

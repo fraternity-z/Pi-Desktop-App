@@ -15,7 +15,7 @@ use crate::{
         protocol::{
             AgentModel, AgentSessionSummary, CreatedSession, DeleteSessionsResult, PackageScope,
             PackageSummary, PackageUpdateInfo, PromptStreamingBehavior, RequestHeaderSettings,
-            ResourceSummary, SessionConfiguration, SessionConfigurationUpdate,
+            ResourceSummary, SessionConfiguration, SessionConfigurationUpdate, THINKING_LEVELS,
         },
         supervisor::{
             BridgeEventSink, BridgeFaultSink, BridgeLaunchConfig, BridgeSupervisor,
@@ -518,7 +518,7 @@ fn validate_session_configuration_update(
         ));
     }
     if let Some(level) = update.thinking_level.as_deref()
-        && !["off", "minimal", "low", "medium", "high", "xhigh", "max"].contains(&level)
+        && !THINKING_LEVELS.contains(&level)
     {
         return Err(AppError::new(
             "THINKING_LEVEL_INVALID",
@@ -830,6 +830,14 @@ mod tests {
             thinking_level: Some("high".to_owned()),
         };
         assert_eq!(validate_session_configuration_update(&valid), Ok(()));
+
+        for level in ["xhigh", "max"] {
+            let extended = SessionConfigurationUpdate {
+                model: None,
+                thinking_level: Some(level.to_owned()),
+            };
+            assert_eq!(validate_session_configuration_update(&extended), Ok(()));
+        }
 
         let empty = SessionConfigurationUpdate {
             model: None,

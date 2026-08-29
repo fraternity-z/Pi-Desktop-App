@@ -718,6 +718,41 @@ describe("ChatWorkbenchView", () => {
     expect(screen.queryByRole("button", { name: "显示审查侧栏" })).not.toBeInTheDocument();
   });
 
+  it("从侧栏新建会话时沿用当前项目路径", async () => {
+    vi.mocked(createAgentSession).mockResolvedValueOnce({
+      ...defaultSession,
+      cwd: "C:\\projects\\alpha",
+      sessionPath: "C:\\agent\\sessions\\alpha.jsonl",
+    });
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    await addProject("C:\\projects\\alpha");
+
+    fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+    const composer = await screen.findByLabelText("发送给 Pi 的消息");
+    fireEvent.change(composer, { target: { value: "切换后的项目会话" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => expect(createAgentSession).toHaveBeenCalledWith("C:\\projects\\alpha"));
+    expect(ensureConversationWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("未选择项目时顶部新建会话保留纯对话默认行为", async () => {
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+
+    fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+    const composer = await screen.findByLabelText("发送给 Pi 的消息");
+    fireEvent.change(composer, { target: { value: "默认对话" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() =>
+      expect(createAgentSession).toHaveBeenCalledWith(
+        "C:\\Users\\me\\Documents\\Pix\\conversations",
+      ),
+    );
+  });
+
   it("仅在项目会话中打开、展开并关闭右侧面板", async () => {
     const { container } = render(<ChatWorkbenchView />);
     await screen.findByRole("status", { name: "状态正常" });

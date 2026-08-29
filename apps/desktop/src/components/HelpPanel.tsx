@@ -1,9 +1,13 @@
 import {
+  AlertCircle,
   ArrowLeft,
+  CheckCircle2,
   ChevronRight,
   CircleHelp,
+  Download,
   ExternalLink,
   Info,
+  LoaderCircle,
   MessageSquare,
   RefreshCw,
   X,
@@ -12,6 +16,8 @@ import { useEffect, useId, useRef, useState, type ReactElement } from "react";
 import { createPortal } from "react-dom";
 
 import appMetadata from "../../package.json";
+import type { UpdateCheckResult } from "../ipc/update";
+import { useAppUpdate, type AppUpdatePhase } from "../stores/useAppUpdate";
 
 export const PI_DESKTOP_PROJECT_URL = "https://github.com/fraternity-z/Pi-Desktop-App";
 export const PI_DESKTOP_FEEDBACK_URL = `${PI_DESKTOP_PROJECT_URL}/issues`;
@@ -28,10 +34,12 @@ export function HelpPanel({ open, onClose }: HelpPanelProps): ReactElement | nul
   const [view, setView] = useState<HelpPanelView>("menu");
   const panelRef = useRef<HTMLElement>(null);
   const titleId = useId();
+  const update = useAppUpdate();
 
   useEffect(() => {
     if (!open || typeof document === "undefined") {
       setView("menu");
+      update.reset();
       return undefined;
     }
 
@@ -51,7 +59,7 @@ export function HelpPanel({ open, onClose }: HelpPanelProps): ReactElement | nul
       document.removeEventListener("keydown", closeOnEscape);
       previous?.focus();
     };
-  }, [onClose, open]);
+  }, [onClose, open, update.reset]);
 
   if (!open || typeof document === "undefined") return null;
 
@@ -158,23 +166,109 @@ export function HelpPanel({ open, onClose }: HelpPanelProps): ReactElement | nul
                 target="_blank"
                 rel="noreferrer"
                 aria-label="检查更新"
+                aria-disabled={update.phase === "checking"}
+                data-update-checking={update.phase === "checking" || undefined}
+                onClick={(event) => {
+                  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                  event.preventDefault();
+                  void update.check();
+                }}
               >
                 <span className="help-panel-option-icon" aria-hidden="true">
-                  <RefreshCw size={18} />
+                  {update.phase === "checking" ? (
+                    <LoaderCircle className="spin" size={18} />
+                  ) : (
+                    <RefreshCw size={18} />
+                  )}
                 </span>
                 <span className="help-panel-option-copy">
                   <strong>检查更新</strong>
-                  <small>打开 GitHub Releases 查看最新版本</small>
+                  <small>
+                    {update.phase === "checking"
+                      ? "正在检查 GitHub 最新版本"
+                      : "检查 GitHub Releases 中的最新版本"}
+                  </small>
                 </span>
-                <ExternalLink size={16} aria-hidden="true" />
+                {update.phase === "checking" ? (
+                  <LoaderCircle className="spin" size={16} aria-hidden="true" />
+                ) : (
+                  <ExternalLink size={16} aria-hidden="true" />
+                )}
               </a>
             </div>
+            <UpdateStatus
+              phase={update.phase}
+              result={update.result}
+              error={update.error}
+            />
             <ProjectLink />
           </div>
         )}
       </section>
     </div>,
     document.body,
+  );
+}
+
+interface UpdateStatusProps {
+  phase: AppUpdatePhase;
+  result: UpdateCheckResult | null;
+  error: string | null;
+}
+
+function UpdateStatus({ phase, result, error }: UpdateStatusProps): ReactElement | null {
+  if (phase === "idle") return null;
+  if (phase === "checking") {
+    return (
+      <div className="help-panel-update-status" role="status" aria-live="polite">
+        <LoaderCircle className="spin" size={15} aria-hidden="true" />
+        <span>正在检查更新…</span>
+      </div>
+    );
+  }
+  if (phase === "error") {
+    return (
+      <div className="help-panel-update-status" data-kind="error" role="alert">
+        <AlertCircle size={15} aria-hidden="true" />
+        <div className="help-panel-update-status-copy">
+          <span>当前版本：{appMetadata.version}</span>
+          <strong>检查更新失败：{error || "更新服务暂不可用"}</strong>
+        </div>
+      </div>
+    );
+  }
+  if (!result) return null;
+
+  return (
+    <div
+      className="help-panel-update-status"
+      data-kind={result.updateAvailable ? "available" : "current"}
+      role="status"
+      aria-live="polite"
+    >
+      <CheckCircle2 size={15} aria-hidden="true" />
+      <div className="help-panel-update-status-copy">
+        <div className="help-panel-update-versions">
+          <span>当前版本：{result.currentVersion}</span>
+          <span>最新版本：{result.latestVersion}</span>
+        </div>
+        <strong>{result.updateAvailable ? "有新版本可用" : "已是最新版本"}</strong>
+        {result.updateAvailable && (
+          <div className="help-panel-update-links">
+            <a href={result.releaseUrl} target="_blank" rel="noreferrer">
+              <ExternalLink size={13} aria-hidden="true" />
+              查看 GitHub 发布页面
+            </a>
+            {result.downloadUrl && (
+              <a href={result.downloadUrl} target="_blank" rel="noreferrer">
+                <Download size={13} aria-hidden="true" />
+                下载更新
+              </a>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

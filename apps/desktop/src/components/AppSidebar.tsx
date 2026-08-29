@@ -88,7 +88,7 @@ interface AppSidebarProps {
   phase: ChatPhase;
   runtime: RuntimeStatusController;
   onAddProject: () => void;
-  onNewConversation: () => void;
+  onNewConversation: (cwd?: string) => void;
   onNewSession: (cwd?: string) => void;
   onRemoveWorkspace: (cwd: string) => void | Promise<void>;
   onDeleteSession: (sessionId: string) => Promise<DeleteAgentSessionsResult>;
@@ -191,6 +191,11 @@ export function AppSidebar(props: AppSidebarProps) {
   const lastAutoExpandedProject = useRef("");
   const runtimeReady = runtime.phase === "ready" && runtime.status.status === "ready";
   const switchingDisabled = phase === "creating";
+  const activeProjectCwd = recentWorkspaces.find((cwd) => samePath(cwd, activeCwd));
+  const newSessionCwd =
+    activeProjectCwd && !samePath(activeProjectCwd, conversationHome)
+      ? activeProjectCwd
+      : undefined;
   const runningIds = useMemo(() => new Set(runningSessionIds), [runningSessionIds]);
   const visibleSessions = useMemo(
     () =>
@@ -202,18 +207,8 @@ export function AppSidebar(props: AppSidebarProps) {
     [preferences.archivedThreads, preferences.deletedThreads, sessions],
   );
   const allProjectPaths = useMemo(
-    () =>
-      collectProjectPaths(
-        [
-          ...recentWorkspaces,
-          ...sessions
-            .filter((session) => session.lifecycle !== "persisted")
-            .map((session) => session.cwd),
-        ],
-        activeCwd,
-        conversationHome,
-      ),
-    [activeCwd, conversationHome, recentWorkspaces, sessions],
+    () => collectProjectPaths(recentWorkspaces, conversationHome),
+    [conversationHome, recentWorkspaces],
   );
   const projectGroups = useMemo(
     () =>
@@ -294,15 +289,13 @@ export function AppSidebar(props: AppSidebarProps) {
 
   useEffect(() => {
     const autoExpandCwd =
-      activeCwd && !samePath(activeCwd, conversationHome)
-        ? activeCwd
-        : sortedProjects.find((project) => project.sessions.length > 0)?.cwd;
+      activeProjectCwd ?? sortedProjects.find((project) => project.sessions.length > 0)?.cwd;
     if (!autoExpandCwd) return;
     const key = normalizeSidebarPath(autoExpandCwd);
     if (lastAutoExpandedProject.current === key) return;
     lastAutoExpandedProject.current = key;
     if (!preferences.expandedProjects.includes(key)) sidebar.toggleExpandedProject(autoExpandCwd);
-  }, [activeCwd, conversationHome, preferences.expandedProjects, sidebar, sortedProjects]);
+  }, [activeProjectCwd, preferences.expandedProjects, sidebar, sortedProjects]);
 
   useEffect(() => {
     if (!searchOpen) setQuery("");
@@ -646,7 +639,7 @@ export function AppSidebar(props: AppSidebarProps) {
       <nav className="sidebar-primary-actions" aria-label="主要导航">
         <button
           type="button"
-          onClick={onNewConversation}
+          onClick={() => onNewConversation(newSessionCwd)}
           disabled={switchingDisabled || !runtimeReady}
         >
           <PenLine size={17} />
@@ -1301,13 +1294,10 @@ export function clampSidebarWidth(width: number): number {
 
 function collectProjectPaths(
   recentWorkspaces: string[],
-  activeCwd: string,
   conversationHome: string,
 ): string[] {
-  const paths = [...recentWorkspaces];
-  if (activeCwd) paths.push(activeCwd);
   const seen = new Set<string>();
-  return paths.filter((path) => {
+  return recentWorkspaces.filter((path) => {
     const key = normalizeSidebarPath(path);
     if (!key || samePath(path, conversationHome) || seen.has(key)) return false;
     seen.add(key);

@@ -4,7 +4,7 @@ Pi Desktop App 是一个基于 Tauri 2 和 React 的 Pi 桌面客户端。它为
 Agent Runtime 提供原生桌面界面，同时复用用户本机已经安装的 Node.js、官方 Pi SDK
 以及 `~/.pi/agent` 数据目录。
 
-当前版本：`0.1.2`
+当前版本：`0.2.0`
 
 > 项目仍处于早期开发阶段，当前发布和冒烟验证以 Windows x64 为主。请在重要项目中使用前自行备份。
 
@@ -24,7 +24,7 @@ Agent Runtime 提供原生桌面界面，同时复用用户本机已经安装的
 
 | 组件 | 要求 |
 | --- | --- |
-| Pi Desktop App | `0.1.2` |
+| Pi Desktop App | `0.2.0` |
 | Node.js | `22.19` 或更高版本 |
 | 官方 Pi SDK | `>=0.83 <0.86` |
 | 桌面协议 | `1` |
@@ -74,8 +74,8 @@ Windows x64 构建产物位于：
 
 ```text
 src-tauri/target/release/pi-desktop.exe
-src-tauri/target/release/bundle/msi/Pi Desktop_0.1.2_x64_en-US.msi
-src-tauri/target/release/bundle/nsis/Pi Desktop_0.1.2_x64-setup.exe
+src-tauri/target/release/bundle/msi/Pi Desktop_0.2.0_x64_en-US.msi
+src-tauri/target/release/bundle/nsis/Pi Desktop_0.2.0_x64-setup.exe
 ```
 
 ## 常用命令

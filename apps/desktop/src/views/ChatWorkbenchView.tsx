@@ -624,7 +624,9 @@ export function ChatWorkbenchView() {
           phase={session.phase}
           runtime={runtime}
           onAddProject={openProjectDialog}
-          onNewConversation={() => void createConversation()}
+          onNewConversation={(cwd) =>
+            cwd ? void createSession(cwd) : void createConversation()
+          }
           onNewSession={(cwd) => void createSession(cwd)}
           onRemoveWorkspace={(cwd) => void removeWorkspace(cwd)}
           onDeleteSession={(sessionId) => session.deleteSessions([sessionId])}

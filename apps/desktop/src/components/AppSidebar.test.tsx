@@ -106,7 +106,7 @@ describe("AppSidebar", () => {
     expect(props.onRefresh).toHaveBeenCalledOnce();
 
     fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
-    expect(props.onNewConversation).toHaveBeenCalledOnce();
+    expect(props.onNewConversation).toHaveBeenCalledWith("C:\\projects\\alpha");
     fireEvent.click(screen.getByRole("button", { name: "alpha更多操作" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "从列表移除" }));
     expect(screen.getByRole("dialog", { name: "移除项目" })).toBeInTheDocument();
@@ -127,6 +127,48 @@ describe("AppSidebar", () => {
       key: "ArrowRight",
     });
     expect(props.onWidthChange).toHaveBeenCalledWith(308);
+  });
+
+  it("当前会话位于默认对话目录时不把默认目录当作项目", () => {
+    const props = sidebarProps({
+      activeCwd: "C:\\Users\\me\\Documents\\Pix\\conversations",
+      sessions: [],
+      recentWorkspaces: [],
+    });
+    render(<AppSidebar {...props} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+    expect(props.onNewConversation).toHaveBeenCalledWith(undefined);
+  });
+
+  it("移除最近项目后不会被活动草稿重新加入", async () => {
+    const draft: SessionListItem = {
+      id: "draft:administrator",
+      path: null,
+      cwd: "C:\\Users\\Administrator",
+      name: null,
+      created: "2026-08-29T08:00:00.000Z",
+      modified: "2026-08-29T08:00:00.000Z",
+      messageCount: 0,
+      firstMessage: "",
+      lifecycle: "draft",
+    };
+    const props = sidebarProps({
+      activeCwd: draft.cwd,
+      activeSessionId: draft.id,
+      sessions: [draft],
+      recentWorkspaces: [draft.cwd],
+      runningSessionIds: [],
+    });
+    const { rerender } = render(<AppSidebar {...props} />);
+    expect(screen.getByTitle(draft.cwd)).toBeInTheDocument();
+
+    rerender(<AppSidebar {...props} recentWorkspaces={[]} />);
+
+    expect(screen.queryByTitle(draft.cwd)).not.toBeInTheDocument();
+    expect(await screen.findByTitle("未命名会话")).toHaveAttribute("aria-current", "page");
+    fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+    expect(props.onNewConversation).toHaveBeenCalledWith(undefined);
   });
 
   it("完整暴露插件、资源、重命名与会话移动入口", async () => {

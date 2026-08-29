@@ -5,4 +5,5 @@ pub(crate) mod git;
 pub(crate) mod notifications;
 pub(crate) mod runtime;
 pub(crate) mod settings;
+pub(crate) mod updates;
 pub(crate) mod workspace;

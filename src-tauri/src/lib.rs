@@ -92,6 +92,7 @@ pub fn run() {
             commands::runtime::agent_abort,
             commands::settings::get_request_header_settings,
             commands::settings::update_request_header_settings,
+            commands::updates::check_for_updates,
             commands::git::git_get_status,
             commands::git::git_get_diff,
             commands::git::git_stage,

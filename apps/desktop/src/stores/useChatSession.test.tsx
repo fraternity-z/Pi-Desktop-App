@@ -173,7 +173,7 @@ describe("useChatSession", () => {
       });
   });
 
-  it("创建草稿时不触发后端或工作区绑定，并在首次发送时实体化", async () => {
+  it("创建项目草稿时先登记工作区，并在首次发送时实体化", async () => {
     const { result } = renderHook(() => useChatSession());
     await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
 
@@ -191,7 +191,9 @@ describe("useChatSession", () => {
       expect.objectContaining({ id: expect.stringMatching(/^draft:/), lifecycle: "draft", path: null }),
     ]);
     expect(createAgentSession).not.toHaveBeenCalled();
-    expect(rememberWorkspace).not.toHaveBeenCalled();
+    expect(rememberWorkspace).toHaveBeenCalledOnce();
+    expect(rememberWorkspace).toHaveBeenCalledWith("C:\\work");
+    expect(result.current.recentWorkspaces).toEqual(["C:\\work"]);
 
     await act(() => result.current.sendPrompt("   "));
     expect(createAgentSession).not.toHaveBeenCalled();
@@ -207,6 +209,49 @@ describe("useChatSession", () => {
 
     await act(() => result.current.abort());
     expect(abortAgent).toHaveBeenCalledWith("s-1");
+  });
+
+  it("工作区登记失败时不创建项目草稿", async () => {
+    vi.mocked(rememberWorkspace).mockRejectedValueOnce({
+      code: "WORKSPACE_PATH_INVALID",
+      message: "工作区路径不存在或无法访问",
+    });
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+
+    let created = true;
+    await act(async () => {
+      created = await result.current.createSession("C:\\missing");
+    });
+
+    expect(created).toBe(false);
+    expect(result.current.sessionId).toBeNull();
+    expect(result.current.sessions).toEqual([]);
+    expect(result.current.error).toBe(
+      "WORKSPACE_PATH_INVALID: 工作区路径不存在或无法访问",
+    );
+    expect(createAgentSession).not.toHaveBeenCalled();
+  });
+
+  it("在切换项目后分别使用各自的工作区创建会话", async () => {
+    vi.mocked(createAgentSession).mockImplementation(async (cwd) =>
+      agentSession({
+        sessionId: cwd.includes("alpha") ? "alpha-session" : "beta-session",
+        cwd,
+        sessionPath: `C:\\agent\\sessions\\${cwd.includes("alpha") ? "alpha" : "beta"}.jsonl`,
+      }),
+    );
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+
+    await act(() => result.current.createSession("C:\\projects\\alpha"));
+    await act(() => result.current.prepareConfiguration());
+    await act(() => result.current.createSession("D:\\projects\\beta"));
+    await act(() => result.current.prepareConfiguration());
+
+    expect(createAgentSession).toHaveBeenNthCalledWith(1, "C:\\projects\\alpha");
+    expect(createAgentSession).toHaveBeenNthCalledWith(2, "D:\\projects\\beta");
+    expect(result.current.cwd).toBe("D:\\projects\\beta");
   });
 
   it("可在发送前实体化草稿，使模型和思考配置立即可交互", async () => {

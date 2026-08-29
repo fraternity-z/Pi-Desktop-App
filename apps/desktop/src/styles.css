@@ -4318,6 +4318,11 @@ body {
   background: var(--hover);
 }
 
+.help-panel-option[data-update-checking="true"] {
+  cursor: progress;
+  opacity: 0.76;
+}
+
 .help-panel-option:focus-visible {
   border-color: var(--focus);
   outline: 2px solid var(--focus);
@@ -4360,6 +4365,73 @@ body {
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.help-panel-update-status {
+  display: grid;
+  grid-template-columns: 17px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ui);
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.help-panel-update-status[data-kind="available"] {
+  border-color: var(--success-border);
+  color: var(--success);
+}
+
+.help-panel-update-status[data-kind="error"] {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.help-panel-update-status-copy {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.help-panel-update-status-copy strong {
+  color: inherit;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.help-panel-update-versions {
+  display: grid;
+  gap: 2px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.help-panel-update-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 2px;
+}
+
+.help-panel-update-links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--link);
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.help-panel-update-links a:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .help-panel-project {

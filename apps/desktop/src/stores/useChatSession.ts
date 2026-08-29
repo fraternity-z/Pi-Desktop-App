@@ -359,17 +359,30 @@ export function useChatSession(): ChatSessionState {
         setGlobalError("AGENT_EVENT_LISTEN_UNAVAILABLE: 事件通道尚未就绪，请先重新连接");
         return false;
       }
-      if (!cwd.trim()) {
+      const requestedCwd = cwd.trim();
+      if (!requestedCwd) {
         setGlobalError("WORKSPACE_PATH_INVALID: 请输入绝对工作区路径");
         return false;
       }
       if (navigationPending) return false;
+      setNavigationPending(true);
       setGlobalError(null);
-      const draft = createDraftProjection(`draft:${draftSequence.current++}`, cwd.trim());
-      commitProjections((current) => ({ ...current, [draft.sessionId]: draft }));
-      activeSessionIdRef.current = draft.sessionId;
-      setActiveSessionId(draft.sessionId);
-      return true;
+      try {
+        const workspace = await rememberWorkspace(requestedCwd);
+        setWorkspaceState(workspace);
+        const canonicalCwd =
+          workspace.recentWorkspaces.find((path) => samePath(path, requestedCwd)) ?? requestedCwd;
+        const draft = createDraftProjection(`draft:${draftSequence.current++}`, canonicalCwd);
+        commitProjections((current) => ({ ...current, [draft.sessionId]: draft }));
+        activeSessionIdRef.current = draft.sessionId;
+        setActiveSessionId(draft.sessionId);
+        return true;
+      } catch (error) {
+        setGlobalError(formatError(error));
+        return false;
+      } finally {
+        setNavigationPending(false);
+      }
     },
     [commitProjections, eventConnection, navigationPending],
   );

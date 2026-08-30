@@ -56,4 +56,27 @@ describe("RuntimeStatusControl", () => {
       "runtime-status-icon-loading",
     );
   });
+
+  it("后台启动 Bridge 时继续显示加载状态", () => {
+    render(
+      <RuntimeStatusControl
+        runtime={{
+          phase: "ready",
+          status: {
+            status: "starting",
+            runtimeSource: null,
+            piVersion: null,
+            nodeVersion: null,
+            error: null,
+          },
+          refresh: vi.fn(),
+        }}
+        eventConnection="ready"
+      />,
+    );
+
+    expect(screen.getByRole("status", { name: "正在检测运行状态" })).toHaveClass(
+      "runtime-status-icon-loading",
+    );
+  });
 });

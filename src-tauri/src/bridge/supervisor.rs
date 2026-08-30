@@ -1,11 +1,11 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, Sender},
     },
     thread::{self, JoinHandle},
@@ -26,11 +26,15 @@ use crate::{
 
 const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_SESSION_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_PROMPT_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const DEFAULT_PACKAGE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const DEFAULT_SESSION_DELETE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(20);
+const BRIDGE_DIAGNOSTIC_PREFIX: &str = "PI_BRIDGE_DIAGNOSTIC ";
+const MAX_BRIDGE_DIAGNOSTIC_CHARS: usize = 1_024;
+const MAX_IGNORED_RESPONSE_IDS: usize = 1_024;
 
 pub type BridgeEventSink = Arc<dyn Fn(BridgeEvent) + Send + Sync + 'static>;
 pub type BridgeFaultSink = Arc<dyn Fn(AppError) + Send + Sync + 'static>;
@@ -98,6 +102,7 @@ pub struct BridgeSupervisor {
     commands: Sender<WorkerCommand>,
     response_timeout: Duration,
     next_request_id: AtomicU64,
+    connection_faulted: Arc<AtomicBool>,
     closed: Mutex<bool>,
     worker: Mutex<Option<JoinHandle<()>>>,
 }
@@ -136,6 +141,10 @@ impl BridgeSupervisor {
 
     pub fn hello(&self) -> &BridgeHello {
         &self.hello
+    }
+
+    pub(crate) fn connection_faulted(&self) -> bool {
+        self.connection_faulted.load(Ordering::Acquire)
     }
 
     pub fn ping(&self) -> Result<(), AppError> {
@@ -196,7 +205,11 @@ impl BridgeSupervisor {
 
     pub fn create_session(&self, cwd: &Path) -> Result<CreatedSession, AppError> {
         let data = self
-            .request("session.create", json!({"cwd": cwd}), self.response_timeout)?
+            .request_hard(
+                "session.create",
+                json!({"cwd": cwd}),
+                DEFAULT_SESSION_INITIALIZATION_TIMEOUT,
+            )?
             .ok_or_else(|| {
                 AppError::new(
                     "BRIDGE_SESSION_INVALID",
@@ -278,10 +291,10 @@ impl BridgeSupervisor {
 
     pub fn open_session(&self, session_path: &Path) -> Result<CreatedSession, AppError> {
         let data = self
-            .request(
+            .request_hard(
                 "session.open",
                 json!({"sessionPath": session_path}),
-                self.response_timeout,
+                DEFAULT_SESSION_INITIALIZATION_TIMEOUT,
             )?
             .ok_or_else(|| {
                 AppError::new(
@@ -595,7 +608,7 @@ impl BridgeSupervisor {
             .request_inner(
                 "shutdown",
                 json!({}),
-                RequestTimeoutPolicy::Fixed(self.response_timeout),
+                RequestTimeoutPolicy::Soft(self.response_timeout),
             )
             .map(|_| ());
         let stopped = self.stop_worker();
@@ -637,6 +650,8 @@ impl BridgeSupervisor {
         })?;
         let hello = parse_hello_frame(&hello_line)?;
         let (commands, receiver) = mpsc::channel();
+        let connection_faulted = Arc::new(AtomicBool::new(false));
+        let worker_connection_faulted = connection_faulted.clone();
         let worker = thread::spawn(move || {
             run_worker(
                 transport,
@@ -644,6 +659,7 @@ impl BridgeSupervisor {
                 event_sink,
                 fault_sink,
                 shutdown_timeout,
+                worker_connection_faulted,
             );
         });
         Ok(Self {
@@ -651,6 +667,7 @@ impl BridgeSupervisor {
             commands,
             response_timeout,
             next_request_id: AtomicU64::new(1),
+            connection_faulted,
             closed: Mutex::new(false),
             worker: Mutex::new(Some(worker)),
         })
@@ -662,7 +679,16 @@ impl BridgeSupervisor {
         fields: Value,
         timeout: Duration,
     ) -> Result<Option<Value>, AppError> {
-        self.request_with_timeout_policy(operation, fields, RequestTimeoutPolicy::Fixed(timeout))
+        self.request_with_timeout_policy(operation, fields, RequestTimeoutPolicy::Soft(timeout))
+    }
+
+    fn request_hard(
+        &self,
+        operation: &'static str,
+        fields: Value,
+        timeout: Duration,
+    ) -> Result<Option<Value>, AppError> {
+        self.request_with_timeout_policy(operation, fields, RequestTimeoutPolicy::Hard(timeout))
     }
 
     fn request_with_inactivity_timeout(
@@ -721,6 +747,7 @@ impl BridgeSupervisor {
         let (reply, receiver) = mpsc::channel();
         let timeout = timeout_policy.timeout();
         let renewable = timeout_policy.is_renewable();
+        let resets_connection = timeout_policy.resets_connection();
         self.commands
             .send(WorkerCommand::Request {
                 id: request_id,
@@ -739,7 +766,12 @@ impl BridgeSupervisor {
         } else {
             match receiver.recv_timeout(timeout + WORKER_POLL_INTERVAL * 2) {
                 Ok(result) => result,
-                Err(RecvTimeoutError::Timeout) => Err(request_timeout(operation)),
+                Err(RecvTimeoutError::Timeout) => {
+                    if resets_connection {
+                        self.connection_faulted.store(true, Ordering::Release);
+                    }
+                    Err(request_timeout(operation))
+                }
                 Err(RecvTimeoutError::Disconnected) => {
                     Err(AppError::new("BRIDGE_EXITED", "Bridge 请求通道已断开"))
                 }
@@ -783,7 +815,8 @@ impl Drop for BridgeSupervisor {
 
 #[derive(Debug, Clone)]
 enum RequestTimeoutPolicy {
-    Fixed(Duration),
+    Soft(Duration),
+    Hard(Duration),
     Inactivity {
         timeout: Duration,
         session_id: String,
@@ -793,12 +826,18 @@ enum RequestTimeoutPolicy {
 impl RequestTimeoutPolicy {
     fn timeout(&self) -> Duration {
         match self {
-            Self::Fixed(timeout) | Self::Inactivity { timeout, .. } => *timeout,
+            Self::Soft(timeout) | Self::Hard(timeout) | Self::Inactivity { timeout, .. } => {
+                *timeout
+            }
         }
     }
 
     fn is_renewable(&self) -> bool {
         matches!(self, Self::Inactivity { .. })
+    }
+
+    fn resets_connection(&self) -> bool {
+        matches!(self, Self::Hard(_) | Self::Inactivity { .. })
     }
 
     fn renewal_timeout(&self, event: &BridgeEvent) -> Option<Duration> {
@@ -817,6 +856,30 @@ struct PendingRequest {
     deadline: Instant,
     timeout_policy: RequestTimeoutPolicy,
     reply: Sender<Result<Option<Value>, AppError>>,
+}
+
+#[derive(Default)]
+struct IgnoredResponses {
+    ids: HashSet<String>,
+    order: VecDeque<String>,
+}
+
+impl IgnoredResponses {
+    fn insert(&mut self, id: String) {
+        if !self.ids.insert(id.clone()) {
+            return;
+        }
+        self.order.push_back(id);
+        while self.order.len() > MAX_IGNORED_RESPONSE_IDS {
+            if let Some(expired) = self.order.pop_front() {
+                self.ids.remove(&expired);
+            }
+        }
+    }
+
+    fn remove(&mut self, id: &str) -> bool {
+        self.ids.remove(id)
+    }
 }
 
 enum WorkerCommand {
@@ -839,8 +902,10 @@ fn run_worker(
     event_sink: BridgeEventSink,
     fault_sink: BridgeFaultSink,
     shutdown_timeout: Duration,
+    connection_faulted: Arc<AtomicBool>,
 ) {
     let mut pending = HashMap::<String, PendingRequest>::new();
+    let mut ignored_responses = IgnoredResponses::default();
     let mut last_event_sequence = 0;
 
     loop {
@@ -853,6 +918,7 @@ fn run_worker(
                         &mut pending,
                         &fault_sink,
                         shutdown_timeout,
+                        &connection_faulted,
                     ) {
                         return;
                     }
@@ -872,6 +938,7 @@ fn run_worker(
                 &mut pending,
                 &fault_sink,
                 shutdown_timeout,
+                &connection_faulted,
             ) {
                 return;
             }
@@ -879,9 +946,14 @@ fn run_worker(
 
         match transport.read_frame(WORKER_POLL_INTERVAL) {
             Ok(line) => {
-                if let Err(error) =
-                    handle_inbound_frame(&line, &mut pending, &mut last_event_sequence, &event_sink)
-                {
+                if let Err(error) = handle_inbound_frame(
+                    &line,
+                    &mut pending,
+                    &mut ignored_responses,
+                    &mut last_event_sequence,
+                    &event_sink,
+                ) {
+                    connection_faulted.store(true, Ordering::Release);
                     fail_worker(&mut pending, error, &fault_sink);
                     let _ = transport.stop(Duration::from_millis(100));
                     return;
@@ -889,12 +961,13 @@ fn run_worker(
             }
             Err(error) if error.code == "BRIDGE_TIMEOUT" => {}
             Err(error) => {
+                connection_faulted.store(true, Ordering::Release);
                 fail_worker(&mut pending, error, &fault_sink);
                 let _ = transport.stop(Duration::from_millis(100));
                 return;
             }
         }
-        if expire_requests(&mut pending) {
+        if expire_requests(&mut pending, &mut ignored_responses, &connection_faulted) {
             fault_sink(AppError::new(
                 "BRIDGE_TIMEOUT",
                 "Bridge 请求超时，连接已重置",
@@ -911,6 +984,7 @@ fn handle_worker_command(
     pending: &mut HashMap<String, PendingRequest>,
     fault_sink: &BridgeFaultSink,
     shutdown_timeout: Duration,
+    connection_faulted: &AtomicBool,
 ) -> bool {
     match command {
         WorkerCommand::Request {
@@ -934,6 +1008,7 @@ fn handle_worker_command(
                 false
             }
             Err(error) => {
+                connection_faulted.store(true, Ordering::Release);
                 let _ = reply.send(Err(error.clone()));
                 fail_worker(pending, error, fault_sink);
                 let _ = transport.stop(shutdown_timeout);
@@ -955,6 +1030,7 @@ fn handle_worker_command(
 fn handle_inbound_frame(
     line: &str,
     pending: &mut HashMap<String, PendingRequest>,
+    ignored_responses: &mut IgnoredResponses,
     last_event_sequence: &mut u64,
     event_sink: &BridgeEventSink,
 ) -> Result<(), AppError> {
@@ -982,6 +1058,9 @@ fn handle_inbound_frame(
                 ));
             }
             let Some(request) = pending.remove(&response.id) else {
+                if ignored_responses.remove(&response.id) {
+                    return Ok(());
+                }
                 return Err(AppError::new(
                     "BRIDGE_RESPONSE_INVALID",
                     "Bridge response 请求 id 未知",
@@ -1102,8 +1181,25 @@ fn public_remote_error_code(code: &str) -> Option<&'static str> {
     })
 }
 
-fn expire_requests(pending: &mut HashMap<String, PendingRequest>) -> bool {
-    let now = Instant::now();
+fn expire_requests(
+    pending: &mut HashMap<String, PendingRequest>,
+    ignored_responses: &mut IgnoredResponses,
+    connection_faulted: &AtomicBool,
+) -> bool {
+    expire_requests_at(
+        pending,
+        ignored_responses,
+        connection_faulted,
+        Instant::now(),
+    )
+}
+
+fn expire_requests_at(
+    pending: &mut HashMap<String, PendingRequest>,
+    ignored_responses: &mut IgnoredResponses,
+    connection_faulted: &AtomicBool,
+    now: Instant,
+) -> bool {
     let expired: Vec<String> = pending
         .iter()
         .filter(|(_, request)| request.deadline <= now)
@@ -1112,10 +1208,24 @@ fn expire_requests(pending: &mut HashMap<String, PendingRequest>) -> bool {
     if expired.is_empty() {
         return false;
     }
+    let reset_connection = expired.iter().any(|id| {
+        pending
+            .get(id)
+            .is_some_and(|request| request.timeout_policy.resets_connection())
+    });
+    if reset_connection {
+        connection_faulted.store(true, Ordering::Release);
+    }
     for id in expired {
         if let Some(request) = pending.remove(&id) {
             let _ = request.reply.send(Err(request_timeout(request.operation)));
+            if !reset_connection {
+                ignored_responses.insert(id);
+            }
         }
+    }
+    if !reset_connection {
+        return false;
     }
     fail_pending(
         pending,
@@ -1202,9 +1312,12 @@ impl ProcessTransport {
             }
         });
         thread::spawn(move || {
-            let mut reader = BufReader::new(stderr);
-            let mut sink = std::io::sink();
-            let _ = std::io::copy(&mut reader, &mut sink);
+            let reader = BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                if let Some(diagnostic) = sanitize_bridge_diagnostic(&line) {
+                    eprintln!("{BRIDGE_DIAGNOSTIC_PREFIX}{diagnostic}");
+                }
+            }
         });
 
         Ok(Self {
@@ -1372,6 +1485,56 @@ fn request_timeout(operation: &str) -> AppError {
     )
 }
 
+fn sanitize_bridge_diagnostic(line: &str) -> Option<String> {
+    if line.len() > MAX_BRIDGE_DIAGNOSTIC_CHARS {
+        return None;
+    }
+    let payload = line.strip_prefix(BRIDGE_DIAGNOSTIC_PREFIX)?;
+    let value: Value = serde_json::from_str(payload).ok()?;
+    let object = value.as_object()?;
+    if object.get("event")?.as_str()? != "performance" {
+        return None;
+    }
+    let operation = object.get("operation")?.as_str()?;
+    if !matches!(
+        operation,
+        "startup" | "model.runtime" | "session.create" | "session.open" | "resource.list"
+    ) {
+        return None;
+    }
+    let phase = object.get("phase")?.as_str()?;
+    if !matches!(
+        phase,
+        "sdk.import"
+            | "model.initialize"
+            | "session.manager"
+            | "resource.reload"
+            | "session.create"
+            | "history.project"
+            | "total"
+    ) {
+        return None;
+    }
+    let duration_ms = object.get("durationMs")?.as_u64()?;
+    if duration_ms > 24 * 60 * 60 * 1_000 {
+        return None;
+    }
+    let outcome = object.get("outcome")?.as_str()?;
+    if !matches!(outcome, "ok" | "error" | "slow") {
+        return None;
+    }
+    Some(
+        json!({
+            "event": "performance",
+            "operation": operation,
+            "phase": phase,
+            "durationMs": duration_ms,
+            "outcome": outcome,
+        })
+        .to_string(),
+    )
+}
+
 fn non_empty<'a>(value: &'a str, fallback: &'a str) -> &'a str {
     let value = value.trim();
     if value.is_empty() { fallback } else { value }
@@ -1459,6 +1622,15 @@ mod tests {
         );
 
         assert_eq!(config.handshake_timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn gives_session_initialization_a_dedicated_deadline() {
+        assert_eq!(DEFAULT_RESPONSE_TIMEOUT, Duration::from_secs(10));
+        assert_eq!(
+            DEFAULT_SESSION_INITIALIZATION_TIMEOUT,
+            Duration::from_secs(60)
+        );
     }
 
     #[test]
@@ -1602,6 +1774,32 @@ mod tests {
     }
 
     #[test]
+    fn accepts_only_allowlisted_bridge_diagnostics() {
+        let diagnostic = sanitize_bridge_diagnostic(
+            r#"PI_BRIDGE_DIAGNOSTIC {"event":"performance","operation":"session.open","phase":"resource.reload","durationMs":1250,"outcome":"slow","token":"secret","path":"C:\\private"}"#,
+        )
+        .expect("白名单性能诊断应被接受");
+
+        assert_eq!(
+            serde_json::from_str::<Value>(&diagnostic).unwrap(),
+            json!({
+                "event": "performance",
+                "operation": "session.open",
+                "phase": "resource.reload",
+                "durationMs": 1250,
+                "outcome": "slow"
+            })
+        );
+        assert!(!diagnostic.contains("secret"));
+        assert!(!diagnostic.contains("private"));
+        assert!(sanitize_bridge_diagnostic("extension token=secret").is_none());
+        assert!(sanitize_bridge_diagnostic(
+            r#"PI_BRIDGE_DIAGNOSTIC {"event":"performance","operation":"prompt","phase":"total","durationMs":1,"outcome":"ok"}"#,
+        )
+        .is_none());
+    }
+
+    #[test]
     fn propagates_handshake_timeout() {
         let transport = MockTransport::new([Err(AppError::new(
             "BRIDGE_TIMEOUT",
@@ -1622,8 +1820,9 @@ mod tests {
     }
 
     #[test]
-    fn stops_transport_after_request_deadline() {
+    fn keeps_transport_after_soft_request_deadline_and_ignores_late_response() {
         let transport = MockTransport::new([Ok(HELLO)]);
+        let reads = transport.reads.clone();
         let stop_calls = transport.stop_calls.clone();
         let supervisor = BridgeSupervisor::connect(
             Box::new(transport),
@@ -1635,9 +1834,39 @@ mod tests {
         .expect("有效 hello 应连接成功");
 
         let error = supervisor.ping().expect_err("请求截止后必须返回超时");
-        drop(supervisor);
+        reads.lock().unwrap().extend([
+            Ok(
+                r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":{"pong":true}}"#
+                    .to_owned(),
+            ),
+            Ok(
+                r#"{"v":1,"kind":"response","id":"rust-2","ok":true,"data":{"pong":true}}"#
+                    .to_owned(),
+            ),
+        ]);
+        supervisor.ping().expect("迟到响应后连接仍应可用");
 
         assert_eq!(error.code, "BRIDGE_TIMEOUT");
+        assert!(!supervisor.connection_faulted());
+        assert_eq!(*stop_calls.lock().unwrap(), 0);
+        drop(supervisor);
+
+        assert_eq!(*stop_calls.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn stops_transport_after_hard_request_deadline() {
+        let transport = MockTransport::new([Ok(HELLO)]);
+        let stop_calls = transport.stop_calls.clone();
+        let supervisor = connect(transport);
+
+        let error = supervisor
+            .request_hard("session.open", json!({}), Duration::from_millis(5))
+            .expect_err("会话初始化硬截止后必须返回超时");
+
+        assert_eq!(error.code, "BRIDGE_TIMEOUT");
+        assert!(supervisor.connection_faulted());
+        drop(supervisor);
         assert_eq!(*stop_calls.lock().unwrap(), 1);
     }
 
@@ -1698,7 +1927,7 @@ mod tests {
                 PendingRequest {
                     operation: "ping",
                     deadline: fixed_deadline,
-                    timeout_policy: RequestTimeoutPolicy::Fixed(Duration::from_secs(10)),
+                    timeout_policy: RequestTimeoutPolicy::Soft(Duration::from_secs(10)),
                     reply: fixed_reply,
                 },
             ),
@@ -1752,11 +1981,75 @@ mod tests {
             },
         )]);
 
-        assert!(expire_requests(&mut pending));
+        let mut ignored_responses = IgnoredResponses::default();
+        let connection_faulted = AtomicBool::new(false);
+        assert!(expire_requests(
+            &mut pending,
+            &mut ignored_responses,
+            &connection_faulted,
+        ));
         assert!(pending.is_empty());
+        assert!(connection_faulted.load(Ordering::Acquire));
         let error = receiver.recv().unwrap().unwrap_err();
         assert_eq!(error.code, "BRIDGE_TIMEOUT");
         assert!(error.message.contains("prompt"));
+    }
+
+    #[test]
+    fn keeps_session_initialization_pending_between_soft_and_hard_deadlines() {
+        let started = Instant::now();
+        let (soft_reply, soft_receiver) = mpsc::channel();
+        let (hard_reply, hard_receiver) = mpsc::channel();
+        let mut pending = HashMap::from([
+            (
+                "rust-soft".to_owned(),
+                PendingRequest {
+                    operation: "model.list",
+                    deadline: started + DEFAULT_RESPONSE_TIMEOUT,
+                    timeout_policy: RequestTimeoutPolicy::Soft(DEFAULT_RESPONSE_TIMEOUT),
+                    reply: soft_reply,
+                },
+            ),
+            (
+                "rust-hard".to_owned(),
+                PendingRequest {
+                    operation: "session.open",
+                    deadline: started + DEFAULT_SESSION_INITIALIZATION_TIMEOUT,
+                    timeout_policy: RequestTimeoutPolicy::Hard(
+                        DEFAULT_SESSION_INITIALIZATION_TIMEOUT,
+                    ),
+                    reply: hard_reply,
+                },
+            ),
+        ]);
+        let mut ignored_responses = IgnoredResponses::default();
+        let connection_faulted = AtomicBool::new(false);
+
+        assert!(!expire_requests_at(
+            &mut pending,
+            &mut ignored_responses,
+            &connection_faulted,
+            started + DEFAULT_RESPONSE_TIMEOUT + Duration::from_secs(1),
+        ));
+        assert_eq!(
+            soft_receiver.recv().unwrap().unwrap_err().code,
+            "BRIDGE_TIMEOUT"
+        );
+        assert!(pending.contains_key("rust-hard"));
+        assert!(!connection_faulted.load(Ordering::Acquire));
+
+        assert!(expire_requests_at(
+            &mut pending,
+            &mut ignored_responses,
+            &connection_faulted,
+            started + DEFAULT_SESSION_INITIALIZATION_TIMEOUT + Duration::from_secs(1),
+        ));
+        assert_eq!(
+            hard_receiver.recv().unwrap().unwrap_err().code,
+            "BRIDGE_TIMEOUT"
+        );
+        assert!(pending.is_empty());
+        assert!(connection_faulted.load(Ordering::Acquire));
     }
 
     #[test]

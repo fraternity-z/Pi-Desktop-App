@@ -40,7 +40,7 @@ import {
   gitUnstage,
 } from "../ipc/git";
 import { getRequestHeaderSettings, updateRequestHeaderSettings } from "../ipc/settings";
-import { getRuntimeStatus } from "../ipc/system";
+import { getRuntimeStatus, listenToRuntimeStatus, restartRuntime } from "../ipc/system";
 import {
   createWorkspaceWorktree,
   ensureConversationWorkspace,
@@ -123,7 +123,11 @@ vi.mock("../ipc/settings", async (importOriginal) => ({
   getRequestHeaderSettings: vi.fn(),
   updateRequestHeaderSettings: vi.fn(),
 }));
-vi.mock("../ipc/system", () => ({ getRuntimeStatus: vi.fn() }));
+vi.mock("../ipc/system", () => ({
+  getRuntimeStatus: vi.fn(),
+  listenToRuntimeStatus: vi.fn(),
+  restartRuntime: vi.fn(),
+}));
 vi.mock("../ipc/workspace", () => ({
   createWorkspaceWorktree: vi.fn(),
   ensureConversationWorkspace: vi.fn(),
@@ -189,6 +193,8 @@ describe("ChatWorkbenchView", () => {
     emitAgentEvent = undefined;
     unlisten = vi.fn<() => void>();
     vi.mocked(getRuntimeStatus).mockReset().mockResolvedValue(readyRuntime);
+    vi.mocked(restartRuntime).mockReset().mockResolvedValue(readyRuntime);
+    vi.mocked(listenToRuntimeStatus).mockReset().mockResolvedValue(vi.fn());
     vi.mocked(getRequestHeaderSettings)
       .mockReset()
       .mockResolvedValue({ enabled: false, client: "claude-code" });
@@ -953,17 +959,21 @@ describe("ChatWorkbenchView", () => {
     ]);
     render(<ChatWorkbenchView />);
     await screen.findByRole("status", { name: "状态正常" });
-    await waitFor(() => expect(listAgentPackages).toHaveBeenCalled());
+    expect(listAgentPackages).not.toHaveBeenCalled();
+    expect(listAgentResources).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "插件" }));
     expect(screen.getByRole("heading", { name: "插件" })).toBeInTheDocument();
-    expect(screen.getByText("pi-extension")).toBeInTheDocument();
+    expect(await screen.findByText("pi-extension")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "插件" })).toHaveTextContent("1");
+    expect(listAgentPackages).toHaveBeenCalledOnce();
+    expect(listAgentResources).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "资源" }));
     expect(screen.getByRole("heading", { name: "资源" })).toBeInTheDocument();
-    expect(screen.getByText("项目检查")).toBeInTheDocument();
+    expect(await screen.findByText("项目检查")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "资源" })).toHaveTextContent("1");
+    expect(listAgentResources).toHaveBeenCalledOnce();
 
     fireEvent.click(screen.getByRole("button", { name: "返回对话" }));
     expect(screen.getByRole("heading", { name: "会话工作台" })).toBeInTheDocument();

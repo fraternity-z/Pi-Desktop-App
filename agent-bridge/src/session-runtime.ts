@@ -16,6 +16,13 @@ import {
   type RequestHeaderExtensionFactory,
   type RequestHeaderSettings,
 } from "./request-headers.js";
+import {
+  emitPerformanceDiagnostic,
+  measurePerformance,
+  measurePerformanceSync,
+  performanceNow,
+  type PerformanceDiagnosticSink,
+} from "./performance.js";
 
 export type ThinkingLevelMap = Partial<Record<ThinkingLevel, string | null>>;
 
@@ -804,6 +811,7 @@ export class PiSessionRuntime implements SessionRuntime {
   private readonly listeners = new Set<(event: RuntimeEvent) => void>();
   private modelRuntimePromise: Promise<PiModelRuntimeLike> | undefined;
   private readonly sessions = new Map<string, ManagedSession>();
+  private readonly openingSessions = new Map<string, Promise<CreatedAgentSession>>();
   private requestHeaderSettings: RequestHeaderSettings = { ...DEFAULT_REQUEST_HEADER_SETTINGS };
   private closed = false;
 
@@ -811,7 +819,13 @@ export class PiSessionRuntime implements SessionRuntime {
     private readonly sdk: PiSdkLike,
     private readonly agentDir: string,
     private readonly sessionFiles: SessionFileDependencies = DEFAULT_SESSION_FILE_DEPENDENCIES,
+    private readonly diagnostics: PerformanceDiagnosticSink = () => undefined,
   ) {}
+
+  warmUp(): void {
+    this.ensureOpen();
+    void this.getModelRuntime().catch(() => undefined);
+  }
 
   configureRequestHeaders(settings: RequestHeaderSettings): RequestHeaderSettings {
     this.ensureOpen();
@@ -827,20 +841,34 @@ export class PiSessionRuntime implements SessionRuntime {
 
   async createSession(cwd: string): Promise<CreatedAgentSession> {
     this.ensureOpen();
-    try {
-      const modelRuntime = await this.getModelRuntime();
-      const resourceLoader = await this.createResourceLoader(cwd);
-      const result = await this.sdk.createAgentSession({
-        cwd,
-        agentDir: this.agentDir,
-        modelRuntime,
-        sessionManager: this.sdk.SessionManager.create(cwd),
-        ...(resourceLoader ? { resourceLoader } : {}),
-      });
-      return this.activateSession(result, cwd, resourceLoader);
-    } catch (error) {
-      throw mapRuntimeError(error, "SESSION_CREATE_FAILED", "无法创建 Pi 会话");
-    }
+    return measurePerformance(this.diagnostics, "session.create", "total", async () => {
+      try {
+        const modelRuntime = await this.getModelRuntime();
+        const resourceLoader = await this.createResourceLoader(cwd, "session.create");
+        const sessionManager = measurePerformanceSync(
+          this.diagnostics,
+          "session.create",
+          "session.manager",
+          () => this.sdk.SessionManager.create(cwd),
+        );
+        const result = await measurePerformance(
+          this.diagnostics,
+          "session.create",
+          "session.create",
+          () =>
+            this.sdk.createAgentSession({
+              cwd,
+              agentDir: this.agentDir,
+              modelRuntime,
+              sessionManager,
+              ...(resourceLoader ? { resourceLoader } : {}),
+            }),
+        );
+        return this.activateSession(result, cwd, resourceLoader, "session.create");
+      } catch (error) {
+        throw mapRuntimeError(error, "SESSION_CREATE_FAILED", "无法创建 Pi 会话");
+      }
+    });
   }
 
   async listSessions(): Promise<AgentSessionSummary[]> {
@@ -973,23 +1001,51 @@ export class PiSessionRuntime implements SessionRuntime {
         normalizeRuntimePath(managed.session.sessionFile) === normalizedSessionPath,
     );
     if (existing) {
-      return describeManagedSession(existing);
+      return describeManagedSession(existing, this.diagnostics, "session.open");
     }
+
+    const pending = this.openingSessions.get(normalizedSessionPath);
+    if (pending) return pending;
+
+    const task = measurePerformance(this.diagnostics, "session.open", "total", async () => {
+      try {
+        const sessionManager = measurePerformanceSync(
+          this.diagnostics,
+          "session.open",
+          "session.manager",
+          () => this.sdk.SessionManager.open(sessionPath),
+        );
+        const cwd = sessionManager.getCwd?.() ?? "";
+        const modelRuntime = await this.getModelRuntime();
+        const resourceLoader = await this.createResourceLoader(
+          cwd || process.cwd(),
+          "session.open",
+        );
+        const result = await measurePerformance(
+          this.diagnostics,
+          "session.open",
+          "session.create",
+          () =>
+            this.sdk.createAgentSession({
+              ...(cwd ? { cwd } : {}),
+              agentDir: this.agentDir,
+              modelRuntime,
+              sessionManager,
+              ...(resourceLoader ? { resourceLoader } : {}),
+            }),
+        );
+        return this.activateSession(result, cwd, resourceLoader, "session.open");
+      } catch (error) {
+        throw mapRuntimeError(error, "SESSION_OPEN_FAILED", "无法打开所选 Pi 会话");
+      }
+    });
+    this.openingSessions.set(normalizedSessionPath, task);
     try {
-      const sessionManager = this.sdk.SessionManager.open(sessionPath);
-      const cwd = sessionManager.getCwd?.() ?? "";
-      const modelRuntime = await this.getModelRuntime();
-      const resourceLoader = await this.createResourceLoader(cwd || process.cwd());
-      const result = await this.sdk.createAgentSession({
-        ...(cwd ? { cwd } : {}),
-        agentDir: this.agentDir,
-        modelRuntime,
-        sessionManager,
-        ...(resourceLoader ? { resourceLoader } : {}),
-      });
-      return this.activateSession(result, cwd, resourceLoader);
-    } catch (error) {
-      throw mapRuntimeError(error, "SESSION_OPEN_FAILED", "无法打开所选 Pi 会话");
+      return await task;
+    } finally {
+      if (this.openingSessions.get(normalizedSessionPath) === task) {
+        this.openingSessions.delete(normalizedSessionPath);
+      }
     }
   }
 
@@ -1108,20 +1164,33 @@ export class PiSessionRuntime implements SessionRuntime {
 
   async listResources(cwd: string): Promise<ResourceSummary[]> {
     this.ensureOpen();
-    try {
-      if (typeof this.sdk.DefaultResourceLoader !== "function") {
-        throw new RuntimeError("RESOURCE_LIST_UNSUPPORTED", "当前 Pi SDK 不支持资源清单");
+    return measurePerformance(this.diagnostics, "resource.list", "total", async () => {
+      try {
+        const normalizedCwd = normalizeRuntimePath(cwd);
+        const managedLoader = [...this.sessions.values()].find(
+          (managed) =>
+            managed.resourceLoader !== undefined &&
+            normalizeRuntimePath(managed.cwd) === normalizedCwd,
+        )?.resourceLoader;
+        if (managedLoader) {
+          return listResourcesFromLoader(managedLoader, cwd, this.agentDir);
+        }
+        if (typeof this.sdk.DefaultResourceLoader !== "function") {
+          throw new RuntimeError("RESOURCE_LIST_UNSUPPORTED", "当前 Pi SDK 不支持资源清单");
+        }
+        const loader = new this.sdk.DefaultResourceLoader({
+          cwd,
+          agentDir: this.agentDir,
+          extensionFactories: [],
+        });
+        await measurePerformance(this.diagnostics, "resource.list", "resource.reload", () =>
+          loader.reload(),
+        );
+        return listResourcesFromLoader(loader, cwd, this.agentDir);
+      } catch (error) {
+        throw mapRuntimeError(error, "RESOURCE_LIST_FAILED", "无法读取 Pi 资源与技能");
       }
-      const loader = new this.sdk.DefaultResourceLoader({
-        cwd,
-        agentDir: this.agentDir,
-        extensionFactories: [],
-      });
-      await loader.reload();
-      return listResourcesFromLoader(loader, cwd, this.agentDir);
-    } catch (error) {
-      throw mapRuntimeError(error, "RESOURCE_LIST_FAILED", "无法读取 Pi 资源与技能");
-    }
+    });
   }
 
   async configureSession(
@@ -1253,14 +1322,29 @@ export class PiSessionRuntime implements SessionRuntime {
   }
 
   private async getModelRuntime(): Promise<PiModelRuntimeLike> {
-    this.modelRuntimePromise ??= this.sdk.ModelRuntime.create({
-      authPath: join(this.agentDir, "auth.json"),
-      modelsPath: join(this.agentDir, "models.json"),
+    if (this.modelRuntimePromise) return this.modelRuntimePromise;
+
+    const creation = measurePerformance(
+      this.diagnostics,
+      "model.runtime",
+      "model.initialize",
+      () =>
+        this.sdk.ModelRuntime.create({
+          authPath: join(this.agentDir, "auth.json"),
+          modelsPath: join(this.agentDir, "models.json"),
+        }),
+    );
+    this.modelRuntimePromise = creation;
+    void creation.catch(() => {
+      if (this.modelRuntimePromise === creation) this.modelRuntimePromise = undefined;
     });
-    return this.modelRuntimePromise;
+    return creation;
   }
 
-  private async createResourceLoader(cwd: string): Promise<PiResourceLoaderLike | undefined> {
+  private async createResourceLoader(
+    cwd: string,
+    operation: "session.create" | "session.open",
+  ): Promise<PiResourceLoaderLike | undefined> {
     if (typeof this.sdk.DefaultResourceLoader !== "function") {
       if (this.requestHeaderSettings.enabled) {
         throw new RuntimeError(
@@ -1281,7 +1365,9 @@ export class PiSessionRuntime implements SessionRuntime {
         },
       ],
     });
-    await resourceLoader.reload();
+    await measurePerformance(this.diagnostics, operation, "resource.reload", () =>
+      resourceLoader.reload(),
+    );
     return resourceLoader;
   }
 
@@ -1321,6 +1407,7 @@ export class PiSessionRuntime implements SessionRuntime {
     result: { session: PiSessionLike; modelFallbackMessage?: string },
     cwd: string,
     resourceLoader?: PiResourceLoaderLike,
+    operation?: "session.create" | "session.open",
   ): CreatedAgentSession {
     const { session } = result;
     if (!session.sessionId || this.sessions.has(session.sessionId)) {
@@ -1352,7 +1439,7 @@ export class PiSessionRuntime implements SessionRuntime {
     this.sessions.set(session.sessionId, managed);
 
     return {
-      ...describeManagedSession(managed),
+      ...describeManagedSession(managed, this.diagnostics, operation),
       ...(result.modelFallbackMessage === undefined
         ? {}
         : { modelFallbackMessage: result.modelFallbackMessage }),
@@ -1511,13 +1598,22 @@ export class PiSessionRuntime implements SessionRuntime {
   }
 }
 
-function describeManagedSession(managed: ManagedSession): CreatedAgentSession {
+function describeManagedSession(
+  managed: ManagedSession,
+  diagnostics?: PerformanceDiagnosticSink,
+  operation?: "session.create" | "session.open",
+): CreatedAgentSession {
+  const historyStartedAt = performanceNow();
+  const messages = summarizeMessages(managed.session.messages);
+  if (diagnostics && operation) {
+    emitPerformanceDiagnostic(diagnostics, operation, "history.project", historyStartedAt);
+  }
   return {
     sessionId: managed.session.sessionId,
     cwd: managed.cwd,
     sessionPath: managed.session.sessionFile ?? null,
     configuration: describeConfiguration(managed.session, managed.defaultToolNames),
-    messages: summarizeMessages(managed.session.messages),
+    messages,
     queuedMessages: describeQueue(managed.session),
     streaming: managed.session.isStreaming,
     contextUsage: readContextUsage(managed.session),
@@ -1883,46 +1979,126 @@ function toIsoString(value: Date | string): string | null {
 
 interface PendingToolCall {
   toolName: string;
-  input?: ToolDisplayPayload;
+  input: unknown;
 }
 
 function summarizeMessages(messages: unknown[]): AgentMessageSummary[] {
+  const start = findHistoryStart(messages);
   const pendingTools = new Map<string, PendingToolCall>();
-  const summaries: AgentMessageSummary[] = [];
-  for (const message of messages) {
-    collectPendingToolCalls(message, pendingTools);
-    summaries.push(...projectHistoryMessage(message, pendingTools));
-  }
-
+  seedPendingToolCalls(messages, start, pendingTools);
   const selected: AgentMessageSummary[] = [];
   let characters = 0;
-  for (const message of summaries.slice(-MAX_HISTORY_MESSAGES).reverse()) {
-    const messageCharacters =
-      message.content.length +
-      (message.toolInput?.text.length ?? 0) +
-      (message.toolOutput?.text.length ?? 0);
-    if (characters + messageCharacters > MAX_HISTORY_CHARS) {
-      break;
+  history: for (let index = messages.length - 1; index >= start; index -= 1) {
+    const projected = projectHistoryMessage(messages[index], pendingTools);
+    for (let partIndex = projected.length - 1; partIndex >= 0; partIndex -= 1) {
+      if (selected.length >= MAX_HISTORY_MESSAGES) break history;
+      const message = projected[partIndex]!;
+      const messageCharacters = historyMessageCharacters(message);
+      if (characters + messageCharacters > MAX_HISTORY_CHARS) break history;
+      characters += messageCharacters;
+      selected.push(message);
     }
-    characters += messageCharacters;
-    selected.push(message);
   }
   return selected.reverse();
 }
 
-function collectPendingToolCalls(
-  message: unknown,
+function historyMessageCharacters(message: AgentMessageSummary): number {
+  return (
+    message.content.length +
+    (message.toolInput?.text.length ?? 0) +
+    (message.toolOutput?.text.length ?? 0)
+  );
+}
+
+function findHistoryStart(messages: unknown[]): number {
+  let projected = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    projected += projectedMessageCount(messages[index]);
+    if (projected >= MAX_HISTORY_MESSAGES) return index;
+  }
+  return 0;
+}
+
+function projectedMessageCount(message: unknown): number {
+  if (!isRecord(message)) return 0;
+  if (message.role === "user") return hasMessageText(message.content) ? 1 : 0;
+  if (message.role === "assistant") {
+    if (!Array.isArray(message.content)) return hasMessageText(message.content) ? 1 : 0;
+    let count = 0;
+    for (const part of message.content) {
+      if (
+        isRecord(part) &&
+        (part.type === "text" || part.type === "thinking") &&
+        typeof part.text === "string" &&
+        part.text.length > 0
+      ) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+  if (message.role === "toolResult") {
+    return readBoundedText(message.toolCallId, MAX_TOOL_CALL_ID_CHARS) ? 1 : 0;
+  }
+  return 0;
+}
+
+function hasMessageText(content: unknown): boolean {
+  if (typeof content === "string") return content.length > 0;
+  if (!Array.isArray(content)) return false;
+  return content.some(
+    (block) =>
+      isRecord(block) &&
+      block.type === "text" &&
+      typeof block.text === "string" &&
+      block.text.length > 0,
+  );
+}
+
+function seedPendingToolCalls(
+  messages: unknown[],
+  start: number,
   pendingTools: Map<string, PendingToolCall>,
 ): void {
-  if (!isRecord(message) || message.role !== "assistant" || !Array.isArray(message.content)) return;
-  for (const part of message.content) {
-    if (!isRecord(part) || (part.type !== "toolCall" && part.type !== "tool_use")) continue;
-    const toolCallId = readBoundedText(part.id ?? part.toolCallId, MAX_TOOL_CALL_ID_CHARS);
-    const toolName = readBoundedText(part.name ?? part.toolName, MAX_TOOL_NAME_CHARS);
-    if (!toolCallId || !toolName) continue;
-    const input = projectToolDisplay(part.arguments ?? part.args ?? part.input);
-    pendingTools.set(toolCallId, { toolName, ...(input ? { input } : {}) });
+  const unresolved = new Set<string>();
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (index < start && unresolved.size === 0) break;
+    const message = messages[index];
+    if (!isRecord(message)) continue;
+    if (index >= start && message.role === "toolResult") {
+      const toolCallId = readBoundedText(message.toolCallId, MAX_TOOL_CALL_ID_CHARS);
+      if (toolCallId) unresolved.add(toolCallId);
+      continue;
+    }
+    if (!isRecord(message) || message.role !== "assistant" || !Array.isArray(message.content)) {
+      continue;
+    }
+    for (let partIndex = message.content.length - 1; partIndex >= 0; partIndex -= 1) {
+      const part = message.content[partIndex];
+      const identity = readToolCallIdentity(part);
+      if (!identity || !unresolved.has(identity.toolCallId)) continue;
+      pendingTools.set(identity.toolCallId, {
+        toolName: identity.toolName,
+        input: readToolCallInput(part),
+      });
+      unresolved.delete(identity.toolCallId);
+    }
   }
+}
+
+function readToolCallIdentity(
+  part: unknown,
+): { toolCallId: string; toolName: string } | null {
+  if (!isRecord(part) || (part.type !== "toolCall" && part.type !== "tool_use")) return null;
+  const toolCallId = readBoundedText(part.id ?? part.toolCallId, MAX_TOOL_CALL_ID_CHARS);
+  const toolName = readBoundedText(part.name ?? part.toolName, MAX_TOOL_NAME_CHARS);
+  if (!toolCallId || !toolName) return null;
+  return { toolCallId, toolName };
+}
+
+function readToolCallInput(part: unknown): unknown {
+  if (!isRecord(part)) return undefined;
+  return part.arguments ?? part.args ?? part.input;
 }
 
 function projectHistoryMessage(
@@ -1958,6 +2134,7 @@ function projectHistoryMessage(
       readBoundedText(message.toolName, MAX_TOOL_NAME_CHARS) ?? pending?.toolName ?? null;
     if (!toolCallId || !toolName) return [];
     pendingTools.delete(toolCallId);
+    const toolInput = pending ? projectToolDisplay(pending.input) : undefined;
     const toolOutput = projectToolOutput(message.content ?? message.result ?? message.output);
     return [
       {
@@ -1965,7 +2142,7 @@ function projectHistoryMessage(
         content: "",
         toolCallId,
         toolName,
-        ...(pending?.input ? { toolInput: pending.input } : {}),
+        ...(toolInput ? { toolInput } : {}),
         ...(toolOutput ? { toolOutput } : {}),
         isError: message.isError === true,
         ...(timestamp ? { timestamp } : {}),

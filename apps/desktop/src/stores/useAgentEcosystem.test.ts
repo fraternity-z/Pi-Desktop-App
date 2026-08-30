@@ -18,7 +18,7 @@ vi.mock("../ipc/agent", async (importOriginal) => ({
 describe("useAgentEcosystem", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("并行加载真实插件与资源目录", async () => {
+  it("按进入的页面独立加载插件与资源目录", async () => {
     vi.mocked(agentIpc.listAgentPackages).mockResolvedValue([
       {
         source: "npm:pi-test",
@@ -33,14 +33,19 @@ describe("useAgentEcosystem", () => {
     ]);
     const { result } = renderHook(() => useAgentEcosystem());
 
-    await act(() => result.current.refresh("C:\\work"));
+    await act(() => result.current.refresh("C:\\work", "packages"));
 
     expect(result.current.phase).toBe("ready");
     expect(result.current.packages).toHaveLength(1);
+    expect(agentIpc.listAgentResources).not.toHaveBeenCalled();
+
+    await act(() => result.current.refresh("C:\\work", "resources"));
+
     expect(result.current.resources[0]?.kind).toBe("skill");
+    expect(agentIpc.listAgentPackages).toHaveBeenCalledOnce();
   });
 
-  it("插件变更后同步刷新资源并公开稳定错误", async () => {
+  it("插件变更不重复刷新资源并公开稳定错误", async () => {
     vi.mocked(agentIpc.installAgentPackage).mockResolvedValue([]);
     vi.mocked(agentIpc.listAgentResources).mockResolvedValue([]);
     const { result } = renderHook(() => useAgentEcosystem());
@@ -51,7 +56,7 @@ describe("useAgentEcosystem", () => {
       "npm:pi-test",
       "project",
     );
-    expect(agentIpc.listAgentResources).toHaveBeenCalledWith("C:\\work");
+    expect(agentIpc.listAgentResources).not.toHaveBeenCalled();
 
     vi.mocked(agentIpc.removeAgentPackage).mockRejectedValueOnce({
       code: "PACKAGE_REMOVE_FAILED",
@@ -108,33 +113,26 @@ describe("useAgentEcosystem", () => {
   it("忽略过期刷新结果并映射未知加载异常", async () => {
     let releasePackages: (value: Awaited<ReturnType<typeof agentIpc.listAgentPackages>>) => void =
       () => undefined;
-    let releaseResources: (value: Awaited<ReturnType<typeof agentIpc.listAgentResources>>) => void =
-      () => undefined;
     vi.mocked(agentIpc.listAgentPackages)
       .mockReturnValueOnce(new Promise((resolve) => (releasePackages = resolve)))
-      .mockResolvedValueOnce([]);
-    vi.mocked(agentIpc.listAgentResources)
-      .mockReturnValueOnce(new Promise((resolve) => (releaseResources = resolve)))
       .mockResolvedValueOnce([]);
     const { result } = renderHook(() => useAgentEcosystem());
     let staleTask: Promise<boolean> = Promise.resolve(false);
 
     act(() => {
-      staleTask = result.current.refresh("C:\\old");
+      staleTask = result.current.refresh("C:\\old", "packages");
     });
-    await act(() => result.current.refresh("C:\\new"));
+    await act(() => result.current.refresh("C:\\new", "packages"));
     await act(async () => {
       releasePackages([]);
-      releaseResources([]);
       await staleTask;
     });
     expect(result.current.phase).toBe("ready");
 
     vi.mocked(agentIpc.listAgentPackages).mockRejectedValueOnce(new Error("offline"));
-    vi.mocked(agentIpc.listAgentResources).mockResolvedValueOnce([]);
-    await act(() => result.current.refresh("C:\\failed"));
+    await act(() => result.current.refresh("C:\\failed", "packages"));
     expect(result.current.phase).toBe("error");
-    expect(result.current.error).toBe("ECOSYSTEM_LOAD_FAILED: 无法读取插件与资源");
+    expect(result.current.error).toBe("PACKAGE_LIST_FAILED: 无法读取插件");
   });
 
   it("切换工作区后忽略旧插件操作和更新检查结果", async () => {
@@ -165,7 +163,7 @@ describe("useAgentEcosystem", () => {
     act(() => {
       staleUpdate = result.current.updatePackage("C:\\old");
     });
-    await act(() => result.current.refresh("C:\\new"));
+    await act(() => result.current.refresh("C:\\new", "packages"));
     await act(async () => {
       releaseUpdate([oldPackage]);
       await staleUpdate;
@@ -176,7 +174,7 @@ describe("useAgentEcosystem", () => {
     act(() => {
       staleCheck = result.current.checkUpdates("C:\\old");
     });
-    await act(() => result.current.refresh("C:\\new"));
+    await act(() => result.current.refresh("C:\\new", "packages"));
     await act(async () => {
       releaseCheck([
         { source: "npm:old", displayName: "Old", type: "npm", scope: "global" },

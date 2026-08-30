@@ -115,7 +115,7 @@ export function ChatWorkbenchView() {
   const pendingConversationScroll = useRef<(() => void) | null>(null);
   const projectDialogTrigger = useRef<HTMLElement | null>(null);
   const rightPanelTrigger = useRef<HTMLButtonElement | null>(null);
-  const ecosystemCwd = useRef("");
+  const ecosystemRequestKey = useRef("");
   const [atConversationBottom, setAtConversationBottom] = useState(true);
   const hasSession = session.sessionId !== null;
   const rightPanelEnabled =
@@ -139,9 +139,12 @@ export function ChatWorkbenchView() {
       : null;
 
   const runtimeReady = runtime.phase === "ready" && runtime.status.status === "ready";
+  const runtimeStarting =
+    runtime.phase === "loading" ||
+    (runtime.phase === "ready" && runtime.status.status === "starting");
   const eventChannelReady = session.eventConnection === "ready";
   const startupStage = !hasSession
-    ? runtime.phase === "loading"
+    ? runtimeStarting
       ? "runtime"
       : runtimeReady && session.eventConnection === "connecting"
         ? "events"
@@ -213,11 +216,16 @@ export function ChatWorkbenchView() {
   }, [eventChannelReady, runtimeReady, session.catalogPhase, session.loadCatalogs]);
 
   useEffect(() => {
+    if (activeView !== "packages" && activeView !== "resources") {
+      ecosystemRequestKey.current = "";
+      return;
+    }
     if (!runtimeReady || !eventChannelReady || !managementCwd) return;
-    if (ecosystemCwd.current === managementCwd && ecosystem.phase !== "idle") return;
-    ecosystemCwd.current = managementCwd;
-    void ecosystem.refresh(managementCwd);
-  }, [ecosystem.phase, ecosystem.refresh, eventChannelReady, managementCwd, runtimeReady]);
+    const requestKey = `${activeView}:${normalizeComparablePath(managementCwd)}`;
+    if (ecosystemRequestKey.current === requestKey) return;
+    ecosystemRequestKey.current = requestKey;
+    void ecosystem.refresh(managementCwd, activeView);
+  }, [activeView, ecosystem.refresh, eventChannelReady, managementCwd, runtimeReady]);
 
   useEffect(() => {
     if (!session.cwd) {
@@ -314,6 +322,7 @@ export function ChatWorkbenchView() {
   }
 
   function openProjectDialog() {
+    session.cancelAutoRestore();
     projectDialogTrigger.current = document.activeElement as HTMLElement | null;
     setProjectSelectionError(null);
     setProjectDialogOpen(true);
@@ -379,17 +388,15 @@ export function ChatWorkbenchView() {
   }
 
   function openSettings() {
+    session.cancelAutoRestore();
     setSettingsSection("general");
     setActiveView("settings");
     closeSidebarAfterNavigation();
   }
 
   function openEcosystem(view: "packages" | "resources") {
+    session.cancelAutoRestore();
     setActiveView(view);
-    if (managementCwd && ecosystemCwd.current !== managementCwd) {
-      ecosystemCwd.current = managementCwd;
-      void ecosystem.refresh(managementCwd);
-    }
     closeSidebarAfterNavigation();
   }
 

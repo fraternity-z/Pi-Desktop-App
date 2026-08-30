@@ -9,7 +9,11 @@ interface RuntimeStatusControlProps {
 }
 
 export function RuntimeStatusControl({ runtime, eventConnection }: RuntimeStatusControlProps) {
-  if (runtime.phase === "loading" || eventConnection === "connecting") {
+  if (
+    runtime.phase === "loading" ||
+    (runtime.phase === "ready" && runtime.status.status === "starting") ||
+    eventConnection === "connecting"
+  ) {
     return (
       <span
         className="runtime-status-icon runtime-status-icon-loading"

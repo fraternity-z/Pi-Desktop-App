@@ -1,6 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -575,6 +576,29 @@ describe("PiSessionRuntime", () => {
     ]);
   });
 
+  it("预热、模型目录和会话打开复用同一个模型初始化任务，失败后允许重试", async () => {
+    const opened = createSessionMock("opened", {
+      sessionFile: "C:\\agent\\sessions\\work\\saved.jsonl",
+    });
+    const sdk = sdkReturning(opened);
+    const createModelRuntime = vi.mocked(sdk.ModelRuntime.create);
+    createModelRuntime.mockRejectedValueOnce(new Error("model startup failed"));
+    const runtime = new PiSessionRuntime(sdk, "C:\\agent");
+
+    runtime.warmUp();
+    await expect(runtime.listModels()).rejects.toEqual(
+      expect.objectContaining<Partial<RuntimeError>>({ code: "MODEL_LIST_FAILED" }),
+    );
+
+    const [models, session] = await Promise.all([
+      runtime.listModels(),
+      runtime.openSession("C:\\agent\\sessions\\work\\saved.jsonl"),
+    ]);
+    expect(models).toHaveLength(2);
+    expect(session.sessionId).toBe("opened");
+    expect(createModelRuntime).toHaveBeenCalledTimes(2);
+  });
+
   it("返回 SDK 上下文占用量并仅在数值变化时广播", async () => {
     const sessionMock = createSessionMock("usage", {
       contextUsage: { tokens: 1_024, contextWindow: 8_192, percent: 12.5 },
@@ -1024,6 +1048,7 @@ describe("PiSessionRuntime", () => {
       { kind: "context", name: "AGENTS.md", path: "C:\\work\\AGENTS.md" },
     ]);
     expect(reloadSession).toHaveBeenCalledTimes(5);
+    expect(reloadResource).toHaveBeenCalledOnce();
   });
 
   it("打开持久会话、恢复富文本历史并保留此前会话", async () => {
@@ -1097,6 +1122,153 @@ describe("PiSessionRuntime", () => {
       expect.objectContaining({ sessionId: "opened" }),
     );
     expect(sdk.createAgentSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("合并同一路径的并发打开，仅创建一个 SDK 会话", async () => {
+    const opened = createSessionMock("opened", {
+      sessionFile: "C:\\agent\\sessions\\work\\saved.jsonl",
+    });
+    const sdk = sdkReturning(opened);
+    const runtime = new PiSessionRuntime(sdk, "C:\\agent");
+
+    const [first, second] = await Promise.all([
+      runtime.openSession("C:\\agent\\sessions\\work\\saved.jsonl"),
+      runtime.openSession("C:/agent/sessions/work/saved.jsonl"),
+    ]);
+
+    expect(first.sessionId).toBe("opened");
+    expect(second.sessionId).toBe("opened");
+    expect(sdk.SessionManager.open).toHaveBeenCalledOnce();
+    expect(sdk.createAgentSession).toHaveBeenCalledOnce();
+  });
+
+  it("只投影 10,000 条历史的有界尾部且不读取截断区工具参数", async () => {
+    const inaccessibleArguments = {};
+    Object.defineProperty(inaccessibleArguments, "apiKey", {
+      enumerable: true,
+      get: () => {
+        throw new Error("截断区不应被序列化");
+      },
+    });
+    const messages: unknown[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "old-tool",
+            name: "read",
+            arguments: inaccessibleArguments,
+          },
+        ],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "old-tool",
+        toolName: "read",
+        content: "old output",
+      },
+      ...Array.from({ length: 10_000 }, (_, index) => ({
+        role: "user",
+        content: `tail-${index}`,
+      })),
+    ];
+    const opened = createSessionMock("large-history", {
+      sessionFile: "C:\\agent\\sessions\\work\\large.jsonl",
+      messages,
+    });
+    const runtime = new PiSessionRuntime(sdkReturning(opened), "C:\\agent");
+
+    const startedAt = performance.now();
+    const restored = await runtime.openSession("C:\\agent\\sessions\\work\\large.jsonl");
+    const durationMs = performance.now() - startedAt;
+
+    expect(restored.messages).toHaveLength(200);
+    expect(restored.messages[0]).toEqual({ role: "user", content: "tail-9800" });
+    expect(restored.messages.at(-1)).toEqual({ role: "user", content: "tail-9999" });
+    expect(durationMs).toBeLessThan(100);
+  });
+
+  it("仅序列化有返回结果的工具输入", async () => {
+    const unusedArguments = {};
+    Object.defineProperty(unusedArguments, "token", {
+      enumerable: true,
+      get: () => {
+        throw new Error("未匹配的工具输入不应被序列化");
+      },
+    });
+    const opened = createSessionMock("unused-tool-input", {
+      sessionFile: "C:\\agent\\sessions\\work\\unused-tool-input.jsonl",
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "unused-tool",
+              name: "read",
+              arguments: unusedArguments,
+            },
+          ],
+        },
+        { role: "user", content: "keep this message" },
+      ],
+    });
+    const runtime = new PiSessionRuntime(sdkReturning(opened), "C:\\agent");
+
+    await expect(
+      runtime.openSession("C:\\agent\\sessions\\work\\unused-tool-input.jsonl"),
+    ).resolves.toEqual(
+      expect.objectContaining({ messages: [{ role: "user", content: "keep this message" }] }),
+    );
+  });
+
+  it("达到历史字符预算后不再读取更早的工具输入", async () => {
+    const excludedArguments = {};
+    Object.defineProperty(excludedArguments, "token", {
+      enumerable: true,
+      get: () => {
+        throw new Error("字符预算外的工具输入不应被序列化");
+      },
+    });
+    const opened = createSessionMock("bounded-history-characters", {
+      sessionFile: "C:\\agent\\sessions\\work\\bounded-history-characters.jsonl",
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "excluded-tool",
+              name: "read",
+              arguments: excludedArguments,
+            },
+          ],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "excluded-tool",
+          toolName: "read",
+          content: "excluded output",
+        },
+        ...Array.from({ length: 4 }, (_, index) => ({
+          role: "user",
+          content: `${index}:${"x".repeat(120_000)}`,
+        })),
+      ],
+    });
+    const runtime = new PiSessionRuntime(sdkReturning(opened), "C:\\agent");
+
+    const restored = await runtime.openSession(
+      "C:\\agent\\sessions\\work\\bounded-history-characters.jsonl",
+    );
+
+    expect(restored.messages).toHaveLength(3);
+    expect(restored.messages.map((message) => message.content.slice(0, 2))).toEqual([
+      "1:",
+      "2:",
+      "3:",
+    ]);
   });
 
   it("更新模型和思考强度并返回 SDK 的有效配置", async () => {

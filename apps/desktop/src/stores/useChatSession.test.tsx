@@ -492,6 +492,7 @@ describe("useChatSession", () => {
     vi.mocked(listAgentSessions).mockResolvedValueOnce([persisted]);
 
     await act(() => result.current.sendPrompt("hello"));
+    act(() => emit?.(event("agent.settled")));
     await waitFor(() =>
       expect(result.current.sessions).toEqual([
         expect.objectContaining({ id: "s-1", path: persisted.path, lifecycle: "persisted" }),
@@ -506,7 +507,21 @@ describe("useChatSession", () => {
     ]);
   });
 
-  it("加载 SDK 目录、恢复会话并同步模型与思考强度", async () => {
+  it("先展示会话目录，再空闲恢复最近会话并加载模型", async () => {
+    let idleCallback: (() => void) | undefined;
+    vi.stubGlobal(
+      "requestIdleCallback",
+      vi.fn((callback: () => void) => {
+        idleCallback = callback;
+        return 1;
+      }),
+    );
+    vi.stubGlobal("cancelIdleCallback", vi.fn());
+    vi.mocked(getWorkspaceState).mockResolvedValueOnce({
+      recentWorkspaces: ["C:\\work"],
+      lastWorkspace: "C:\\work",
+      conversationHome: "C:\\Users\\me\\Documents\\Pix\\conversations",
+    });
     vi.mocked(listAgentSessions).mockResolvedValueOnce([savedSummary]);
     vi.mocked(openAgentSession).mockResolvedValueOnce(
       agentSession({
@@ -530,34 +545,80 @@ describe("useChatSession", () => {
         ],
       }),
     );
-    const { result } = renderHook(() => useChatSession());
-    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
 
-    await act(() => result.current.loadCatalogs());
-    expect(result.current.catalogPhase).toBe("ready");
-    expect(result.current.sessions).toHaveLength(1);
-    expect(result.current.models[0]?.name).toBe("GPT");
+    try {
+      const { result } = renderHook(() => useChatSession());
+      await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
 
-    await act(() => result.current.openSession(result.current.sessions[0]!));
-    expect(result.current.sessionId).toBe("saved");
-    expect(result.current.messages).toEqual([
-      expect.objectContaining({ role: "user", content: "saved prompt" }),
-      expect.objectContaining({
-        role: "tool",
-        toolCallId: "tool-1",
-        toolInput: expect.objectContaining({ format: "json" }),
-        toolOutput: expect.objectContaining({ text: "读取完成" }),
-        status: "completed",
+      await act(() => result.current.loadCatalogs());
+      expect(result.current.catalogPhase).toBe("ready");
+      expect(result.current.sessions).toHaveLength(1);
+      expect(openAgentSession).not.toHaveBeenCalled();
+      expect(listAgentModels).not.toHaveBeenCalled();
+      expect(vi.mocked(getWorkspaceState).mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(listAgentSessions).mock.invocationCallOrder[0]!,
+      );
+
+      act(() => idleCallback?.());
+      await waitFor(() => expect(result.current.sessionId).toBe("saved"));
+      await waitFor(() => expect(result.current.models[0]?.name).toBe("GPT"));
+      expect(openAgentSession).toHaveBeenCalledWith(savedSummary.path);
+      expect(vi.mocked(openAgentSession).mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(listAgentModels).mock.invocationCallOrder[0]!,
+      );
+      expect(result.current.messages).toEqual([
+        expect.objectContaining({ role: "user", content: "saved prompt" }),
+        expect.objectContaining({
+          role: "tool",
+          toolCallId: "tool-1",
+          toolInput: expect.objectContaining({ format: "json" }),
+          toolOutput: expect.objectContaining({ text: "读取完成" }),
+          status: "completed",
+        }),
+      ]);
+
+      await act(() => result.current.updateThinkingLevel("high"));
+      expect(configureAgentSession).toHaveBeenCalledWith("saved", { thinkingLevel: "high" });
+      await act(() => result.current.updateModel("openai", "gpt"));
+      expect(configureAgentSession).toHaveBeenCalledWith("saved", {
+        model: { provider: "openai", id: "gpt" },
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("用户主动导航时取消尚未开始的自动恢复，但仍加载模型目录", async () => {
+    let idleCallback: (() => void) | undefined;
+    vi.stubGlobal(
+      "requestIdleCallback",
+      vi.fn((callback: () => void) => {
+        idleCallback = callback;
+        return 1;
       }),
-    ]);
-
-    await act(() => result.current.updateThinkingLevel("high"));
-    expect(configureAgentSession).toHaveBeenCalledWith("saved", { thinkingLevel: "high" });
-    expect(result.current.configuration?.thinkingLevel).toBe("high");
-    await act(() => result.current.updateModel("openai", "gpt"));
-    expect(configureAgentSession).toHaveBeenCalledWith("saved", {
-      model: { provider: "openai", id: "gpt" },
+    );
+    vi.stubGlobal("cancelIdleCallback", vi.fn());
+    vi.mocked(getWorkspaceState).mockResolvedValueOnce({
+      recentWorkspaces: ["C:\\work"],
+      lastWorkspace: "C:\\work",
+      conversationHome: "C:\\Users\\me\\Documents\\Pix\\conversations",
     });
+    vi.mocked(listAgentSessions).mockResolvedValueOnce([savedSummary]);
+
+    try {
+      const { result } = renderHook(() => useChatSession());
+      await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+      await act(() => result.current.loadCatalogs());
+      await act(() => result.current.createConversation());
+
+      act(() => idleCallback?.());
+      await waitFor(() => expect(result.current.models).toHaveLength(1));
+
+      expect(openAgentSession).not.toHaveBeenCalled();
+      expect(result.current.sessionId).toMatch(/^draft:/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("目录部分失败时保留可用数据并暴露可重试错误", async () => {
@@ -572,7 +633,50 @@ describe("useChatSession", () => {
 
     expect(result.current.catalogPhase).toBe("error");
     expect(result.current.catalogError).toContain("SESSION_LIST_FAILED");
-    expect(result.current.models).toHaveLength(1);
+    await waitFor(() => expect(result.current.models).toHaveLength(1));
+  });
+
+  it("agent.settled 只刷新会话目录", async () => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:\\work"));
+    vi.mocked(listAgentSessions).mockClear().mockResolvedValue([]);
+    vi.mocked(listAgentModels).mockClear();
+    vi.mocked(getWorkspaceState).mockClear();
+
+    act(() => emit?.(event("agent.settled")));
+    await waitFor(() => expect(listAgentSessions).toHaveBeenCalledOnce());
+
+    expect(listAgentModels).not.toHaveBeenCalled();
+    expect(getWorkspaceState).not.toHaveBeenCalled();
+  });
+
+  it("启动目录加载与 agent.settled 刷新竞态时不会停在 loading", async () => {
+    let resolveInitial: (sessions: AgentSessionSummary[]) => void = () => undefined;
+    vi.mocked(listAgentSessions)
+      .mockImplementationOnce(
+        () => new Promise((resolve) => {
+          resolveInitial = resolve;
+        }),
+      )
+      .mockResolvedValueOnce([savedSummary]);
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    let loadTask: Promise<void> = Promise.resolve();
+
+    act(() => {
+      loadTask = result.current.loadCatalogs();
+    });
+    await waitFor(() => expect(listAgentSessions).toHaveBeenCalledOnce());
+    act(() => emit?.(event("agent.settled", undefined, "background")));
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    await act(async () => {
+      resolveInitial([]);
+      await loadTask;
+    });
+
+    expect(result.current.catalogPhase).toBe("ready");
+    await waitFor(() => expect(result.current.models).toHaveLength(1));
   });
 
   it("清理归档会话后移除目录、活动投影和当前会话", async () => {

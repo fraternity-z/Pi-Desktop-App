@@ -1,9 +1,7 @@
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 use crate::{
-    bridge::{protocol::RequestHeaderSettings, runtime::BridgeRuntime},
-    error::AppError,
-    storage::RequestHeaderSettingsStore,
+    bridge::protocol::RequestHeaderSettings, error::AppError, storage::RequestHeaderSettingsStore,
 };
 
 #[tauri::command]
@@ -15,17 +13,20 @@ pub fn get_request_header_settings(
 
 #[tauri::command]
 pub async fn update_request_header_settings(
-    runtime: State<'_, BridgeRuntime>,
-    store: State<'_, RequestHeaderSettingsStore>,
+    app: AppHandle,
     settings: RequestHeaderSettings,
 ) -> Result<RequestHeaderSettings, AppError> {
-    let previous = store.state();
-    runtime.configure_request_headers(settings.clone())?;
-    match store.update(settings) {
-        Ok(settings) => Ok(settings),
-        Err(error) => {
-            let _ = runtime.configure_request_headers(previous);
-            Err(error)
+    super::runtime::run_runtime(app, move |app, runtime| {
+        let store = app.state::<RequestHeaderSettingsStore>();
+        let previous = store.state();
+        runtime.configure_request_headers(settings.clone())?;
+        match store.update(settings) {
+            Ok(settings) => Ok(settings),
+            Err(error) => {
+                let _ = runtime.configure_request_headers(previous);
+                Err(error)
+            }
         }
-    }
+    })
+    .await
 }

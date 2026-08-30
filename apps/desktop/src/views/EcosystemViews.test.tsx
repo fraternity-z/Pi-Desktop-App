@@ -95,7 +95,7 @@ describe("EcosystemViews", () => {
     expect(props.onOpenSidebar).toHaveBeenCalledOnce();
     expect(props.onBack).toHaveBeenCalledOnce();
     expect(ecosystem.checkUpdates).toHaveBeenCalledWith("C:\\work");
-    expect(ecosystem.refresh).toHaveBeenCalledWith("C:\\work");
+    expect(ecosystem.refresh).toHaveBeenCalledWith("C:\\work", "packages");
     expect(screen.getByText("可更新")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "更新pi-test-1" })).toBeDisabled();
 
@@ -158,7 +158,7 @@ describe("EcosystemViews", () => {
     rerender(<PackageManagerView {...packageProps(failed)} />);
     expect(screen.getByRole("alert")).toHaveTextContent("PACKAGE_LIST_FAILED");
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
-    expect(failed.refresh).toHaveBeenCalledWith("C:\\work");
+    expect(failed.refresh).toHaveBeenCalledWith("C:\\work", "packages");
 
     const empty = controller({ packages: [] });
     rerender(<PackageManagerView {...packageProps(empty)} />);
@@ -176,7 +176,7 @@ describe("EcosystemViews", () => {
     fireEvent.click(screen.getByRole("button", { name: "刷新资源" }));
     expect(props.onOpenSidebar).toHaveBeenCalledOnce();
     expect(props.onBack).toHaveBeenCalledOnce();
-    expect(ecosystem.refresh).toHaveBeenCalledWith("C:\\work");
+    expect(ecosystem.refresh).toHaveBeenCalledWith("C:\\work", "resources");
 
     fireEvent.click(screen.getByRole("tab", { name: "技能1" }));
     expect(screen.getByText("review")).toBeInTheDocument();
@@ -202,7 +202,7 @@ describe("EcosystemViews", () => {
     const failed = controller({ phase: "error", resources: [], error: "RESOURCE_LIST_FAILED: 无法读取" });
     rerender(<ResourcesView {...packageProps(failed)} />);
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
-    expect(failed.refresh).toHaveBeenCalledWith("C:\\work");
+    expect(failed.refresh).toHaveBeenCalledWith("C:\\work", "resources");
 
     const copyFailure = controller({ resources: [resources[0]] });
     vi.mocked(navigator.clipboard.writeText).mockRejectedValueOnce(new Error("denied"));

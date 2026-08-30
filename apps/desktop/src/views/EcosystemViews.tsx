@@ -106,7 +106,7 @@ export function PackageManagerView({
           title="刷新"
           aria-label="刷新插件"
           disabled={busy}
-          onClick={() => void ecosystem.refresh(cwd)}
+          onClick={() => void ecosystem.refresh(cwd, "packages")}
         >
           <RefreshCw className={ecosystem.phase === "loading" ? "spin" : undefined} size={16} />
         </button>
@@ -145,7 +145,10 @@ export function PackageManagerView({
           )}
         </div>
 
-        <EcosystemError error={ecosystem.error} onRetry={() => void ecosystem.refresh(cwd)} />
+        <EcosystemError
+          error={ecosystem.error}
+          onRetry={() => void ecosystem.refresh(cwd, "packages")}
+        />
 
         {tab === "add" ? (
           <form className="package-install-form" onSubmit={install}>
@@ -351,7 +354,7 @@ export function ResourcesView({
           title="刷新"
           aria-label="刷新资源"
           disabled={ecosystem.phase === "loading"}
-          onClick={() => void ecosystem.refresh(cwd)}
+          onClick={() => void ecosystem.refresh(cwd, "resources")}
         >
           <RefreshCw className={ecosystem.phase === "loading" ? "spin" : undefined} size={16} />
         </button>
@@ -384,7 +387,10 @@ export function ResourcesView({
             />
           </label>
         </div>
-        <EcosystemError error={ecosystem.error} onRetry={() => void ecosystem.refresh(cwd)} />
+        <EcosystemError
+          error={ecosystem.error}
+          onRetry={() => void ecosystem.refresh(cwd, "resources")}
+        />
         {ecosystem.phase === "loading" && ecosystem.resources.length === 0 ? (
           <EcosystemLoading label="正在读取 Pi 资源" />
         ) : filtered.length === 0 ? (

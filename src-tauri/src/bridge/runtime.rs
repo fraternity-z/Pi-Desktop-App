@@ -3,7 +3,7 @@ use std::{
     env,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -22,7 +22,7 @@ use crate::{
             normalize_process_path,
         },
     },
-    discovery::{RuntimeDiscoveryOptions, RuntimeSource, discover_runtime},
+    discovery::{RuntimeDiscoveryOptions, RuntimePaths, RuntimeSource, discover_runtime},
     error::AppError,
     image::{
         MAX_PROMPT_IMAGE_BYTES, MAX_PROMPT_IMAGES, detect_image_format, image_format_for_path,
@@ -39,13 +39,26 @@ pub struct RuntimeSnapshot {
     pub error: Option<AppError>,
 }
 
+pub type RuntimeStatusSink = Arc<dyn Fn(RuntimeSnapshot) + Send + Sync + 'static>;
+
 pub struct BridgeRuntime {
-    supervisor: Mutex<Option<Arc<BridgeSupervisor>>>,
+    supervisor: Mutex<SupervisorSlot>,
+    supervisor_ready: Condvar,
+    runtime_paths: Mutex<Option<RuntimePaths>>,
     known_sessions: Mutex<HashSet<String>>,
     snapshot: Mutex<RuntimeSnapshot>,
+    status_sink: RuntimeStatusSink,
     request_header_settings: Mutex<RequestHeaderSettings>,
     launch: Option<RuntimeLaunchContext>,
     closed: AtomicBool,
+}
+
+#[derive(Default)]
+struct SupervisorSlot {
+    supervisor: Option<Arc<BridgeSupervisor>>,
+    starting: bool,
+    attempt: u64,
+    last_error: Option<AppError>,
 }
 
 #[derive(Clone)]
@@ -61,9 +74,10 @@ impl BridgeRuntime {
         event_sink: BridgeEventSink,
         request_header_settings: RequestHeaderSettings,
     ) -> Self {
-        Self::initialize_with_fault_sink(
+        Self::initialize_with_sinks(
             bridge_script,
             event_sink,
+            Arc::new(|_| {}),
             Arc::new(|_| {}),
             request_header_settings,
         )
@@ -75,18 +89,34 @@ impl BridgeRuntime {
         fault_sink: BridgeFaultSink,
         request_header_settings: RequestHeaderSettings,
     ) -> Self {
+        Self::initialize_with_sinks(
+            bridge_script,
+            event_sink,
+            fault_sink,
+            Arc::new(|_| {}),
+            request_header_settings,
+        )
+    }
+
+    pub fn initialize_with_sinks(
+        bridge_script: PathBuf,
+        event_sink: BridgeEventSink,
+        fault_sink: BridgeFaultSink,
+        status_sink: RuntimeStatusSink,
+        request_header_settings: RequestHeaderSettings,
+    ) -> Self {
         let launch = RuntimeLaunchContext {
             bridge_script,
             event_sink,
             fault_sink,
         };
         Self {
-            supervisor: Mutex::new(None),
+            supervisor: Mutex::new(SupervisorSlot::default()),
+            supervisor_ready: Condvar::new(),
+            runtime_paths: Mutex::new(None),
             known_sessions: Mutex::new(HashSet::new()),
-            snapshot: Mutex::new(unavailable_snapshot(AppError::new(
-                "BRIDGE_STARTING",
-                "Pi Bridge 正在启动",
-            ))),
+            snapshot: Mutex::new(starting_snapshot()),
+            status_sink,
             request_header_settings: Mutex::new(request_header_settings),
             launch: Some(launch),
             closed: AtomicBool::new(false),
@@ -95,9 +125,12 @@ impl BridgeRuntime {
 
     pub fn unavailable(error: AppError, request_header_settings: RequestHeaderSettings) -> Self {
         Self {
-            supervisor: Mutex::new(None),
+            supervisor: Mutex::new(SupervisorSlot::default()),
+            supervisor_ready: Condvar::new(),
+            runtime_paths: Mutex::new(None),
             known_sessions: Mutex::new(HashSet::new()),
             snapshot: Mutex::new(unavailable_snapshot(error)),
+            status_sink: Arc::new(|_| {}),
             request_header_settings: Mutex::new(request_header_settings),
             launch: None,
             closed: AtomicBool::new(false),
@@ -105,20 +138,27 @@ impl BridgeRuntime {
     }
 
     pub fn snapshot(&self) -> RuntimeSnapshot {
-        match self.supervisor() {
-            Ok(supervisor) => match supervisor.health() {
-                Ok(()) => self.snapshot_value(),
-                Err(error) => {
-                    self.discard_supervisor(&supervisor, error);
-                    let _ = self.supervisor();
-                    self.snapshot_value()
-                }
-            },
-            Err(_) => self.snapshot_value(),
-        }
+        self.snapshot_value()
     }
 
     pub(crate) fn warm_up(&self) -> RuntimeSnapshot {
+        let _ = self.supervisor();
+        self.snapshot_value()
+    }
+
+    pub fn restart(&self) -> RuntimeSnapshot {
+        let supervisor = self
+            .supervisor
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.supervisor.take());
+        if let Some(supervisor) = supervisor {
+            let _ = supervisor.shutdown();
+        }
+        if let Ok(mut known_sessions) = self.known_sessions.lock() {
+            known_sessions.clear();
+        }
+        self.set_snapshot(starting_snapshot());
         let _ = self.supervisor();
         self.snapshot_value()
     }
@@ -244,6 +284,7 @@ impl BridgeRuntime {
             .supervisor
             .lock()
             .map_err(|_| AppError::new("BRIDGE_STATE_POISONED", "Bridge 状态锁不可用"))?
+            .supervisor
             .clone();
         if let Some(supervisor) = supervisor
             && let Err(error) = supervisor.configure_request_headers(&settings)
@@ -251,7 +292,7 @@ impl BridgeRuntime {
             if let Ok(mut current) = self.request_header_settings.lock() {
                 *current = previous;
             }
-            if is_connection_failure(&error) {
+            if should_discard_supervisor(&error, &supervisor) {
                 self.discard_supervisor(&supervisor, error.clone());
             }
             return Err(error);
@@ -319,7 +360,7 @@ impl BridgeRuntime {
             .supervisor
             .lock()
             .ok()
-            .and_then(|mut value| value.take());
+            .and_then(|mut slot| slot.supervisor.take());
         if let Some(supervisor) = supervisor {
             let _ = supervisor.shutdown();
         }
@@ -332,6 +373,11 @@ impl BridgeRuntime {
         if self.closed.load(Ordering::Acquire) {
             return Err(AppError::new("BRIDGE_CLOSED", "Pi Bridge 已关闭"));
         }
+        let launch = self
+            .launch
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| AppError::new("BRIDGE_UNAVAILABLE", "Pi Bridge 当前不可用"))?;
         let request_header_settings = self
             .request_header_settings
             .lock()
@@ -341,23 +387,71 @@ impl BridgeRuntime {
             .supervisor
             .lock()
             .map_err(|_| AppError::new("BRIDGE_STATE_POISONED", "Bridge 状态锁不可用"))?;
-        if let Some(supervisor) = slot.as_ref() {
+        if let Some(supervisor) = slot.supervisor.as_ref() {
             return Ok(supervisor.clone());
         }
-        let launch = self
-            .launch
-            .as_ref()
-            .ok_or_else(|| AppError::new("BRIDGE_UNAVAILABLE", "Pi Bridge 当前不可用"))?;
-        match start_bridge(
-            launch.bridge_script.clone(),
-            launch.event_sink.clone(),
-            launch.fault_sink.clone(),
-            &request_header_settings,
-        ) {
-            Ok((supervisor, source)) => {
+
+        if slot.starting {
+            loop {
+                slot = self.supervisor_ready.wait(slot).map_err(|_| {
+                    AppError::new("BRIDGE_STATE_POISONED", "Bridge 启动等待锁不可用")
+                })?;
+                if let Some(supervisor) = slot.supervisor.as_ref() {
+                    return Ok(supervisor.clone());
+                }
+                if !slot.starting {
+                    return Err(slot.last_error.clone().unwrap_or_else(|| {
+                        AppError::new("BRIDGE_START_FAILED", "Pi Bridge 启动失败")
+                    }));
+                }
+            }
+        }
+
+        slot.starting = true;
+        slot.attempt = slot.attempt.wrapping_add(1);
+        slot.last_error = None;
+        let attempt = slot.attempt;
+        drop(slot);
+        self.set_snapshot(starting_snapshot());
+
+        let started = self.start_bridge_cached(&launch, &request_header_settings);
+        let mut slot = self
+            .supervisor
+            .lock()
+            .map_err(|_| AppError::new("BRIDGE_STATE_POISONED", "Bridge 状态锁不可用"))?;
+        if slot.attempt != attempt {
+            self.supervisor_ready.notify_all();
+            return Err(AppError::new(
+                "BRIDGE_STATE_INVALID",
+                "Bridge 启动状态发生了意外变化",
+            ));
+        }
+
+        slot.starting = false;
+        let result = match started {
+            Ok((supervisor, source)) if !self.closed.load(Ordering::Acquire) => {
                 let snapshot = ready_snapshot(supervisor.hello(), &source);
                 let supervisor = Arc::new(supervisor);
-                *slot = Some(supervisor.clone());
+                slot.supervisor = Some(supervisor.clone());
+                slot.last_error = None;
+                Ok((supervisor, snapshot))
+            }
+            Ok((supervisor, _)) => {
+                let _ = supervisor.shutdown();
+                let error = AppError::new("BRIDGE_CLOSED", "Pi Bridge 已关闭");
+                slot.last_error = Some(error.clone());
+                Err(error)
+            }
+            Err(error) => {
+                slot.last_error = Some(error.clone());
+                Err(error)
+            }
+        };
+        self.supervisor_ready.notify_all();
+        drop(slot);
+
+        match result {
+            Ok((supervisor, snapshot)) => {
                 self.set_snapshot(snapshot);
                 Ok(supervisor)
             }
@@ -368,13 +462,27 @@ impl BridgeRuntime {
         }
     }
 
+    fn start_bridge_cached(
+        &self,
+        launch: &RuntimeLaunchContext,
+        request_header_settings: &RequestHeaderSettings,
+    ) -> Result<(BridgeSupervisor, RuntimeSource), AppError> {
+        start_with_cached_runtime_paths(
+            &self.runtime_paths,
+            || discover_runtime(&RuntimeDiscoveryOptions::default()),
+            |runtime_paths| start_bridge_with_paths(runtime_paths, launch, request_header_settings),
+        )
+    }
+
     fn discard_supervisor(&self, supervisor: &Arc<BridgeSupervisor>, error: AppError) {
         if let Ok(mut slot) = self.supervisor.lock()
             && slot
+                .supervisor
                 .as_ref()
                 .is_some_and(|current| Arc::ptr_eq(current, supervisor))
         {
-            *slot = None;
+            slot.supervisor = None;
+            slot.last_error = Some(error.clone());
         }
         if let Ok(mut known_sessions) = self.known_sessions.lock() {
             known_sessions.clear();
@@ -388,7 +496,7 @@ impl BridgeRuntime {
     ) -> Result<T, AppError> {
         let supervisor = self.supervisor()?;
         match operation(&supervisor) {
-            Err(error) if is_connection_failure(&error) => {
+            Err(error) if should_discard_supervisor(&error, &supervisor) => {
                 self.discard_supervisor(&supervisor, error.clone());
                 Err(error)
             }
@@ -407,7 +515,9 @@ impl BridgeRuntime {
 
     fn set_snapshot(&self, snapshot: RuntimeSnapshot) {
         if let Ok(mut current) = self.snapshot.lock() {
-            *current = snapshot;
+            *current = snapshot.clone();
+            drop(current);
+            (self.status_sink)(snapshot);
         }
     }
 
@@ -442,24 +552,50 @@ impl Drop for BridgeRuntime {
     }
 }
 
-fn start_bridge(
-    bridge_script: PathBuf,
-    event_sink: BridgeEventSink,
-    fault_sink: BridgeFaultSink,
+fn start_with_cached_runtime_paths<T>(
+    cache: &Mutex<Option<RuntimePaths>>,
+    discover: impl FnOnce() -> Result<RuntimePaths, AppError>,
+    mut start: impl FnMut(RuntimePaths) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    let cached = cache
+        .lock()
+        .map_err(|_| AppError::new("BRIDGE_STATE_POISONED", "运行时路径缓存锁不可用"))?
+        .clone();
+    if let Some(runtime_paths) = cached {
+        match start(runtime_paths) {
+            Ok(started) => return Ok(started),
+            Err(_) => {
+                if let Ok(mut cached) = cache.lock() {
+                    *cached = None;
+                }
+            }
+        }
+    }
+
+    let runtime_paths = discover()?;
+    let started = start(runtime_paths.clone())?;
+    if let Ok(mut cached) = cache.lock() {
+        *cached = Some(runtime_paths);
+    }
+    Ok(started)
+}
+
+fn start_bridge_with_paths(
+    runtime_paths: RuntimePaths,
+    launch: &RuntimeLaunchContext,
     request_header_settings: &RequestHeaderSettings,
 ) -> Result<(BridgeSupervisor, RuntimeSource), AppError> {
-    let runtime_paths = discover_runtime(&RuntimeDiscoveryOptions::default())?;
     let source = runtime_paths.source.clone();
     let agent_dir = system_agent_dir()?;
     let supervisor = BridgeSupervisor::start_with_sinks(
         BridgeLaunchConfig::new(
             runtime_paths.node_path,
-            bridge_script,
+            launch.bridge_script.clone(),
             runtime_paths.sdk_root,
             agent_dir,
         ),
-        event_sink,
-        fault_sink,
+        launch.event_sink.clone(),
+        launch.fault_sink.clone(),
     )?;
     if request_headers_need_startup_sync(request_header_settings)
         && let Err(error) = supervisor.configure_request_headers(request_header_settings)
@@ -772,6 +908,16 @@ fn source_label(source: &RuntimeSource) -> &'static str {
     }
 }
 
+fn starting_snapshot() -> RuntimeSnapshot {
+    RuntimeSnapshot {
+        status: "starting",
+        runtime_source: None,
+        pi_version: None,
+        node_version: None,
+        error: None,
+    }
+}
+
 fn unavailable_snapshot(error: AppError) -> RuntimeSnapshot {
     RuntimeSnapshot {
         status: "unavailable",
@@ -812,8 +958,15 @@ fn is_connection_failure(error: &AppError) -> bool {
     )
 }
 
+fn should_discard_supervisor(error: &AppError, supervisor: &BridgeSupervisor) -> bool {
+    is_connection_failure(error)
+        && (error.code != "BRIDGE_TIMEOUT" || supervisor.connection_faulted())
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicUsize;
+
     use super::*;
 
     #[test]
@@ -840,10 +993,10 @@ mod tests {
             RequestHeaderSettings::default(),
         );
 
-        assert!(runtime.supervisor.lock().unwrap().is_none());
+        assert!(runtime.supervisor.lock().unwrap().supervisor.is_none());
         let snapshot = runtime.snapshot_value();
-        assert_eq!(snapshot.status, "unavailable");
-        assert_eq!(snapshot.error.unwrap().code, "BRIDGE_STARTING");
+        assert_eq!(snapshot.status, "starting");
+        assert_eq!(snapshot.error, None);
     }
 
     #[test]
@@ -888,6 +1041,66 @@ mod tests {
             source_label(&RuntimeSource::PathPiCommand),
             "path-pi-command"
         );
+    }
+
+    #[test]
+    fn reuses_valid_runtime_paths_without_rediscovery() {
+        let paths = test_runtime_paths("cached");
+        let cache = Mutex::new(Some(paths.clone()));
+        let discoveries = AtomicUsize::new(0);
+
+        let started = start_with_cached_runtime_paths(
+            &cache,
+            || {
+                discoveries.fetch_add(1, Ordering::Relaxed);
+                Ok(test_runtime_paths("unexpected"))
+            },
+            Ok,
+        )
+        .expect("有效缓存应直接启动");
+
+        assert_eq!(started, paths);
+        assert_eq!(discoveries.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn invalidates_failed_runtime_paths_and_rediscovers_once() {
+        let stale = test_runtime_paths("stale");
+        let fresh = test_runtime_paths("fresh");
+        let cache = Mutex::new(Some(stale.clone()));
+        let discoveries = AtomicUsize::new(0);
+        let starts = AtomicUsize::new(0);
+
+        let started = start_with_cached_runtime_paths(
+            &cache,
+            || {
+                discoveries.fetch_add(1, Ordering::Relaxed);
+                Ok(fresh.clone())
+            },
+            |paths| {
+                starts.fetch_add(1, Ordering::Relaxed);
+                if paths == stale {
+                    Err(AppError::new("BRIDGE_SPAWN_FAILED", "缓存路径已失效"))
+                } else {
+                    Ok(paths)
+                }
+            },
+        )
+        .expect("缓存失效后应以新发现路径启动");
+
+        assert_eq!(started, fresh);
+        assert_eq!(discoveries.load(Ordering::Relaxed), 1);
+        assert_eq!(starts.load(Ordering::Relaxed), 2);
+        assert_eq!(*cache.lock().unwrap(), Some(fresh));
+    }
+
+    fn test_runtime_paths(label: &str) -> RuntimePaths {
+        RuntimePaths {
+            node_path: PathBuf::from(format!("{label}-node")),
+            sdk_root: PathBuf::from(format!("{label}-sdk")),
+            pi_command: None,
+            source: RuntimeSource::ExplicitPaths,
+        }
     }
 
     #[test]

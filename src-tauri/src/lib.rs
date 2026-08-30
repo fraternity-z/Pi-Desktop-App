@@ -12,7 +12,7 @@ use tauri::{Emitter, Manager, path::BaseDirectory};
 use crate::{
     bridge::{
         protocol::BridgeEvent,
-        runtime::BridgeRuntime,
+        runtime::{BridgeRuntime, RuntimeStatusSink},
         supervisor::{BridgeEventSink, BridgeFaultSink},
     },
     error::AppError,
@@ -39,14 +39,19 @@ pub fn run() {
             let fault_sink: BridgeFaultSink = Arc::new(move |error: AppError| {
                 let _ = fault_app.emit("runtime://fault", error);
             });
+            let status_app = app.handle().clone();
+            let status_sink: RuntimeStatusSink = Arc::new(move |status| {
+                let _ = status_app.emit("runtime://status", status);
+            });
             let runtime = app
                 .path()
                 .resolve("resources/pi-bridge/pi-bridge.mjs", BaseDirectory::Resource)
                 .map(|path| {
-                    BridgeRuntime::initialize_with_fault_sink(
+                    BridgeRuntime::initialize_with_sinks(
                         path,
                         event_sink,
                         fault_sink,
+                        status_sink,
                         request_header_settings.clone(),
                     )
                 })
@@ -79,6 +84,7 @@ pub fn run() {
             commands::browser::browser_sidebar_update_bounds,
             commands::browser::browser_sidebar_hide,
             commands::runtime::get_runtime_status,
+            commands::runtime::restart_runtime,
             commands::runtime::agent_create_session,
             commands::runtime::agent_list_sessions,
             commands::runtime::agent_delete_sessions,

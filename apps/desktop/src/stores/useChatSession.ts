@@ -126,6 +126,7 @@ export interface ChatSessionState {
   contextUsage: ContextUsage | null;
   timer: SessionTimerState | null;
   loadCatalogs: () => Promise<void>;
+  cancelAutoRestore: () => void;
   createSession: (cwd: string) => Promise<boolean>;
   createConversation: () => Promise<boolean>;
   openSession: (session: SessionListItem) => Promise<boolean>;
@@ -152,6 +153,12 @@ const EMPTY_WORKSPACE_STATE: WorkspaceState = {
   conversationHome: "",
 };
 
+interface PendingAutoRestore {
+  requestId: number;
+  cancelled: boolean;
+  cancelSchedule: () => void;
+}
+
 export function useChatSession(): ChatSessionState {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [projections, setProjections] = useState<Record<string, SessionProjection>>({});
@@ -166,16 +173,19 @@ export function useChatSession(): ChatSessionState {
   const [eventConnection, setEventConnection] = useState<AgentEventConnection>("connecting");
   const [listenerAttempt, setListenerAttempt] = useState(0);
   const projectionsRef = useRef(projections);
+  const catalogSessionsRef = useRef(catalogSessions);
   const activeSessionIdRef = useRef(activeSessionId);
   const lastEventSequence = useRef(0);
   const itemSequence = useRef(1);
   const catalogRequestId = useRef(0);
+  const sessionCatalogRequestId = useRef(0);
   const promptRequests = useRef(new Map<string, number>());
   const materializingDrafts = useRef(new Set<string>());
   const draftSequence = useRef(1);
   const restoreAttempted = useRef(false);
   const lastConfirmedThinkingLevel = useRef<ThinkingLevel | null>(null);
-  const loadCatalogsRef = useRef<() => Promise<void>>(async () => undefined);
+  const refreshSessionsRef = useRef<() => Promise<void>>(async () => undefined);
+  const pendingAutoRestore = useRef<PendingAutoRestore | null>(null);
   const pendingProjectionRender = useRef<(() => void) | null>(null);
 
   const commitProjections = useCallback(
@@ -247,21 +257,11 @@ export function useChatSession(): ChatSessionState {
     [commitProjections, nextItemId],
   );
 
-  const loadCatalogs = useCallback(async () => {
-    const requestId = ++catalogRequestId.current;
-    setCatalogPhase("loading");
-    setCatalogError(null);
-    const [sessionResult, modelResult, workspaceResult] = await Promise.allSettled([
-      listAgentSessions(),
-      listAgentModels(),
-      getWorkspaceState(),
-    ]);
-    if (requestId !== catalogRequestId.current) return;
-
-    const failures: string[] = [];
-    if (sessionResult.status === "fulfilled") {
-      setCatalogSessions(sessionResult.value);
-      const persistedPaths = new Set(sessionResult.value.map((session) => normalizePath(session.path)));
+  const applySessionCatalog = useCallback(
+    (sessions: AgentSessionSummary[]) => {
+      catalogSessionsRef.current = sessions;
+      setCatalogSessions(sessions);
+      const persistedPaths = new Set(sessions.map((session) => normalizePath(session.path)));
       commitProjections((current) => {
         let changed = false;
         const next = { ...current };
@@ -277,40 +277,124 @@ export function useChatSession(): ChatSessionState {
         }
         return changed ? next : current;
       });
-    }
-    else failures.push(formatError(sessionResult.reason));
-    if (modelResult.status === "fulfilled") setModels(modelResult.value);
-    else failures.push(formatError(modelResult.reason));
-    if (workspaceResult.status === "fulfilled") setWorkspaceState(workspaceResult.value);
-    else failures.push(formatError(workspaceResult.reason));
-    setCatalogPhase(failures.length > 0 ? "error" : "ready");
-    setCatalogError(failures.length > 0 ? failures.join(" · ") : null);
+    },
+    [commitProjections],
+  );
 
-    if (
-      !restoreAttempted.current &&
-      !activeSessionIdRef.current &&
-      sessionResult.status === "fulfilled" &&
-      workspaceResult.status === "fulfilled"
-    ) {
-      restoreAttempted.current = true;
-      const lastWorkspace = workspaceResult.value.lastWorkspace;
-      const recent = lastWorkspace
-        ? sessionResult.value.find((session) => samePath(session.cwd, lastWorkspace))
-        : undefined;
-      if (recent) {
-        setNavigationPending(true);
-        try {
-          installSession(await openAgentSession(recent.path), "persisted");
-        } catch (error) {
-          setGlobalError(formatError(error));
-        } finally {
-          setNavigationPending(false);
-        }
+  const cancelAutoRestore = useCallback(() => {
+    const pending = pendingAutoRestore.current;
+    if (!pending) return;
+    pending.cancelled = true;
+    restoreAttempted.current = true;
+  }, []);
+
+  const refreshSessionCatalog = useCallback(async () => {
+    const requestId = ++sessionCatalogRequestId.current;
+    try {
+      const sessions = await listAgentSessions();
+      if (requestId !== sessionCatalogRequestId.current) return;
+      applySessionCatalog(sessions);
+      setCatalogPhase((current) => (current === "loading" ? "ready" : current));
+    } catch (error) {
+      if (requestId !== sessionCatalogRequestId.current) return;
+      setCatalogPhase("error");
+      setCatalogError((current) => appendError(current, formatError(error)));
+    }
+  }, [applySessionCatalog]);
+
+  const loadCatalogs = useCallback(async () => {
+    pendingAutoRestore.current?.cancelSchedule();
+    pendingAutoRestore.current = null;
+    const requestId = ++catalogRequestId.current;
+    const sessionRequestId = ++sessionCatalogRequestId.current;
+    setCatalogPhase("loading");
+    setCatalogError(null);
+    const failures: string[] = [];
+    let sessionLoadSuperseded = false;
+    let nextWorkspace = EMPTY_WORKSPACE_STATE;
+    try {
+      nextWorkspace = await getWorkspaceState();
+      if (requestId !== catalogRequestId.current) return;
+      setWorkspaceState(nextWorkspace);
+    } catch (error) {
+      if (requestId !== catalogRequestId.current) return;
+      failures.push(formatError(error));
+    }
+
+    let nextSessions: AgentSessionSummary[] = [];
+    try {
+      nextSessions = await listAgentSessions();
+      if (requestId !== catalogRequestId.current) return;
+      if (sessionRequestId === sessionCatalogRequestId.current) {
+        applySessionCatalog(nextSessions);
+      } else {
+        sessionLoadSuperseded = true;
+        nextSessions = catalogSessionsRef.current;
+      }
+    } catch (error) {
+      if (requestId !== catalogRequestId.current) return;
+      if (sessionRequestId === sessionCatalogRequestId.current) failures.push(formatError(error));
+      else {
+        sessionLoadSuperseded = true;
+        nextSessions = catalogSessionsRef.current;
       }
     }
-  }, [commitProjections, installSession]);
 
-  loadCatalogsRef.current = loadCatalogs;
+    if (!sessionLoadSuperseded) {
+      setCatalogPhase(failures.length > 0 ? "error" : "ready");
+      setCatalogError(failures.length > 0 ? failures.join(" · ") : null);
+    } else if (failures.length > 0) {
+      setCatalogPhase("error");
+      setCatalogError((current) => appendError(current, failures.join(" · ")));
+    }
+
+    const pending: PendingAutoRestore = {
+      requestId,
+      cancelled: false,
+      cancelSchedule: () => undefined,
+    };
+    pendingAutoRestore.current = pending;
+    pending.cancelSchedule = scheduleWhenIdle(() => {
+      void (async () => {
+        if (
+          pendingAutoRestore.current !== pending ||
+          pending.requestId !== catalogRequestId.current
+        ) {
+          return;
+        }
+        pendingAutoRestore.current = null;
+        const shouldRestore =
+          !pending.cancelled && !restoreAttempted.current && !activeSessionIdRef.current;
+        restoreAttempted.current = true;
+        const lastWorkspace = nextWorkspace.lastWorkspace;
+        const recent = lastWorkspace
+          ? nextSessions.find((session) => samePath(session.cwd, lastWorkspace))
+          : undefined;
+        if (shouldRestore && recent) {
+          setNavigationPending(true);
+          try {
+            installSession(await openAgentSession(recent.path), "persisted");
+          } catch (error) {
+            setGlobalError(formatError(error));
+          } finally {
+            setNavigationPending(false);
+          }
+        }
+
+        if (requestId !== catalogRequestId.current) return;
+        try {
+          const nextModels = await listAgentModels();
+          if (requestId === catalogRequestId.current) setModels(nextModels);
+        } catch (error) {
+          if (requestId !== catalogRequestId.current) return;
+          setCatalogPhase("error");
+          setCatalogError((current) => appendError(current, formatError(error)));
+        }
+      })();
+    });
+  }, [applySessionCatalog, installSession]);
+
+  refreshSessionsRef.current = refreshSessionCatalog;
 
   useEffect(() => {
     let active = true;
@@ -337,7 +421,7 @@ export function useChatSession(): ChatSessionState {
           scheduleProjectionRender();
         }
       }
-      if (event.name === "agent.settled") void loadCatalogsRef.current();
+      if (event.name === "agent.settled") void refreshSessionsRef.current();
     })
       .then((stopListening) => {
         if (active) {
@@ -360,8 +444,19 @@ export function useChatSession(): ChatSessionState {
     };
   }, [listenerAttempt, nextItemId, scheduleProjectionRender]);
 
+  useEffect(
+    () => () => {
+      catalogRequestId.current += 1;
+      sessionCatalogRequestId.current += 1;
+      pendingAutoRestore.current?.cancelSchedule();
+      pendingAutoRestore.current = null;
+    },
+    [],
+  );
+
   const createSession = useCallback(
     async (cwd: string) => {
+      cancelAutoRestore();
       if (eventConnection !== "ready") {
         setGlobalError("AGENT_EVENT_LISTEN_UNAVAILABLE: 事件通道尚未就绪，请先重新连接");
         return false;
@@ -391,10 +486,11 @@ export function useChatSession(): ChatSessionState {
         setNavigationPending(false);
       }
     },
-    [commitProjections, eventConnection, navigationPending],
+    [cancelAutoRestore, commitProjections, eventConnection, navigationPending],
   );
 
   const createConversation = useCallback(async () => {
+    cancelAutoRestore();
     if (eventConnection !== "ready" || navigationPending) return false;
     setGlobalError(null);
     const draft = createDraftProjection(`draft:${draftSequence.current++}`, "");
@@ -402,10 +498,11 @@ export function useChatSession(): ChatSessionState {
     activeSessionIdRef.current = draft.sessionId;
     setActiveSessionId(draft.sessionId);
     return true;
-  }, [commitProjections, eventConnection, navigationPending]);
+  }, [cancelAutoRestore, commitProjections, eventConnection, navigationPending]);
 
   const openSession = useCallback(
     async (session: SessionListItem) => {
+      cancelAutoRestore();
       const projection =
         projectionsRef.current[session.id] ??
         (session.path
@@ -437,7 +534,7 @@ export function useChatSession(): ChatSessionState {
         setNavigationPending(false);
       }
     },
-    [eventConnection, installSession, navigationPending],
+    [cancelAutoRestore, eventConnection, installSession, navigationPending],
   );
 
   const removeWorkspace = useCallback(async (cwd: string) => {
@@ -456,7 +553,8 @@ export function useChatSession(): ChatSessionState {
         return { deletedSessionIds: [], missingSessionIds: [] };
       }
       // Ignore catalog requests that started before the files were removed.
-      const operationId = ++catalogRequestId.current;
+      cancelAutoRestore();
+      const operationId = ++sessionCatalogRequestId.current;
       try {
         const result = await deleteAgentSessions(ids);
         const handled = new Set([...result.deletedSessionIds, ...result.missingSessionIds]);
@@ -466,7 +564,11 @@ export function useChatSession(): ChatSessionState {
           );
           return Object.keys(next).length === Object.keys(current).length ? current : next;
         });
-        setCatalogSessions((current) => current.filter((session) => !handled.has(session.id)));
+        setCatalogSessions((current) => {
+          const next = current.filter((session) => !handled.has(session.id));
+          catalogSessionsRef.current = next;
+          return next;
+        });
         for (const id of handled) {
           promptRequests.current.delete(id);
           materializingDrafts.current.delete(id);
@@ -476,20 +578,20 @@ export function useChatSession(): ChatSessionState {
           activeSessionIdRef.current = null;
           setActiveSessionId(null);
         }
-        if (catalogRequestId.current === operationId) {
+        if (sessionCatalogRequestId.current === operationId) {
           setCatalogPhase("ready");
           setCatalogError(null);
         }
         return result;
       } catch (error) {
-        if (catalogRequestId.current === operationId) {
+        if (sessionCatalogRequestId.current === operationId) {
           setCatalogPhase("error");
           setCatalogError(formatError(error));
         }
         throw error;
       }
     },
-    [commitProjections],
+    [cancelAutoRestore, commitProjections],
   );
 
   const materializeDraft = useCallback(
@@ -663,7 +765,6 @@ export function useChatSession(): ChatSessionState {
         } else {
           await promptAgent(sessionId, wireContent, streamingBehavior, promptTools);
         }
-        void loadCatalogsRef.current();
         return true;
       } catch (error) {
         if ((promptRequests.current.get(sessionId) ?? 0) !== requestId) return false;
@@ -810,6 +911,7 @@ export function useChatSession(): ChatSessionState {
     contextUsage: active?.contextUsage ?? null,
     timer: active ? projectionTimer(active) : null,
     loadCatalogs,
+    cancelAutoRestore,
     createSession,
     createConversation,
     openSession,
@@ -1587,6 +1689,10 @@ function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function appendError(current: string | null, next: string): string {
+  return current ? `${current} · ${next}` : next;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -1595,6 +1701,19 @@ function scheduleAfterLayout(callback: () => void): () => void {
   if (typeof window.requestAnimationFrame === "function") {
     const frame = window.requestAnimationFrame(callback);
     return () => window.cancelAnimationFrame(frame);
+  }
+  const timeout = window.setTimeout(callback, 16);
+  return () => window.clearTimeout(timeout);
+}
+
+function scheduleWhenIdle(callback: () => void): () => void {
+  const idleWindow = window as unknown as {
+    requestIdleCallback?: (task: () => void, options?: { timeout: number }) => number;
+    cancelIdleCallback?: (handle: number) => void;
+  };
+  if (typeof idleWindow.requestIdleCallback === "function") {
+    const handle = idleWindow.requestIdleCallback(callback, { timeout: 1_500 });
+    return () => idleWindow.cancelIdleCallback?.(handle);
   }
   const timeout = window.setTimeout(callback, 16);
   return () => window.clearTimeout(timeout);

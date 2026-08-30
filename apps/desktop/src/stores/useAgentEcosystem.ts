@@ -15,6 +15,7 @@ import {
 } from "../ipc/agent";
 
 export type EcosystemPhase = "idle" | "loading" | "ready" | "error";
+export type EcosystemCatalog = "packages" | "resources";
 
 export function useAgentEcosystem() {
   const [phase, setPhase] = useState<EcosystemPhase>("idle");
@@ -27,7 +28,7 @@ export function useAgentEcosystem() {
   const operationSequence = useRef(0);
   const activeWorkspace = useRef("");
 
-  const refresh = useCallback(async (cwd: string) => {
+  const refresh = useCallback(async (cwd: string, catalog: EcosystemCatalog) => {
     const workspace = normalizeWorkspace(cwd);
     const request = ++requestSequence.current;
     activeWorkspace.current = workspace;
@@ -36,19 +37,26 @@ export function useAgentEcosystem() {
     setPhase("loading");
     setError(null);
     try {
-      const [nextPackages, nextResources] = await Promise.all([
-        listAgentPackages(cwd),
-        listAgentResources(cwd),
-      ]);
+      let nextPackages: AgentPackageSummary[] | null = null;
+      let nextResources: AgentResourceSummary[] | null = null;
+      if (catalog === "packages") nextPackages = await listAgentPackages(cwd);
+      else nextResources = await listAgentResources(cwd);
       if (request !== requestSequence.current || activeWorkspace.current !== workspace) return false;
-      setPackages(nextPackages);
-      setResources(nextResources);
+      if (nextPackages) setPackages(nextPackages);
+      if (nextResources) setResources(nextResources);
       setPhase("ready");
       return true;
     } catch (cause) {
       if (request !== requestSequence.current || activeWorkspace.current !== workspace) return false;
       setPhase("error");
-      setError(formatEcosystemError(cause, "ECOSYSTEM_LOAD_FAILED: 无法读取插件与资源"));
+      setError(
+        formatEcosystemError(
+          cause,
+          catalog === "packages"
+            ? "PACKAGE_LIST_FAILED: 无法读取插件"
+            : "RESOURCE_LIST_FAILED: 无法读取资源",
+        ),
+      );
       return false;
     }
   }, []);
@@ -68,10 +76,7 @@ export function useAgentEcosystem() {
       try {
         const nextPackages = await task();
         if (request !== operationSequence.current || activeWorkspace.current !== workspace) return false;
-        const nextResources = await listAgentResources(cwd);
-        if (request !== operationSequence.current || activeWorkspace.current !== workspace) return false;
         setPackages(nextPackages);
-        setResources(nextResources);
         setPhase("ready");
         return true;
       } catch (cause) {

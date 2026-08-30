@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { getRuntimeStatus, type RuntimeStatus } from "../ipc/system";
+import {
+  getRuntimeStatus,
+  listenToRuntimeStatus,
+  restartRuntime,
+  type RuntimeStatus,
+} from "../ipc/system";
 
 export type RuntimeStatusState =
   | { phase: "loading" }
@@ -19,7 +24,7 @@ export function useRuntimeStatus(): RuntimeStatusController {
     const currentRequest = ++requestId.current;
     setState({ phase: "loading" });
     try {
-      const status = await getRuntimeStatus();
+      const status = await restartRuntime();
       if (requestId.current === currentRequest) {
         setState({ phase: "ready", status });
       }
@@ -31,11 +36,56 @@ export function useRuntimeStatus(): RuntimeStatusController {
   }, []);
 
   useEffect(() => {
-    void refresh();
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    let eventRevision = 0;
+
+    void (async () => {
+      try {
+        const stopListening = await listenToRuntimeStatus((status) => {
+          if (!active) return;
+          eventRevision += 1;
+          requestId.current += 1;
+          setState({ phase: "ready", status });
+        });
+        if (!active) {
+          stopListening();
+          return;
+        }
+        unlisten = stopListening;
+      } catch {
+        // Cached status remains usable when event subscription is unavailable.
+      }
+
+      if (!active) return;
+      const revision = eventRevision;
+      const currentRequest = ++requestId.current;
+      try {
+        const status = await getRuntimeStatus();
+        if (
+          active &&
+          requestId.current === currentRequest &&
+          eventRevision === revision
+        ) {
+          setState({ phase: "ready", status });
+        }
+      } catch (error) {
+        if (
+          active &&
+          requestId.current === currentRequest &&
+          eventRevision === revision
+        ) {
+          setState({ phase: "error", message: formatError(error) });
+        }
+      }
+    })();
+
     return () => {
+      active = false;
       requestId.current += 1;
+      unlisten?.();
     };
-  }, [refresh]);
+  }, []);
 
   return { ...state, refresh };
 }

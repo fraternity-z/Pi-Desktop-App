@@ -414,7 +414,7 @@ describe("useChatSession", () => {
     expect(promptAgent).toHaveBeenCalledWith("s-1", "first", undefined, defaultToolNames);
   });
 
-  it("目录确认落盘后将活动会话升级为单一正式条目", async () => {
+  it("目录确认落盘后将活动会话升级为单一正式条目并复用投影", async () => {
     const persisted: AgentSessionSummary = {
       ...savedSummary,
       id: "s-1",
@@ -434,7 +434,11 @@ describe("useChatSession", () => {
     );
 
     await act(() => result.current.openSession(result.current.sessions[0]!));
-    expect(openAgentSession).toHaveBeenCalledWith(persisted.path);
+    expect(openAgentSession).not.toHaveBeenCalled();
+    expect(result.current.sessionId).toBe("s-1");
+    expect(result.current.messages).toEqual([
+      expect.objectContaining({ role: "user", content: "hello" }),
+    ]);
   });
 
   it("加载 SDK 目录、恢复会话并同步模型与思考强度", async () => {
@@ -1188,6 +1192,16 @@ describe("useChatSession", () => {
     expect(result.current.sessionId).toBe("second");
     expect(result.current.messages).toEqual([
       expect.objectContaining({ role: "user", content: "second prompt" }),
+    ]);
+
+    await act(() =>
+      result.current.openSession(result.current.sessions.find((session) => session.id === "saved")!),
+    );
+
+    expect(openAgentSession).toHaveBeenCalledTimes(2);
+    expect(result.current.sessionId).toBe("saved");
+    expect(result.current.messages).toEqual([
+      expect.objectContaining({ role: "user", content: savedSummary.firstMessage }),
     ]);
   });
 

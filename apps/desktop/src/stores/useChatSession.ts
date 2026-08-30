@@ -404,16 +404,23 @@ export function useChatSession(): ChatSessionState {
 
   const openSession = useCallback(
     async (session: SessionListItem) => {
-      if (session.lifecycle !== "persisted") {
-        const projection = projectionsRef.current[session.id];
-        if (!projection) {
-          setGlobalError("DRAFT_SESSION_NOT_FOUND: 草稿会话已失效，请重新创建");
-          return false;
-        }
-        activeSessionIdRef.current = session.id;
-        setActiveSessionId(session.id);
+      const projection =
+        projectionsRef.current[session.id] ??
+        (session.path
+          ? Object.values(projectionsRef.current).find(
+              (candidate) =>
+                candidate.sessionPath !== null && samePath(candidate.sessionPath, session.path!),
+            )
+          : undefined);
+      if (projection) {
+        activeSessionIdRef.current = projection.sessionId;
+        setActiveSessionId(projection.sessionId);
         setGlobalError(null);
         return true;
+      }
+      if (session.lifecycle !== "persisted") {
+        setGlobalError("DRAFT_SESSION_NOT_FOUND: 草稿会话已失效，请重新创建");
+        return false;
       }
       if (eventConnection !== "ready" || !session.path || navigationPending) return false;
       setNavigationPending(true);

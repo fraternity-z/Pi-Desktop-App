@@ -1054,7 +1054,7 @@ describe("PiSessionRuntime", () => {
     expect(JSON.stringify(restored)).not.toContain("sk-history-token");
     expect(first.unsubscribe).not.toHaveBeenCalled();
     expect(first.dispose).not.toHaveBeenCalled();
-    await expect(runtime.openSession("C:\\agent\\sessions\\work\\saved.jsonl")).resolves.toEqual(
+    await expect(runtime.openSession("C:/agent/sessions/work/saved.jsonl")).resolves.toEqual(
       expect.objectContaining({ sessionId: "opened" }),
     );
     expect(sdk.createAgentSession).toHaveBeenCalledTimes(2);

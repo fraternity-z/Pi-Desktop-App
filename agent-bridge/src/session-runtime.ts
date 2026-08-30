@@ -839,8 +839,11 @@ export class PiSessionRuntime implements SessionRuntime {
 
   async openSession(sessionPath: string): Promise<CreatedAgentSession> {
     this.ensureOpen();
+    const normalizedSessionPath = normalizeRuntimePath(sessionPath);
     const existing = [...this.sessions.values()].find(
-      (managed) => managed.session.sessionFile === sessionPath,
+      (managed) =>
+        managed.session.sessionFile !== undefined &&
+        normalizeRuntimePath(managed.session.sessionFile) === normalizedSessionPath,
     );
     if (existing) {
       return describeManagedSession(existing);

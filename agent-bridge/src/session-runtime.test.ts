@@ -364,6 +364,45 @@ describe("PiSessionRuntime", () => {
     expect(JSON.stringify(events)).not.toContain("failed-secret");
   });
 
+  it("读取受支持的图片并按官方 SDK ImageContent 结构发送", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-desktop-prompt-image-"));
+    try {
+      const imagePath = join(root, "paste.png");
+      const spoofedPath = join(root, "spoofed.png");
+      const imageBytes = Buffer.from([
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01,
+      ]);
+      await writeFile(imagePath, imageBytes);
+      await writeFile(spoofedPath, "not a png", "utf8");
+      const sessionMock = createSessionMock();
+      const runtime = new PiSessionRuntime(sdkReturning(sessionMock), root);
+      await runtime.createSession(root);
+
+      await runtime.prompt("s-1", "分析图片", "followUp", undefined, [imagePath]);
+
+      expect(sessionMock.prompt).toHaveBeenCalledWith("分析图片", {
+        streamingBehavior: "followUp",
+        images: [
+          {
+            type: "image",
+            data: imageBytes.toString("base64"),
+            mimeType: "image/png",
+          },
+        ],
+      });
+      await expect(
+        runtime.prompt("s-1", "伪装图片", undefined, undefined, [spoofedPath]),
+      ).rejects.toEqual(
+        expect.objectContaining<Partial<RuntimeError>>({
+          code: "PROMPT_IMAGE_TYPE_UNSUPPORTED",
+          message: "图片内容与扩展名不匹配，或格式不受支持",
+        }),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("能力 API 缺失时按模型 map 计算完整、部分和不支持档位", async () => {
     const fullModel: PiModelLike = {
       provider: "openai",

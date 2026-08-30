@@ -40,6 +40,7 @@ import {
   readWorkspaceFile,
   revealWorkspace,
   revealWorkspaceFile,
+  saveClipboardImage,
   searchWorkspacePaths,
 } from "../ipc/workspace";
 import { useAppPreferences } from "../stores/useAppPreferences";
@@ -105,6 +106,7 @@ export function ChatWorkbenchView() {
   const [projectSelectionError, setProjectSelectionError] = useState<string | null>(null);
   const [selectingProject, setSelectingProject] = useState(false);
   const [attachments, setAttachments] = useState<string[]>([]);
+  const [pastedImagePaths, setPastedImagePaths] = useState<string[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [branchName, setBranchName] = useState<string | null>(null);
   const messagesEnd = useRef<HTMLDivElement>(null);
@@ -427,18 +429,24 @@ export function ChatWorkbenchView() {
       return;
     }
     const prompt = draft;
-    const attachedPaths = attachments;
+    const imagePaths = pastedImagePaths;
+    const imagePathSet = new Set(imagePaths);
+    const attachedPaths = attachments.filter((path) => !imagePathSet.has(path));
     shouldStickToBottom.current = true;
     setAtConversationBottom(true);
     setDraft("");
     setAttachments([]);
+    setPastedImagePaths([]);
     setAttachmentError(null);
     void session
-      .sendPrompt(prompt, behavior, toolPermissions.promptToolNames, attachedPaths)
+      .sendPrompt(prompt, behavior, toolPermissions.promptToolNames, attachedPaths, imagePaths)
       .then((sent) => {
         if (!sent) {
           setDraft((current) => current || prompt);
-          setAttachments((current) => normalizeAttachedPaths([...attachedPaths, ...current]));
+          setAttachments((current) =>
+            normalizeAttachedPaths([...attachedPaths, ...imagePaths, ...current]),
+          );
+          setPastedImagePaths((current) => normalizeAttachedPaths([...imagePaths, ...current]));
         }
       });
   }
@@ -446,6 +454,7 @@ export function ChatWorkbenchView() {
   function resetComposerInput() {
     setDraft("");
     setAttachments([]);
+    setPastedImagePaths([]);
     setAttachmentError(null);
   }
 
@@ -455,11 +464,40 @@ export function ChatWorkbenchView() {
       setAttachments(next);
       setAttachmentError(
         attachments.length + paths.length > MAX_COMPOSER_ATTACHMENTS
-          ? `最多可添加 ${MAX_COMPOSER_ATTACHMENTS} 个文件或文件夹`
+          ? `最多可添加 ${MAX_COMPOSER_ATTACHMENTS} 个附件`
           : null,
       );
     },
     [attachments],
+  );
+
+  const addPastedImages = useCallback(
+    async (files: File[]) => {
+      const available = MAX_COMPOSER_ATTACHMENTS - attachments.length;
+      if (available <= 0) {
+        setAttachmentError(`最多可添加 ${MAX_COMPOSER_ATTACHMENTS} 个附件`);
+        return;
+      }
+      const selected = files.slice(0, available);
+      const saved: string[] = [];
+      try {
+        for (const file of selected) {
+          saved.push(await saveClipboardImage(file));
+        }
+        addAttachments(saved);
+        setPastedImagePaths((current) => normalizeAttachedPaths([...current, ...saved]));
+        if (selected.length < files.length) {
+          setAttachmentError(`最多可添加 ${MAX_COMPOSER_ATTACHMENTS} 个附件`);
+        }
+      } catch (error) {
+        if (saved.length > 0) {
+          addAttachments(saved);
+          setPastedImagePaths((current) => normalizeAttachedPaths([...current, ...saved]));
+        }
+        setAttachmentError(formatAttachmentError(error));
+      }
+    },
+    [addAttachments, attachments.length],
   );
 
   const addFiles = useCallback(async () => {
@@ -850,10 +888,12 @@ export function ChatWorkbenchView() {
                   onAddProject={openProjectDialog}
                   onAddFiles={() => void addFiles()}
                   onAddFolder={() => void addFolder()}
+                  onPasteImages={(files) => void addPastedImages(files)}
                   onSearchWorkspacePaths={searchComposerPaths}
                   onAttachPath={(path) => addAttachments([path])}
                   onRemoveAttachment={(path) => {
                     setAttachments((current) => current.filter((item) => item !== path));
+                    setPastedImagePaths((current) => current.filter((item) => item !== path));
                     setAttachmentError(null);
                   }}
                   onRetryModels={() => void session.loadCatalogs()}
@@ -1220,6 +1260,20 @@ function formatProjectSelectionError(error: unknown): string {
     return `${error.code}: ${error.message}`;
   }
   return "PROJECT_DIRECTORY_SELECTION_FAILED: 无法打开资源管理器，请重试";
+}
+
+function formatAttachmentError(error: unknown): string {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    "message" in error &&
+    typeof error.code === "string" &&
+    typeof error.message === "string"
+  ) {
+    return `${error.code}: ${error.message}`;
+  }
+  return "CLIPBOARD_IMAGE_SAVE_FAILED: 无法保存剪贴板图片，请重试";
 }
 
 function isNarrowViewport(): boolean {

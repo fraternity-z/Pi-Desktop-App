@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   MAX_FRAME_BYTES,
+  MAX_PROMPT_IMAGES,
   MAX_PROMPT_CHARS,
   PROTOCOL_VERSION,
   ProtocolError,
@@ -41,6 +42,24 @@ describe("parseRequest", () => {
         sessionId: "s-1",
         text: "safe",
         activeTools: ["read", "edit"],
+      },
+    ],
+    [
+      JSON.stringify({
+        v: 1,
+        id: "r-3-images",
+        op: "prompt",
+        sessionId: "s-1",
+        text: "inspect",
+        imagePaths: ["C:\\cache\\paste.png", "D:\\shots\\view.JPEG"],
+      }),
+      {
+        v: 1,
+        id: "r-3-images",
+        op: "prompt",
+        sessionId: "s-1",
+        text: "inspect",
+        imagePaths: ["C:\\cache\\paste.png", "D:\\shots\\view.JPEG"],
       },
     ],
     [
@@ -177,6 +196,22 @@ describe("parseRequest", () => {
       "INVALID_REQUEST",
       '{"v":1,"id":"r-1","op":"prompt","sessionId":"s-1","text":"hello","activeTools":"read"}',
     ],
+    [
+      "INVALID_REQUEST",
+      '{"v":1,"id":"r-1","op":"prompt","sessionId":"s-1","text":"hello","imagePaths":[]}',
+    ],
+    [
+      "INVALID_REQUEST",
+      '{"v":1,"id":"r-1","op":"prompt","sessionId":"s-1","text":"hello","imagePaths":["relative.png"]}',
+    ],
+    [
+      "INVALID_REQUEST",
+      '{"v":1,"id":"r-1","op":"prompt","sessionId":"s-1","text":"hello","imagePaths":["C:\\\\cache\\\\vector.svg"]}',
+    ],
+    [
+      "INVALID_REQUEST",
+      '{"v":1,"id":"r-1","op":"prompt","sessionId":"s-1","text":"hello","imagePaths":["C:\\\\cache\\\\same.png","c:/CACHE/same.png"]}',
+    ],
     ["INVALID_REQUEST", '{"v":1,"id":"r-1","op":"session.open","sessionPath":"relative"}'],
     ["INVALID_REQUEST", '{"v":1,"id":"r-1","op":"session.delete","sessionIds":[]}'],
     [
@@ -232,6 +267,20 @@ describe("parseRequest", () => {
     expect(() => parseRequest(line)).toThrowError(
       expect.objectContaining<Partial<ProtocolError>>({ code: "INVALID_REQUEST" }),
     );
+    const tooManyImages = JSON.stringify({
+      v: 1,
+      id: "r-images",
+      op: "prompt",
+      sessionId: "s-1",
+      text: "images",
+      imagePaths: Array.from(
+        { length: MAX_PROMPT_IMAGES + 1 },
+        (_, index) => `C:\\cache\\image-${index}.png`,
+      ),
+    });
+    expect(() => parseRequest(tooManyImages)).toThrowError(
+      expect.objectContaining<Partial<ProtocolError>>({ code: "INVALID_REQUEST" }),
+    );
   });
 });
 
@@ -259,6 +308,7 @@ describe("outbound frames", () => {
         "packages",
         "resources",
         "context-usage",
+        "images",
       ],
     });
   });

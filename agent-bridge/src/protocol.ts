@@ -1,4 +1,4 @@
-import { isAbsolute } from "node:path";
+import { extname, isAbsolute, win32 } from "node:path";
 
 import {
   REQUEST_HEADER_CLIENTS,
@@ -13,6 +13,7 @@ export const MAX_ACTIVE_TOOLS = 256;
 export const MAX_TOOL_NAME_CHARS = 128;
 export const MAX_SESSION_IDS = 1024;
 export const MAX_SESSION_ID_CHARS = 128;
+export const MAX_PROMPT_IMAGES = 12;
 
 export const THINKING_LEVELS = [
   "off",
@@ -64,6 +65,7 @@ export const BRIDGE_CAPABILITIES = [
   "packages",
   "resources",
   "context-usage",
+  "images",
 ] as const;
 
 export type BridgeOperation = (typeof BRIDGE_OPERATIONS)[number];
@@ -115,6 +117,7 @@ export type BridgeRequest =
       text: string;
       streamingBehavior?: PromptStreamingBehavior;
       activeTools?: string[];
+      imagePaths?: string[];
     })
   | (RequestBase & { op: "queue.clear"; sessionId: string })
   | (RequestBase & { op: "abort"; sessionId: string });
@@ -249,6 +252,45 @@ function readActiveTools(value: Record<string, unknown>): string[] | undefined {
     names.add(item);
   }
   return [...names];
+}
+
+function readImagePaths(value: Record<string, unknown>): string[] | undefined {
+  if (value.imagePaths === undefined) return undefined;
+  if (
+    !Array.isArray(value.imagePaths) ||
+    value.imagePaths.length === 0 ||
+    value.imagePaths.length > MAX_PROMPT_IMAGES
+  ) {
+    throw new ProtocolError(
+      "INVALID_REQUEST",
+      `imagePaths 必须为 1-${MAX_PROMPT_IMAGES} 项的数组`,
+    );
+  }
+
+  const paths: string[] = [];
+  const unique = new Set<string>();
+  for (const item of value.imagePaths) {
+    const path = typeof item === "string" ? item.trim() : "";
+    const windowsPath = win32.isAbsolute(path);
+    const extension = (windowsPath ? win32.extname(path) : extname(path)).toLocaleLowerCase();
+    const duplicateKey = windowsPath
+      ? path.replace(/\\/g, "/").toLocaleLowerCase("en-US")
+      : path;
+    if (
+      typeof item !== "string" ||
+      path.length === 0 ||
+      path.length > 4_096 ||
+      /[\r\n\0]/.test(item) ||
+      (!isAbsolute(path) && !windowsPath) ||
+      ![".gif", ".jpeg", ".jpg", ".png", ".webp"].includes(extension) ||
+      unique.has(duplicateKey)
+    ) {
+      throw new ProtocolError("INVALID_REQUEST", "imagePaths 包含无效、重复或不支持的图片路径");
+    }
+    unique.add(duplicateKey);
+    paths.push(path);
+  }
+  return paths;
 }
 
 function readSessionIds(value: Record<string, unknown>): string[] {
@@ -422,6 +464,7 @@ export function parseRequest(line: string): BridgeRequest {
     case "prompt": {
       const streamingBehavior = readStreamingBehavior(value);
       const activeTools = readActiveTools(value);
+      const imagePaths = readImagePaths(value);
       return {
         v: PROTOCOL_VERSION,
         id,
@@ -430,6 +473,7 @@ export function parseRequest(line: string): BridgeRequest {
         text: requireString(value, "text", MAX_PROMPT_CHARS),
         ...(streamingBehavior === undefined ? {} : { streamingBehavior }),
         ...(activeTools === undefined ? {} : { activeTools }),
+        ...(imagePaths === undefined ? {} : { imagePaths }),
       };
     }
     case "queue.clear":

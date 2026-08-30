@@ -24,6 +24,9 @@ use crate::{
     },
     discovery::{RuntimeDiscoveryOptions, RuntimeSource, discover_runtime},
     error::AppError,
+    image::{
+        MAX_PROMPT_IMAGE_BYTES, MAX_PROMPT_IMAGES, detect_image_format, image_format_for_path,
+    },
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -281,9 +284,13 @@ impl BridgeRuntime {
         text: String,
         streaming_behavior: Option<PromptStreamingBehavior>,
         active_tools: Option<Vec<String>>,
+        image_paths: Option<Vec<String>>,
+        image_root: Option<PathBuf>,
     ) -> Result<u64, AppError> {
         ensure_valid_prompt(&text)?;
         validate_active_tools(active_tools.as_deref())?;
+        let image_paths =
+            validate_prompt_image_paths(image_paths.as_deref(), image_root.as_deref())?;
         self.ensure_known_session(&session_id)?;
         self.with_supervisor(|supervisor| {
             supervisor.prompt(
@@ -291,6 +298,7 @@ impl BridgeRuntime {
                 &text,
                 streaming_behavior.as_ref(),
                 active_tools.as_deref(),
+                image_paths.as_deref(),
             )
         })
     }
@@ -581,6 +589,120 @@ fn ensure_valid_prompt(text: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+fn validate_prompt_image_paths(
+    image_paths: Option<&[String]>,
+    image_root: Option<&Path>,
+) -> Result<Option<Vec<String>>, AppError> {
+    let Some(image_paths) = image_paths else {
+        return Ok(None);
+    };
+    if image_paths.is_empty() || image_paths.len() > MAX_PROMPT_IMAGES {
+        return Err(AppError::new(
+            "PROMPT_IMAGE_COUNT_INVALID",
+            format!("图片数量必须为 1-{MAX_PROMPT_IMAGES} 张"),
+        ));
+    }
+    let image_root = image_root.ok_or_else(|| {
+        AppError::new(
+            "PROMPT_IMAGE_PATH_INVALID",
+            "图片路径不在应用授权的缓存目录中",
+        )
+    })?;
+    let image_root = std::fs::canonicalize(image_root).map_err(|_| {
+        AppError::new(
+            "PROMPT_IMAGE_PATH_INVALID",
+            "图片路径不在应用授权的缓存目录中",
+        )
+    })?;
+
+    let mut unique = HashSet::new();
+    let mut normalized = Vec::with_capacity(image_paths.len());
+    for image_path in image_paths {
+        let image_path = image_path.trim();
+        if image_path.is_empty()
+            || image_path.chars().count() > 4_096
+            || image_path.contains(['\r', '\n', '\0'])
+        {
+            return Err(AppError::new(
+                "PROMPT_IMAGE_PATH_INVALID",
+                "图片路径必须为不含换行或空字符的绝对路径",
+            ));
+        }
+        let image_path = Path::new(image_path);
+        if !image_path.is_absolute() {
+            return Err(AppError::new(
+                "PROMPT_IMAGE_PATH_INVALID",
+                "图片路径必须为不含换行或空字符的绝对路径",
+            ));
+        }
+        let expected_format = image_format_for_path(image_path).ok_or_else(|| {
+            AppError::new(
+                "PROMPT_IMAGE_TYPE_UNSUPPORTED",
+                "仅支持 PNG、JPEG、GIF 或 WebP 图片",
+            )
+        })?;
+        let canonical = std::fs::canonicalize(image_path).map_err(|_| {
+            AppError::new(
+                "PROMPT_IMAGE_READ_FAILED",
+                "图片不存在、无法访问或不是普通文件",
+            )
+        })?;
+        if !canonical.starts_with(&image_root) {
+            return Err(AppError::new(
+                "PROMPT_IMAGE_PATH_INVALID",
+                "图片路径不在应用授权的缓存目录中",
+            ));
+        }
+        let metadata = std::fs::metadata(&canonical).map_err(|_| {
+            AppError::new(
+                "PROMPT_IMAGE_READ_FAILED",
+                "图片不存在、无法访问或不是普通文件",
+            )
+        })?;
+        if !metadata.is_file() {
+            return Err(AppError::new(
+                "PROMPT_IMAGE_READ_FAILED",
+                "图片不存在、无法访问或不是普通文件",
+            ));
+        }
+        if metadata.len() == 0 {
+            return Err(AppError::new("PROMPT_IMAGE_EMPTY", "图片文件不能为空"));
+        }
+        if metadata.len() > MAX_PROMPT_IMAGE_BYTES {
+            return Err(AppError::new(
+                "PROMPT_IMAGE_TOO_LARGE",
+                "单张图片不能超过 10 MiB",
+            ));
+        }
+        let bytes = std::fs::read(&canonical)
+            .map_err(|_| AppError::new("PROMPT_IMAGE_READ_FAILED", "图片文件无法读取"))?;
+        if bytes.is_empty() {
+            return Err(AppError::new("PROMPT_IMAGE_EMPTY", "图片文件不能为空"));
+        }
+        if bytes.len() as u64 > MAX_PROMPT_IMAGE_BYTES {
+            return Err(AppError::new(
+                "PROMPT_IMAGE_TOO_LARGE",
+                "单张图片不能超过 10 MiB",
+            ));
+        }
+        if detect_image_format(&bytes) != Some(expected_format) {
+            return Err(AppError::new(
+                "PROMPT_IMAGE_TYPE_UNSUPPORTED",
+                "图片内容与扩展名不匹配，或格式不受支持",
+            ));
+        }
+        let canonical = normalize_process_path(canonical);
+        if !unique.insert(canonical.clone()) {
+            return Err(AppError::new(
+                "PROMPT_IMAGE_PATH_INVALID",
+                "图片列表包含重复路径",
+            ));
+        }
+        normalized.push(canonical.to_string_lossy().into_owned());
+    }
+    Ok(Some(normalized))
+}
+
 fn validate_active_tools(active_tools: Option<&[String]>) -> Result<(), AppError> {
     let Some(active_tools) = active_tools else {
         return Ok(());
@@ -839,6 +961,94 @@ mod tests {
                 .code,
             "TOOL_SELECTION_INVALID"
         );
+    }
+
+    #[test]
+    fn validates_and_normalizes_prompt_images() {
+        let (image_root, image_path) =
+            prompt_image_fixture("valid.png", b"\x89PNG\r\n\x1a\nfixture");
+
+        let result = validate_prompt_image_paths(
+            Some(&[image_path.to_string_lossy().into_owned()]),
+            Some(&image_root),
+        )
+        .expect("有效 PNG 应通过校验")
+        .expect("图片列表应保留");
+
+        assert_eq!(result.len(), 1);
+        assert!(Path::new(&result[0]).is_absolute());
+        std::fs::remove_dir_all(image_root).expect("测试图片目录应可删除");
+    }
+
+    #[test]
+    fn rejects_invalid_prompt_images_without_exposing_paths() {
+        let (image_root, spoofed) = prompt_image_fixture("spoofed.png", b"not an image");
+        let spoofed_text = spoofed.to_string_lossy().into_owned();
+        let error = validate_prompt_image_paths(
+            Some(std::slice::from_ref(&spoofed_text)),
+            Some(&image_root),
+        )
+        .expect_err("伪装图片必须被拒绝");
+        assert_eq!(error.code, "PROMPT_IMAGE_TYPE_UNSUPPORTED");
+        assert!(!error.message.contains(&spoofed_text));
+
+        assert_eq!(
+            validate_prompt_image_paths(Some(&["relative.png".to_owned()]), Some(&image_root))
+                .expect_err("相对路径必须被拒绝")
+                .code,
+            "PROMPT_IMAGE_PATH_INVALID"
+        );
+        assert_eq!(
+            validate_prompt_image_paths(Some(&[]), Some(&image_root))
+                .expect_err("空图片列表必须被拒绝")
+                .code,
+            "PROMPT_IMAGE_COUNT_INVALID"
+        );
+
+        let (outside_root, outside) =
+            prompt_image_fixture("outside.png", b"\x89PNG\r\n\x1a\nfixture");
+        let outside_text = outside.to_string_lossy().into_owned();
+        let error = validate_prompt_image_paths(
+            Some(std::slice::from_ref(&outside_text)),
+            Some(&image_root),
+        )
+        .expect_err("授权缓存目录外的图片必须被拒绝");
+        assert_eq!(error.code, "PROMPT_IMAGE_PATH_INVALID");
+        assert!(!error.message.contains(&outside_text));
+
+        std::fs::remove_dir_all(image_root).expect("测试图片目录应可删除");
+        std::fs::remove_dir_all(outside_root).expect("目录外测试图片应可删除");
+    }
+
+    #[test]
+    fn rejects_duplicate_prompt_images() {
+        let (image_root, image_path) =
+            prompt_image_fixture("duplicate.png", b"\x89PNG\r\n\x1a\nfixture");
+        let image_path = image_path.to_string_lossy().into_owned();
+
+        let error = validate_prompt_image_paths(
+            Some(&[image_path.clone(), image_path.clone()]),
+            Some(&image_root),
+        )
+        .expect_err("重复图片必须被拒绝");
+
+        assert_eq!(error.code, "PROMPT_IMAGE_PATH_INVALID");
+        std::fs::remove_dir_all(image_root).expect("测试图片目录应可删除");
+    }
+
+    fn prompt_image_fixture(name: &str, bytes: &[u8]) -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "pi-desktop-prompt-image-{}-{}-{name}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("系统时间必须有效")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("应可创建测试图片目录");
+        let path = root.join(name);
+        std::fs::write(&path, bytes).expect("应可创建测试图片");
+        (root, path)
     }
 
     #[test]

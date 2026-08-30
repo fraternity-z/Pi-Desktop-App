@@ -519,6 +519,7 @@ impl BridgeSupervisor {
         text: &str,
         streaming_behavior: Option<&PromptStreamingBehavior>,
         active_tools: Option<&[String]>,
+        image_paths: Option<&[String]>,
     ) -> Result<u64, AppError> {
         let mut fields = serde_json::Map::from_iter([
             ("sessionId".to_owned(), Value::String(session_id.to_owned())),
@@ -537,6 +538,13 @@ impl BridgeSupervisor {
                 "activeTools".to_owned(),
                 serde_json::to_value(active_tools)
                     .map_err(|_| AppError::new("BRIDGE_REQUEST_INVALID", "无法序列化工具权限"))?,
+            );
+        }
+        if let Some(image_paths) = image_paths {
+            fields.insert(
+                "imagePaths".to_owned(),
+                serde_json::to_value(image_paths)
+                    .map_err(|_| AppError::new("BRIDGE_REQUEST_INVALID", "无法序列化图片路径"))?,
             );
         }
         self.request_with_inactivity_timeout(
@@ -1071,6 +1079,12 @@ fn public_remote_error_code(code: &str) -> Option<&'static str> {
         "TOOL_SELECTION_INVALID" => "TOOL_SELECTION_INVALID",
         "TOOL_PERMISSION_UPDATE_FAILED" => "TOOL_PERMISSION_UPDATE_FAILED",
         "PROMPT_FAILED" => "PROMPT_FAILED",
+        "PROMPT_IMAGE_COUNT_INVALID" => "PROMPT_IMAGE_COUNT_INVALID",
+        "PROMPT_IMAGE_PATH_INVALID" => "PROMPT_IMAGE_PATH_INVALID",
+        "PROMPT_IMAGE_TYPE_UNSUPPORTED" => "PROMPT_IMAGE_TYPE_UNSUPPORTED",
+        "PROMPT_IMAGE_EMPTY" => "PROMPT_IMAGE_EMPTY",
+        "PROMPT_IMAGE_TOO_LARGE" => "PROMPT_IMAGE_TOO_LARGE",
+        "PROMPT_IMAGE_READ_FAILED" => "PROMPT_IMAGE_READ_FAILED",
         "QUEUE_CLEAR_FAILED" => "QUEUE_CLEAR_FAILED",
         "ABORT_FAILED" => "ABORT_FAILED",
         "RUNTIME_CLOSED" => "RUNTIME_CLOSED",
@@ -1373,7 +1387,7 @@ mod tests {
 
     use super::*;
 
-    const HELLO: &str = r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions","models","session-history","session-configuration","tool-status","tool-permissions","background-sessions","thinking-stream","queue","request-header-profiles","packages","resources","context-usage"]}"#;
+    const HELLO: &str = r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions","models","session-history","session-configuration","tool-status","tool-permissions","background-sessions","thinking-stream","queue","request-header-profiles","packages","resources","context-usage","images"]}"#;
 
     struct MockTransport {
         reads: Arc<Mutex<VecDeque<Result<String, AppError>>>>,
@@ -1905,14 +1919,14 @@ mod tests {
         let supervisor = connect(transport);
 
         let error = supervisor
-            .prompt("s-1", "hello", None, None)
+            .prompt("s-1", "hello", None, None, None)
             .expect_err("prompt 响应必须包含最终事件序号");
 
         assert_eq!(error.code, "BRIDGE_PROMPT_RESPONSE_INVALID");
     }
 
     #[test]
-    fn sends_active_tools_with_prompt() {
+    fn sends_active_tools_and_images_with_prompt() {
         let transport = MockTransport::new([
             Ok(HELLO),
             Ok(r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":{"finalSeq":0}}"#),
@@ -1920,10 +1934,11 @@ mod tests {
         let writes = transport.writes.clone();
         let supervisor = connect(transport);
         let tools = vec!["read".to_owned(), "edit".to_owned()];
+        let images = vec![r"C:\cache\pasted.png".to_owned()];
 
         supervisor
-            .prompt("s-1", "inspect", None, Some(&tools))
-            .expect("prompt 应携带工具权限");
+            .prompt("s-1", "inspect", None, Some(&tools), Some(&images))
+            .expect("prompt 应携带工具权限和图片路径");
 
         assert_eq!(
             serde_json::from_str::<Value>(&writes.lock().unwrap()[0]).unwrap(),
@@ -1933,7 +1948,8 @@ mod tests {
                 "op": "prompt",
                 "sessionId": "s-1",
                 "text": "inspect",
-                "activeTools": ["read", "edit"]
+                "activeTools": ["read", "edit"],
+                "imagePaths": [r"C:\cache\pasted.png"]
             })
         );
     }
@@ -2161,7 +2177,7 @@ mod tests {
 
         let prompt_supervisor = supervisor.clone();
         let prompt =
-            thread::spawn(move || prompt_supervisor.prompt("s-1", "slow task", None, None));
+            thread::spawn(move || prompt_supervisor.prompt("s-1", "slow task", None, None, None));
         wait_for_writes(&writes, 1);
 
         let abort_supervisor = supervisor.clone();

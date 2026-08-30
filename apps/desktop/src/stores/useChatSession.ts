@@ -37,6 +37,7 @@ import {
 import {
   displayPromptContent,
   normalizeAttachedPaths,
+  promptImagePaths,
   promptWithAttachedPaths,
 } from "../components/composerAttachments";
 import { appendMonotonicText } from "./chatStream";
@@ -138,6 +139,7 @@ export interface ChatSessionState {
     behavior?: PromptStreamingBehavior,
     activeToolNames?: string[],
     attachedPaths?: string[],
+    imagePaths?: string[],
   ) => Promise<boolean>;
   clearQueue: () => Promise<void>;
   abort: () => Promise<void>;
@@ -578,13 +580,21 @@ export function useChatSession(): ChatSessionState {
       behavior?: PromptStreamingBehavior,
       activeToolNames?: string[],
       attachedPaths: string[] = [],
+      imagePaths: string[] = [],
     ) => {
       let sessionId = activeSessionIdRef.current;
       let projection: SessionProjection | null | undefined = sessionId
         ? projectionsRef.current[sessionId]
         : undefined;
       const paths = normalizeAttachedPaths(attachedPaths);
-      const content = text.trim() || (paths.length > 0 ? "请查看附加的文件。" : "");
+      const images = promptImagePaths(imagePaths);
+      const content =
+        text.trim() ||
+        (paths.length === 0 && images.length === 0
+          ? ""
+          : images.length > 0 && paths.length === 0
+            ? "请查看附加的图片。"
+            : "请查看附加的文件。");
       const wireContent = promptWithAttachedPaths(content, paths);
       if (
         !sessionId ||
@@ -648,7 +658,11 @@ export function useChatSession(): ChatSessionState {
         };
       });
       try {
-        await promptAgent(sessionId, wireContent, streamingBehavior, promptTools);
+        if (images.length > 0) {
+          await promptAgent(sessionId, wireContent, streamingBehavior, promptTools, images);
+        } else {
+          await promptAgent(sessionId, wireContent, streamingBehavior, promptTools);
+        }
         void loadCatalogsRef.current();
         return true;
       } catch (error) {

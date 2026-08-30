@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { realpath, stat, unlink } from "node:fs/promises";
+import { readFile, realpath, stat, unlink } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative, win32 } from "node:path";
 
 import {
@@ -127,7 +127,10 @@ export interface PiSessionLike {
   readonly model?: PiModelLike;
   readonly thinkingLevel: ThinkingLevel;
   readonly messages: unknown[];
-  prompt(text: string, options?: { streamingBehavior?: PromptStreamingBehavior }): Promise<void>;
+  prompt(
+    text: string,
+    options?: { streamingBehavior?: PromptStreamingBehavior; images?: PiImageContent[] },
+  ): Promise<void>;
   clearQueue(): void;
   getSteeringMessages(): string[];
   getFollowUpMessages(): string[];
@@ -143,6 +146,12 @@ export interface PiSessionLike {
   setActiveToolsByName?(toolNames: string[]): void;
   reload?(): Promise<void>;
   dispose(): void;
+}
+
+export interface PiImageContent {
+  type: "image";
+  data: string;
+  mimeType: "image/gif" | "image/jpeg" | "image/png" | "image/webp";
 }
 
 interface PiToolLike {
@@ -271,7 +280,8 @@ export interface DeleteSessionsResult {
 
 export interface SessionFileDependencies {
   realpath(path: string): Promise<string>;
-  stat(path: string): Promise<{ isFile(): boolean }>;
+  stat(path: string): Promise<{ isFile(): boolean; size: number }>;
+  readFile(path: string): Promise<Buffer>;
   unlink(path: string): Promise<void>;
 }
 
@@ -322,6 +332,7 @@ export interface SessionRuntime {
     text: string,
     streamingBehavior?: PromptStreamingBehavior,
     activeTools?: string[],
+    imagePaths?: string[],
   ): Promise<void>;
   clearQueue(sessionId: string): Promise<void>;
   abort(sessionId: string): Promise<void>;
@@ -360,6 +371,8 @@ const MAX_AVAILABLE_TOOLS = 256;
 const MAX_TOOL_DISPLAY_CHARS = 120_000;
 const MAX_TOOL_DISPLAY_DEPTH = 8;
 const MAX_TOOL_DISPLAY_ENTRIES = 100;
+const MAX_PROMPT_IMAGES = 12;
+const MAX_PROMPT_IMAGE_BYTES = 10 * 1024 * 1024;
 const REDACTED_TOOL_VALUE = "[REDACTED]";
 const TRUNCATED_TOOL_VALUE = "[TRUNCATED]";
 const SENSITIVE_TOOL_KEY =
@@ -368,6 +381,7 @@ const SENSITIVE_TOOL_KEY =
 const DEFAULT_SESSION_FILE_DEPENDENCIES: SessionFileDependencies = {
   realpath,
   stat,
+  readFile,
   unlink,
 };
 
@@ -671,6 +685,119 @@ function listResourcesFromLoader(
 function normalizeRuntimePath(path: string): string {
   const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
   return process.platform === "win32" ? normalized.toLocaleLowerCase("en-US") : normalized;
+}
+
+async function loadPromptImages(
+  imagePaths: string[] | undefined,
+  files: SessionFileDependencies,
+): Promise<PiImageContent[] | undefined> {
+  if (imagePaths === undefined) return undefined;
+  if (imagePaths.length === 0 || imagePaths.length > MAX_PROMPT_IMAGES) {
+    throw new RuntimeError(
+      "PROMPT_IMAGE_COUNT_INVALID",
+      `图片数量必须为 1-${MAX_PROMPT_IMAGES} 张`,
+    );
+  }
+
+  const images: PiImageContent[] = [];
+  const unique = new Set<string>();
+  for (const imagePath of imagePaths) {
+    if (
+      typeof imagePath !== "string" ||
+      imagePath.trim().length === 0 ||
+      imagePath.length > 4_096 ||
+      /[\r\n\0]/.test(imagePath) ||
+      (!isAbsolute(imagePath) && !win32.isAbsolute(imagePath))
+    ) {
+      throw new RuntimeError("PROMPT_IMAGE_PATH_INVALID", "图片路径必须是有效的绝对路径");
+    }
+
+    let canonical: string;
+    let details: { isFile(): boolean; size: number };
+    try {
+      canonical = await files.realpath(imagePath);
+      details = await files.stat(canonical);
+    } catch {
+      throw new RuntimeError(
+        "PROMPT_IMAGE_READ_FAILED",
+        "图片不存在、无法访问或不是普通文件",
+      );
+    }
+    if (!details.isFile()) {
+      throw new RuntimeError(
+        "PROMPT_IMAGE_READ_FAILED",
+        "图片不存在、无法访问或不是普通文件",
+      );
+    }
+    if (details.size === 0) {
+      throw new RuntimeError("PROMPT_IMAGE_EMPTY", "图片文件不能为空");
+    }
+    if (!Number.isFinite(details.size) || details.size < 0 || details.size > MAX_PROMPT_IMAGE_BYTES) {
+      throw new RuntimeError("PROMPT_IMAGE_TOO_LARGE", "单张图片不能超过 10 MiB");
+    }
+
+    const normalized = normalizeRuntimePath(canonical);
+    if (unique.has(normalized)) {
+      throw new RuntimeError("PROMPT_IMAGE_PATH_INVALID", "图片列表包含重复路径");
+    }
+    unique.add(normalized);
+
+    const expected = imageMimeTypeFromPath(canonical);
+    if (!expected) {
+      throw new RuntimeError(
+        "PROMPT_IMAGE_TYPE_UNSUPPORTED",
+        "仅支持 PNG、JPEG、GIF 或 WebP 图片",
+      );
+    }
+    let bytes: Buffer;
+    try {
+      bytes = await files.readFile(canonical);
+    } catch {
+      throw new RuntimeError("PROMPT_IMAGE_READ_FAILED", "图片文件无法读取");
+    }
+    if (bytes.length === 0) {
+      throw new RuntimeError("PROMPT_IMAGE_EMPTY", "图片文件不能为空");
+    }
+    if (bytes.length > MAX_PROMPT_IMAGE_BYTES) {
+      throw new RuntimeError("PROMPT_IMAGE_TOO_LARGE", "单张图片不能超过 10 MiB");
+    }
+    if (detectImageMimeType(bytes) !== expected) {
+      throw new RuntimeError(
+        "PROMPT_IMAGE_TYPE_UNSUPPORTED",
+        "图片内容与扩展名不匹配，或格式不受支持",
+      );
+    }
+    images.push({ type: "image", data: bytes.toString("base64"), mimeType: expected });
+  }
+  return images;
+}
+
+function imageMimeTypeFromPath(path: string): PiImageContent["mimeType"] | undefined {
+  const extension = (win32.isAbsolute(path) ? win32.extname(path) : extname(path)).toLocaleLowerCase();
+  if (extension === ".gif") return "image/gif";
+  if (extension === ".jpg" || extension === ".jpeg") return "image/jpeg";
+  if (extension === ".png") return "image/png";
+  if (extension === ".webp") return "image/webp";
+  return undefined;
+}
+
+function detectImageMimeType(bytes: Buffer): PiImageContent["mimeType"] | undefined {
+  if (bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return "image/png";
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
+  const prefix = bytes.subarray(0, 6).toString("ascii");
+  if (prefix === "GIF87a" || prefix === "GIF89a") return "image/gif";
+  if (
+    bytes.length >= 12 &&
+    bytes.subarray(0, 4).toString("ascii") === "RIFF" &&
+    bytes.subarray(8, 12).toString("ascii") === "WEBP"
+  ) {
+    return "image/webp";
+  }
+  return undefined;
 }
 
 export class PiSessionRuntime implements SessionRuntime {
@@ -1063,6 +1190,7 @@ export class PiSessionRuntime implements SessionRuntime {
     text: string,
     streamingBehavior?: PromptStreamingBehavior,
     activeTools?: string[],
+    imagePaths?: string[],
   ): Promise<void> {
     this.ensureOpen();
     try {
@@ -1070,11 +1198,13 @@ export class PiSessionRuntime implements SessionRuntime {
       if (activeTools !== undefined) {
         this.applyActiveTools(managed, activeTools);
       }
+      const images = await loadPromptImages(imagePaths, this.sessionFiles);
       managed.lastActivityAt = new Date().toISOString();
-      await managed.session.prompt(
-        text,
-        streamingBehavior === undefined ? undefined : { streamingBehavior },
-      );
+      const options = {
+        ...(streamingBehavior === undefined ? {} : { streamingBehavior }),
+        ...(images === undefined ? {} : { images }),
+      };
+      await managed.session.prompt(text, Object.keys(options).length === 0 ? undefined : options);
     } catch (error) {
       throw mapRuntimeError(error, "PROMPT_FAILED", "Pi 无法完成当前提示");
     }

@@ -178,7 +178,13 @@ describe("BridgeServer", () => {
       expect.objectContaining({ id: "2", ok: true, data: { status: "ok", protocolVersion: 1 } }),
     );
     expect(runtimeMock.createSession).toHaveBeenCalledWith("C:\\work");
-    expect(runtimeMock.prompt).toHaveBeenCalledWith("s-1", "hello", undefined, undefined);
+    expect(runtimeMock.prompt).toHaveBeenCalledWith(
+      "s-1",
+      "hello",
+      undefined,
+      undefined,
+      undefined,
+    );
     expect(frames).toContainEqual(
       expect.objectContaining({ id: "4", ok: true, data: { finalSeq: 0 } }),
     );
@@ -205,14 +211,28 @@ describe("BridgeServer", () => {
       '{"v":1,"id":"follow","op":"prompt","sessionId":"s-1","text":"later","streamingBehavior":"followUp"}',
     );
 
-    expect(runtimeMock.prompt).toHaveBeenNthCalledWith(1, "s-1", "guide", "steer", undefined);
-    expect(runtimeMock.prompt).toHaveBeenNthCalledWith(2, "s-1", "later", "followUp", undefined);
+    expect(runtimeMock.prompt).toHaveBeenNthCalledWith(
+      1,
+      "s-1",
+      "guide",
+      "steer",
+      undefined,
+      undefined,
+    );
+    expect(runtimeMock.prompt).toHaveBeenNthCalledWith(
+      2,
+      "s-1",
+      "later",
+      "followUp",
+      undefined,
+      undefined,
+    );
   });
 
-  it("将工具权限选择传递给运行时", async () => {
+  it("将工具权限和图片路径传递给运行时", async () => {
     const { server, runtimeMock } = setup();
     await server.handleLine(
-      '{"v":1,"id":"tools","op":"prompt","sessionId":"s-1","text":"inspect","activeTools":["read","edit"]}',
+      '{"v":1,"id":"tools","op":"prompt","sessionId":"s-1","text":"inspect","activeTools":["read","edit"],"imagePaths":["C:\\\\cache\\\\paste.png"]}',
     );
 
     expect(runtimeMock.prompt).toHaveBeenCalledWith(
@@ -220,6 +240,7 @@ describe("BridgeServer", () => {
       "inspect",
       undefined,
       ["read", "edit"],
+      ["C:\\cache\\paste.png"],
     );
   });
 

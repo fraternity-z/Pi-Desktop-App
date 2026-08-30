@@ -259,7 +259,7 @@ describe("ChatComposer", () => {
         }}
         configuring={false}
         contextUsage={{ tokens: 2_048, contextWindow: 8_192, percent: 25 }}
-        attachments={["C:\\work\\README.md"]}
+        attachments={["C:\\work\\README.md", "C:\\cache\\paste.png"]}
         canSend
         queuedMessages={{ steering: [], followUp: [] }}
         queuePaused={false}
@@ -480,6 +480,66 @@ describe("ChatComposer", () => {
     expect(onSend).toHaveBeenNthCalledWith(2, undefined, "followUp");
     fireEvent.click(screen.getByRole("button", { name: "停止" }));
     expect(onAbort).toHaveBeenCalledOnce();
+  });
+
+  it("从剪贴板提取图片文件并阻止浏览器插入二进制内容", () => {
+    const onPasteImages = vi.fn();
+    render(
+      <ChatComposer
+        workspaceName="workspace"
+        draft=""
+        phase="ready"
+        eventConnection="ready"
+        models={[{ provider: "openai", id: "gpt", name: "GPT", reasoning: true }]}
+        configuration={{
+          model: { provider: "openai", id: "gpt", name: "GPT", reasoning: true },
+          thinkingLevel: "medium",
+          availableThinkingLevels: ["off", "medium"],
+          ...toolConfiguration,
+        }}
+        configuring={false}
+        canSend={false}
+        queuedMessages={{ steering: [], followUp: [] }}
+        queuePaused={false}
+        {...permissionProps}
+        onPasteImages={onPasteImages}
+        onDraftChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onThinkingLevelChange={vi.fn()}
+        onSend={vi.fn()}
+        onClearQueue={vi.fn()}
+        onAbort={vi.fn()}
+      />,
+    );
+    const image = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "paste.png", {
+      type: "image/png",
+    });
+    const textarea = screen.getByLabelText("发送给 Pi 的消息");
+
+    expect(
+      fireEvent.paste(textarea, {
+        clipboardData: {
+          items: [
+            { kind: "string", type: "text/plain", getAsFile: () => null },
+            { kind: "file", type: "text/plain", getAsFile: () => null },
+            { kind: "file", type: "image/png", getAsFile: () => null },
+          ],
+        },
+      }),
+    ).toBe(true);
+    expect(onPasteImages).not.toHaveBeenCalled();
+
+    expect(
+      fireEvent.paste(textarea, {
+        clipboardData: {
+          items: [
+            { kind: "string", type: "text/plain", getAsFile: () => null },
+            { kind: "file", type: "image/png", getAsFile: () => image },
+          ],
+        },
+      }),
+    ).toBe(false);
+    expect(onPasteImages).toHaveBeenCalledWith([image]);
   });
 
   it("兼容 keyCode 229 的输入法组合事件", () => {

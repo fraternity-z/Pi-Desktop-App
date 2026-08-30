@@ -110,7 +110,13 @@ describe("agent IPC", () => {
     await openAgentSession("C:\\agent\\sessions\\saved.jsonl");
     await listAgentModels();
     await configureAgentSession("saved", { thinkingLevel: "high" });
-    await promptAgent("s-1", "hello", "steer");
+    await promptAgent(
+      "s-1",
+      "hello",
+      "steer",
+      ["read"],
+      ["C:\\cache\\composer-attachments\\paste.png"],
+    );
     await clearAgentQueue("s-1");
     await abortAgent("s-1");
     await deleteAgentSessions(["saved"]);
@@ -129,6 +135,8 @@ describe("agent IPC", () => {
       sessionId: "s-1",
       text: "hello",
       streamingBehavior: "steer",
+      activeTools: ["read"],
+      imagePaths: ["C:\\cache\\composer-attachments\\paste.png"],
     });
     expect(invoke).toHaveBeenNthCalledWith(7, "agent_clear_queue", { sessionId: "s-1" });
     expect(invoke).toHaveBeenNthCalledWith(8, "agent_abort", { sessionId: "s-1" });

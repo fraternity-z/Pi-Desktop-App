@@ -206,7 +206,7 @@ Rust 不应重新实现 Pi Agent Runtime。
       "protocolVersion": 1,
       "piVersion": "0.83.0",
       "nodeVersion": "22.19.0",
-      "capabilities": ["sessions", "streaming", "abort", "extensions"]
+      "capabilities": ["sessions", "streaming", "abort", "extensions", "images"]
     }
 
 Rust 在握手阶段检查协议版本、Node 主版本、Pi SDK 版本、必需 SDK 导出和桌面扩展能力。不兼容时返回结构化错误和安装建议。
@@ -281,7 +281,8 @@ CI 应针对至少两个受支持的 Pi 版本运行集成测试。
 
     await invoke("agent_prompt", {
       sessionId: "s1",
-      text: "请分析当前项目"
+      text: "请分析当前项目",
+      imagePaths: ["C:\\cache\\composer-attachments\\paste.png"]
     });
 
     await listen("agent://event", (event) => {
@@ -296,7 +297,7 @@ Renderer 不应获得启动任意进程的权限。
 
 请求：
 
-    {"v":1,"id":"r-001","op":"prompt","sessionId":"s1","text":"请分析当前项目"}
+    {"v":1,"id":"r-001","op":"prompt","sessionId":"s1","text":"请分析当前项目","imagePaths":["C:\\cache\\composer-attachments\\paste.png"]}
 
 事件：
 
@@ -317,7 +318,14 @@ Bridge 先通过官方 Pi SDK 的会话清单解析 ID，再校验目标是 `~/.
 `deletedSessionIds` 和 `missingSessionIds`；目录外路径、非 JSONL 文件、重复或正在
 流式运行的会话必须返回稳定错误。Renderer 只在完整响应后清理本地归档索引。
 
-兼容说明：M1 的 hello 必须声明 `tool-status` 能力。`prompt` 成功响应中的
+图片粘贴只由 Renderer 截获；Rust 在校验 MIME、大小和文件签名后，将图片保存到
+`app_cache_dir/composer-attachments`。Rust 只接受规范化后仍位于该授权缓存目录的路径，
+JSONL 只传这些受限绝对路径；Bridge
+再次校验数量、路径、大小和文件签名，在内存中编码为 Base64，并调用官方 Pi SDK 的
+`session.prompt(text, { images })`。当前支持 GIF、JPEG、PNG、WebP，单次最多 12 张，
+每张最多 10 MiB。图片缓存路径不得写入 `<attached-paths>`、日志或用户消息正文。
+
+兼容说明：M1 的 hello 必须声明 `tool-status` 和 `images` 能力。`prompt` 成功响应中的
 `finalSeq` 仅表示 Bridge 写出响应时已经发出的事件高水位，用于协议兼容和诊断，
 不表示该 prompt 的事件已经全部到达。RPC 响应与事件流是两个独立通道；Renderer
 必须继续接收响应后到达的事件，并且只在收到 `agent.settled`、prompt 失败或成功
@@ -625,6 +633,7 @@ Pi 版本由用户的 npm/pnpm/其他官方包管理器管理。App 可以显示
 
 ## 19. 参考资料
 
+- [Pi coding agent SDK](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/sdk.md)
 - [Pix README / Architecture](https://github.com/num-scope/pix/blob/1e3291141c07a81cdc3f9bcb5d07c9025af4b7b2/README.md#architecture)
 - [Pix managed runtimes](https://github.com/num-scope/pix/blob/1e3291141c07a81cdc3f9bcb5d07c9025af4b7b2/apps/desktop/runtimes/README.md)
 - [Pix SDK resolution](https://github.com/num-scope/pix/blob/1e3291141c07a81cdc3f9bcb5d07c9025af4b7b2/apps/desktop/src/main/pi-sdk.ts)

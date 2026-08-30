@@ -308,11 +308,12 @@ describe("useChatSession", () => {
     await act(() =>
       result.current.sendPrompt("检查文件", undefined, defaultToolNames, [
         "C:\\work\\a&b.ts",
+        "C:\\work\\logo.png",
         "C:\\work\\src",
       ]),
     );
     const wireContent =
-      "检查文件\n\n<attached-paths>\n  <path>C:\\work\\a&amp;b.ts</path>\n  <path>C:\\work\\src</path>\n</attached-paths>";
+      "检查文件\n\n<attached-paths>\n  <path>C:\\work\\a&amp;b.ts</path>\n  <path>C:\\work\\logo.png</path>\n  <path>C:\\work\\src</path>\n</attached-paths>";
     expect(promptAgent).toHaveBeenCalledWith("s-1", wireContent, undefined, defaultToolNames);
     expect(result.current.messages).toEqual([
       expect.objectContaining({ role: "user", content: "检查文件", optimistic: true }),
@@ -323,6 +324,70 @@ describe("useChatSession", () => {
       expect(result.current.messages.filter((item) => item.role === "user")).toEqual([
         expect.objectContaining({ content: "检查文件", optimistic: false }),
       ]),
+    );
+  });
+
+  it("将图片路径从文本附件中分离并通过 SDK images 参数发送", async () => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:\\work"));
+
+    await act(() =>
+      result.current.sendPrompt("分析截图", undefined, defaultToolNames, [
+        "C:\\work\\notes.txt",
+      ], ["C:\\cache\\composer-attachments\\paste.png"]),
+    );
+    const wireContent =
+      "分析截图\n\n<attached-paths>\n  <path>C:\\work\\notes.txt</path>\n</attached-paths>";
+    expect(promptAgent).toHaveBeenCalledWith(
+      "s-1",
+      wireContent,
+      undefined,
+      defaultToolNames,
+      ["C:\\cache\\composer-attachments\\paste.png"],
+    );
+    expect(result.current.messages).toEqual([
+      expect.objectContaining({ role: "user", content: "分析截图", optimistic: true }),
+    ]);
+  });
+
+  it("允许仅附加图片发送，并为 SDK 提供非空提示词", async () => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:\\work"));
+
+    await act(() =>
+      result.current.sendPrompt("   ", undefined, defaultToolNames, [], [
+        "C:\\cache\\composer-attachments\\paste.webp",
+      ]),
+    );
+
+    expect(promptAgent).toHaveBeenCalledWith(
+      "s-1",
+      "请查看附加的图片。",
+      undefined,
+      defaultToolNames,
+      ["C:\\cache\\composer-attachments\\paste.webp"],
+    );
+    expect(result.current.messages).toEqual([
+      expect.objectContaining({ role: "user", content: "请查看附加的图片。", optimistic: true }),
+    ]);
+  });
+
+  it("允许仅附加普通文件发送，并继续使用文本附件协议", async () => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:\\work"));
+
+    await act(() =>
+      result.current.sendPrompt("   ", undefined, defaultToolNames, ["C:\\work\\notes.txt"]),
+    );
+
+    expect(promptAgent).toHaveBeenCalledWith(
+      "s-1",
+      "请查看附加的文件。\n\n<attached-paths>\n  <path>C:\\work\\notes.txt</path>\n</attached-paths>",
+      undefined,
+      defaultToolNames,
     );
   });
 

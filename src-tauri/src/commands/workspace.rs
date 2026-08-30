@@ -1,17 +1,23 @@
 use std::{
     collections::{HashSet, VecDeque},
     ffi::OsString,
-    fs,
+    fs::{self, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
     process::{Command, Output},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 use crate::{
+    bridge::supervisor::normalize_process_path,
     error::AppError,
+    image::{
+        MAX_PROMPT_IMAGE_BYTES, PROMPT_IMAGE_CACHE_DIR, detect_image_format, image_format_for_mime,
+    },
     storage::{WorkspaceState, WorkspaceStore},
 };
 
@@ -54,6 +60,90 @@ const MAX_WORKSPACE_FILE_BYTES: u64 = 512 * 1024;
 pub struct WorkspaceFileContent {
     pub data_base64: String,
     pub size: u64,
+}
+
+#[tauri::command]
+pub async fn workspace_save_clipboard_image(
+    app: AppHandle,
+    mime_type: String,
+    bytes: Vec<u8>,
+) -> Result<String, AppError> {
+    let root = app
+        .path()
+        .app_cache_dir()
+        .map_err(|_| AppError::new("PROMPT_IMAGE_WRITE_FAILED", "无法解析图片缓存目录"))?
+        .join(PROMPT_IMAGE_CACHE_DIR);
+    tauri::async_runtime::spawn_blocking(move || save_clipboard_image(&root, &mime_type, &bytes))
+        .await
+        .map_err(|_| AppError::new("PROMPT_IMAGE_WRITE_FAILED", "保存剪贴板图片时任务异常终止"))?
+}
+
+fn save_clipboard_image(root: &Path, mime_type: &str, bytes: &[u8]) -> Result<String, AppError> {
+    if bytes.is_empty() {
+        return Err(AppError::new("PROMPT_IMAGE_EMPTY", "剪贴板图片内容为空"));
+    }
+    if bytes.len() as u64 > MAX_PROMPT_IMAGE_BYTES {
+        return Err(AppError::new(
+            "PROMPT_IMAGE_TOO_LARGE",
+            "单张图片不能超过 10 MiB",
+        ));
+    }
+    let declared = image_format_for_mime(mime_type).ok_or_else(|| {
+        AppError::new(
+            "PROMPT_IMAGE_TYPE_UNSUPPORTED",
+            "仅支持 GIF、JPEG、PNG 和 WebP 图片",
+        )
+    })?;
+    if detect_image_format(bytes) != Some(declared) {
+        return Err(AppError::new(
+            "PROMPT_IMAGE_TYPE_UNSUPPORTED",
+            "图片内容与声明的格式不一致",
+        ));
+    }
+
+    fs::create_dir_all(root)
+        .map_err(|_| AppError::new("PROMPT_IMAGE_WRITE_FAILED", "无法创建图片缓存目录"))?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| AppError::new("PROMPT_IMAGE_WRITE_FAILED", "系统时间不可用"))?
+        .as_nanos();
+    for attempt in 0..32_u8 {
+        let path = root.join(format!(
+            "paste-{nonce}-{}-{attempt}.{}",
+            std::process::id(),
+            declared.extension
+        ));
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                if file.write_all(bytes).and_then(|_| file.flush()).is_err() {
+                    drop(file);
+                    let _ = fs::remove_file(&path);
+                    return Err(AppError::new(
+                        "PROMPT_IMAGE_WRITE_FAILED",
+                        "无法写入剪贴板图片",
+                    ));
+                }
+                drop(file);
+                let canonical = path.canonicalize().map_err(|_| {
+                    AppError::new("PROMPT_IMAGE_WRITE_FAILED", "无法解析已保存的剪贴板图片")
+                })?;
+                return Ok(normalize_process_path(canonical)
+                    .to_string_lossy()
+                    .into_owned());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => {
+                return Err(AppError::new(
+                    "PROMPT_IMAGE_WRITE_FAILED",
+                    "无法创建剪贴板图片文件",
+                ));
+            }
+        }
+    }
+    Err(AppError::new(
+        "PROMPT_IMAGE_WRITE_FAILED",
+        "无法分配剪贴板图片文件名",
+    ))
 }
 
 #[tauri::command]
@@ -787,6 +877,53 @@ fn hide_process_window(command: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\nclipboard";
+
+    #[test]
+    fn saves_valid_clipboard_image_with_a_unique_absolute_path() {
+        let root = workspace_file_test_root("clipboard-image");
+
+        let saved = save_clipboard_image(&root, "image/png", PNG_BYTES).unwrap();
+        let saved_path = PathBuf::from(saved);
+
+        assert!(saved_path.is_absolute());
+        assert_eq!(
+            saved_path.extension().and_then(|value| value.to_str()),
+            Some("png")
+        );
+        assert_eq!(fs::read(&saved_path).unwrap(), PNG_BYTES);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_empty_oversized_and_spoofed_clipboard_images() {
+        let root = workspace_file_test_root("clipboard-invalid");
+
+        assert_eq!(
+            save_clipboard_image(&root, "image/png", &[])
+                .unwrap_err()
+                .code,
+            "PROMPT_IMAGE_EMPTY"
+        );
+        assert_eq!(
+            save_clipboard_image(
+                &root,
+                "image/png",
+                &vec![0_u8; MAX_PROMPT_IMAGE_BYTES as usize + 1],
+            )
+            .unwrap_err()
+            .code,
+            "PROMPT_IMAGE_TOO_LARGE"
+        );
+        assert_eq!(
+            save_clipboard_image(&root, "image/png", b"not a png")
+                .unwrap_err()
+                .code,
+            "PROMPT_IMAGE_TYPE_UNSUPPORTED"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn parses_and_sorts_local_and_remote_branches() {

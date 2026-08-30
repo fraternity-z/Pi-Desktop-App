@@ -305,12 +305,14 @@ export async function promptAgent(
   text: string,
   streamingBehavior?: PromptStreamingBehavior,
   activeTools?: string[],
+  imagePaths?: string[],
 ): Promise<number> {
   return invoke<number>("agent_prompt", {
     sessionId,
     text,
     ...(streamingBehavior === undefined ? {} : { streamingBehavior }),
     ...(activeTools === undefined ? {} : { activeTools }),
+    ...(imagePaths === undefined ? {} : { imagePaths }),
   });
 }
 

@@ -1,4 +1,5 @@
 export const MAX_COMPOSER_ATTACHMENTS = 12;
+const PROMPT_IMAGE_EXTENSION = /\.(?:gif|jpe?g|png|webp)$/i;
 
 export function normalizeAttachedPaths(paths: string[]): string[] {
   const selected: string[] = [];
@@ -23,6 +24,14 @@ export function promptWithAttachedPaths(message: string, paths: string[]): strin
   if (attachedPaths.length === 0) return message;
   const rows = attachedPaths.map((path) => `  <path>${escapeXml(path)}</path>`).join("\n");
   return `${message}\n\n<attached-paths>\n${rows}\n</attached-paths>`;
+}
+
+export function isPromptImagePath(path: string): boolean {
+  return PROMPT_IMAGE_EXTENSION.test(path.trim());
+}
+
+export function promptImagePaths(paths: string[]): string[] {
+  return normalizeAttachedPaths(paths).filter(isPromptImagePath);
 }
 
 export function displayPromptContent(content: string): string {

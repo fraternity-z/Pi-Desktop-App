@@ -110,6 +110,7 @@ export class BridgeServer {
             request.text,
             request.streamingBehavior,
             request.activeTools,
+            request.imagePaths,
           );
           data = { finalSeq: this.sequence };
           break;

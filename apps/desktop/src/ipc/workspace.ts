@@ -1,5 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 
+export const MAX_CLIPBOARD_IMAGE_BYTES = 10 * 1024 * 1024;
+const CLIPBOARD_IMAGE_MIME_TYPES = new Set([
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
+
 export interface WorkspaceState {
   recentWorkspaces: string[];
   lastWorkspace: string | null;
@@ -56,6 +64,26 @@ export async function ensureConversationWorkspace(): Promise<string> {
 
 export async function revealWorkspace(cwd: string): Promise<void> {
   return invoke<void>("workspace_reveal", { cwd });
+}
+
+export async function saveClipboardImage(file: File): Promise<string> {
+  if (!CLIPBOARD_IMAGE_MIME_TYPES.has(file.type)) {
+    throw {
+      code: "PROMPT_IMAGE_TYPE_UNSUPPORTED",
+      message: "仅支持 GIF、JPEG、PNG 或 WebP 图片",
+    };
+  }
+  if (file.size === 0) {
+    throw { code: "PROMPT_IMAGE_EMPTY", message: "剪贴板图片内容为空" };
+  }
+  if (file.size > MAX_CLIPBOARD_IMAGE_BYTES) {
+    throw {
+      code: "PROMPT_IMAGE_TOO_LARGE",
+      message: "单张图片不能超过 10 MiB",
+    };
+  }
+  const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+  return invoke<string>("workspace_save_clipboard_image", { mimeType: file.type, bytes });
 }
 
 export async function readWorkspaceFile(cwd: string, path: string): Promise<WorkspaceFileContent> {

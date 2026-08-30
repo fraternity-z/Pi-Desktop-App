@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_COMPOSER_ATTACHMENTS,
   displayPromptContent,
+  isPromptImagePath,
   normalizeAttachedPaths,
+  promptImagePaths,
   promptWithAttachedPaths,
 } from "./composerAttachments";
 
@@ -33,5 +35,16 @@ describe("composerAttachments", () => {
 
   it("没有有效路径时保持原始提示不变", () => {
     expect(promptWithAttachedPaths("hello", [" "])).toBe("hello");
+  });
+
+  it("识别 SDK 支持的图片扩展名并筛出图片路径", () => {
+    expect(isPromptImagePath("C:\\cache\\PASTE.PNG")).toBe(true);
+    expect(isPromptImagePath("C:\\cache\\photo.jpeg")).toBe(true);
+    expect(isPromptImagePath("C:\\cache\\animation.gif")).toBe(true);
+    expect(isPromptImagePath("C:\\cache\\preview.webp")).toBe(true);
+    expect(isPromptImagePath("C:\\cache\\vector.svg")).toBe(false);
+    expect(promptImagePaths(["C:\\cache\\paste.png", "C:\\work\\notes.txt"])).toEqual([
+      "C:\\cache\\paste.png",
+    ]);
   });
 });

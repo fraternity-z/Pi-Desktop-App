@@ -9,6 +9,7 @@ import {
   GitBranch,
   LoaderCircle,
   Monitor,
+  Image as ImageIcon,
   Paperclip,
   Plus,
   RefreshCw,
@@ -26,6 +27,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ClipboardEvent,
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
@@ -50,7 +52,7 @@ import type {
 } from "../stores/useChatSession";
 import type { ToolPermissionMode } from "../stores/useToolPermissions";
 import { ComposerQueueCard } from "./ComposerQueueCard";
-import { MAX_COMPOSER_ATTACHMENTS } from "./composerAttachments";
+import { isPromptImagePath, MAX_COMPOSER_ATTACHMENTS } from "./composerAttachments";
 
 type ComposerMenu = "project" | "resources" | "permission" | "model" | "thinking";
 type ResourcePhase = "idle" | "loading" | "ready" | "error";
@@ -84,6 +86,7 @@ interface ChatComposerProps {
   onAddProject?: () => void;
   onAddFiles?: () => void;
   onAddFolder?: () => void;
+  onPasteImages?: (files: File[]) => void;
   onSearchWorkspacePaths?: (query: string) => Promise<WorkspacePathMatch[]>;
   onAttachPath?: (path: string) => void;
   onRemoveAttachment?: (path: string) => void;
@@ -127,6 +130,7 @@ export function ChatComposer({
   onAddProject,
   onAddFiles,
   onAddFolder,
+  onPasteImages,
   onSearchWorkspacePaths,
   onAttachPath,
   onRemoveAttachment,
@@ -280,6 +284,18 @@ export function ChatComposer({
     }
   }
 
+  function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    if (!onPasteImages) return;
+    const images = Array.from(event.clipboardData.items).flatMap((item) => {
+      if (item.kind !== "file" || !item.type.startsWith("image/")) return [];
+      const file = item.getAsFile();
+      return file ? [file] : [];
+    });
+    if (images.length === 0) return;
+    event.preventDefault();
+    onPasteImages(images);
+  }
+
   return (
     <div className="composer-dock" ref={menuRootRef}>
       <ComposerQueueCard
@@ -372,6 +388,7 @@ export function ChatComposer({
           value={draft}
           onChange={(event) => onDraftChange(event.target.value)}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           placeholder={streaming ? "继续输入可加入后续队列" : "描述你想构建的内容..."}
           disabled={disabled}
           rows={1}
@@ -383,7 +400,11 @@ export function ChatComposer({
               <div className="composer-attachment-list" aria-label="已添加的路径">
                 {attachments.map((path) => (
                   <span className="composer-attachment-chip" key={path} title={path}>
-                    <Paperclip size={13} aria-hidden="true" />
+                    {isPromptImagePath(path) ? (
+                      <ImageIcon size={13} aria-hidden="true" />
+                    ) : (
+                      <Paperclip size={13} aria-hidden="true" />
+                    )}
                     <span>{getPathName(path)}</span>
                     <button
                       type="button"

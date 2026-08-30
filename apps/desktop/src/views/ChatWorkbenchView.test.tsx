@@ -52,6 +52,7 @@ import {
   removeRecentWorkspace,
   revealWorkspace,
   revealWorkspaceFile,
+  saveClipboardImage,
   searchWorkspacePaths,
 } from "../ipc/workspace";
 import { ChatWorkbenchView } from "./ChatWorkbenchView";
@@ -134,6 +135,7 @@ vi.mock("../ipc/workspace", () => ({
   removeRecentWorkspace: vi.fn(),
   revealWorkspace: vi.fn(),
   revealWorkspaceFile: vi.fn(),
+  saveClipboardImage: vi.fn(),
   searchWorkspacePaths: vi.fn(),
 }));
 vi.mock("../stores/useDesktopNotifications", () => ({
@@ -271,6 +273,9 @@ describe("ChatWorkbenchView", () => {
       .mockResolvedValue({ dataBase64: "Y29uc3QgdmFsdWUgPSB0cnVlOw==", size: 19 });
     vi.mocked(openWorkspaceFile).mockReset().mockResolvedValue(undefined);
     vi.mocked(revealWorkspaceFile).mockReset().mockResolvedValue(undefined);
+    vi.mocked(saveClipboardImage)
+      .mockReset()
+      .mockResolvedValue("C:\\cache\\composer-attachments\\paste.png");
     vi.mocked(searchWorkspacePaths).mockReset().mockResolvedValue([]);
     vi.mocked(getWorktreeOptions).mockReset().mockResolvedValue({
       branches: [{ name: "main", current: true, remote: false }],
@@ -370,6 +375,61 @@ describe("ChatWorkbenchView", () => {
     expect(screen.getAllByText("已完成").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("失败").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+  });
+
+  it("保存粘贴图片并通过 SDK images 参数发送", async () => {
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    await addProject("C:\\work");
+    const composer = await screen.findByLabelText("发送给 Pi 的消息");
+    const image = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "paste.png", {
+      type: "image/png",
+    });
+
+    fireEvent.paste(composer, {
+      clipboardData: {
+        items: [{ kind: "file", type: "image/png", getAsFile: () => image }],
+      },
+    });
+
+    await waitFor(() => expect(saveClipboardImage).toHaveBeenCalledWith(image));
+    expect(await screen.findByTitle("C:\\cache\\composer-attachments\\paste.png")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() =>
+      expect(promptAgent).toHaveBeenCalledWith(
+        "s-1",
+        "请查看附加的图片。",
+        undefined,
+        defaultToolNames,
+        ["C:\\cache\\composer-attachments\\paste.png"],
+      ),
+    );
+  });
+
+  it("图片批量保存部分失败时保留已保存项并展示稳定错误", async () => {
+    vi.mocked(saveClipboardImage)
+      .mockResolvedValueOnce("C:\\cache\\composer-attachments\\first.png")
+      .mockRejectedValueOnce({ code: "PROMPT_IMAGE_TOO_LARGE", message: "单张图片不能超过 10 MiB" });
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    await addProject("C:\\work");
+    const composer = await screen.findByLabelText("发送给 Pi 的消息");
+    const first = new File([new Uint8Array([1])], "first.png", { type: "image/png" });
+    const second = new File([new Uint8Array([2])], "second.png", { type: "image/png" });
+
+    fireEvent.paste(composer, {
+      clipboardData: {
+        items: [
+          { kind: "file", type: "image/png", getAsFile: () => first },
+          { kind: "file", type: "image/png", getAsFile: () => second },
+        ],
+      },
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "PROMPT_IMAGE_TOO_LARGE: 单张图片不能超过 10 MiB",
+    );
+    expect(screen.getByTitle("C:\\cache\\composer-attachments\\first.png")).toBeInTheDocument();
   });
 
   it("用户上滑后停止自动跟随，并可主动跳回最新消息", async () => {

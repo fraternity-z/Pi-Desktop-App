@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  MAX_CLIPBOARD_IMAGE_BYTES,
   createWorkspaceWorktree,
   ensureConversationWorkspace,
   getWorkspaceState,
@@ -12,6 +13,7 @@ import {
   removeRecentWorkspace,
   revealWorkspace,
   revealWorkspaceFile,
+  saveClipboardImage,
   searchWorkspacePaths,
 } from "./workspace";
 
@@ -99,5 +101,62 @@ describe("workspace IPC", () => {
     expect(invoke).toHaveBeenNthCalledWith(11, "workspace_create_worktree", {
       input: { cwd: "C:\\work", base: "main", name: "work-1" },
     });
+  });
+
+  it("将受支持的剪贴板图片作为字节写入应用缓存", async () => {
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    const image = {
+      type: "image/png",
+      size: bytes.byteLength,
+      arrayBuffer: vi.fn(async () => bytes.buffer),
+    } as unknown as File;
+    vi.mocked(invoke).mockResolvedValueOnce("C:\\cache\\composer-attachments\\paste.png");
+
+    await expect(saveClipboardImage(image)).resolves.toBe(
+      "C:\\cache\\composer-attachments\\paste.png",
+    );
+    expect(invoke).toHaveBeenCalledWith("workspace_save_clipboard_image", {
+      mimeType: "image/png",
+      bytes: [0x89, 0x50, 0x4e, 0x47],
+    });
+  });
+
+  it("在调用 Rust 前拒绝不支持的剪贴板图片类型", async () => {
+    const image = {
+      type: "image/svg+xml",
+      size: 8,
+      arrayBuffer: vi.fn(),
+    } as unknown as File;
+
+    await expect(saveClipboardImage(image)).rejects.toEqual({
+      code: "PROMPT_IMAGE_TYPE_UNSUPPORTED",
+      message: "仅支持 GIF、JPEG、PNG 或 WebP 图片",
+    });
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("在调用 Rust 前拒绝空图片和超大图片", async () => {
+    const empty = {
+      type: "image/png",
+      size: 0,
+      arrayBuffer: vi.fn(),
+    } as unknown as File;
+    const oversized = {
+      type: "image/webp",
+      size: MAX_CLIPBOARD_IMAGE_BYTES + 1,
+      arrayBuffer: vi.fn(),
+    } as unknown as File;
+
+    await expect(saveClipboardImage(empty)).rejects.toEqual({
+      code: "PROMPT_IMAGE_EMPTY",
+      message: "剪贴板图片内容为空",
+    });
+    await expect(saveClipboardImage(oversized)).rejects.toEqual({
+      code: "PROMPT_IMAGE_TOO_LARGE",
+      message: "单张图片不能超过 10 MiB",
+    });
+    expect(empty.arrayBuffer).not.toHaveBeenCalled();
+    expect(oversized.arrayBuffer).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
   });
 });

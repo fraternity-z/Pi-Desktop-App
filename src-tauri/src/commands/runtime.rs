@@ -10,6 +10,7 @@ use crate::{
         runtime::{BridgeRuntime, RuntimeSnapshot},
     },
     error::AppError,
+    image::PROMPT_IMAGE_CACHE_DIR,
     storage::WorkspaceStore,
 };
 
@@ -145,13 +146,32 @@ pub async fn agent_configure_session(
 
 #[tauri::command]
 pub async fn agent_prompt(
+    app: AppHandle,
     runtime: State<'_, BridgeRuntime>,
     session_id: String,
     text: String,
     streaming_behavior: Option<PromptStreamingBehavior>,
     active_tools: Option<Vec<String>>,
+    image_paths: Option<Vec<String>>,
 ) -> Result<u64, AppError> {
-    runtime.prompt(session_id, text, streaming_behavior, active_tools)
+    let image_root = if image_paths.is_some() {
+        Some(
+            app.path()
+                .app_cache_dir()
+                .map_err(|_| AppError::new("PROMPT_IMAGE_PATH_INVALID", "无法解析图片缓存目录"))?
+                .join(PROMPT_IMAGE_CACHE_DIR),
+        )
+    } else {
+        None
+    };
+    runtime.prompt(
+        session_id,
+        text,
+        streaming_behavior,
+        active_tools,
+        image_paths,
+        image_root,
+    )
 }
 
 #[tauri::command]

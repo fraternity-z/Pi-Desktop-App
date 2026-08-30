@@ -43,7 +43,7 @@ const WORKSPACE_SCHEMA_VERSION: u16 = 1;
 const REQUEST_HEADER_SETTINGS_SCHEMA_VERSION: u16 = 1;
 const MAX_RECENT_WORKSPACES: usize = 12;
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WorkspacePreferences {
     schema_version: u16,
@@ -184,6 +184,7 @@ impl WorkspaceStore {
                 .unwrap_or_else(|_| self.conversation_home.clone()),
         ));
         let mut preferences = self.lock_preferences()?;
+        let previous = preferences.clone();
         preferences.last_workspace = Some(canonical_text.clone());
         if !same_path(&canonical_text, &conversation_home) {
             preferences
@@ -194,7 +195,11 @@ impl WorkspaceStore {
                 .recent_workspaces
                 .truncate(MAX_RECENT_WORKSPACES);
         }
-        self.persist(&preferences)?;
+        // Session switches often remember the same workspace repeatedly. Avoid
+        // serializing and writing the JSON file when the in-memory state is unchanged.
+        if *preferences != previous {
+            self.persist(&preferences)?;
+        }
         Ok(state_from(&preferences, &self.conversation_home))
     }
 
@@ -388,6 +393,7 @@ mod tests {
 
         let remembered = store.remember(&path_text(&project)).unwrap();
         assert_eq!(remembered.recent_workspaces.len(), 1);
+        assert_eq!(store.remember(&path_text(&project)).unwrap(), remembered);
         let conversation = store.ensure_conversation().unwrap();
         assert!(
             conversation.ends_with("Pix\\conversations")

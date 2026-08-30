@@ -365,6 +365,40 @@ describe("PiSessionRuntime", () => {
     expect(JSON.stringify(events)).not.toContain("failed-secret");
   });
 
+  it("重复刷新会话目录时复用未变化会话的摘要元数据", async () => {
+    const messages = [
+      { role: "user", content: "cached prompt" },
+      { role: "assistant", content: "cached answer" },
+    ];
+    const managed = createSessionMock("managed", {
+      sessionFile: "C:\\agent\\sessions\\work\\saved.jsonl",
+      messages,
+    });
+    const sdk = sdkReturning(managed);
+    const runtime = new PiSessionRuntime(sdk, "C:\\agent");
+    await runtime.createSession("C:\\work");
+
+    let reads = 0;
+    Object.defineProperty(managed.session, "messages", {
+      configurable: true,
+      get: () => {
+        reads += 1;
+        return messages;
+      },
+    });
+
+    await runtime.listSessions();
+    const readsAfterFirstList = reads;
+    expect(readsAfterFirstList).toBe(0);
+
+    await runtime.listSessions();
+    expect(reads).toBe(readsAfterFirstList);
+
+    managed.emit({ type: "agent_start" });
+    await runtime.listSessions();
+    expect(reads).toBeGreaterThan(readsAfterFirstList);
+  });
+
   it("读取受支持的图片并按官方 SDK ImageContent 结构发送", async () => {
     const root = await mkdtemp(join(tmpdir(), "pi-desktop-prompt-image-"));
     try {

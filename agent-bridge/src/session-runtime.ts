@@ -366,6 +366,14 @@ interface ManagedSession {
   lastActivityAt: string;
   defaultToolNames: string[];
   contextUsageKey: string;
+  historyRevision: number;
+  historySummaryMeta?: HistorySummaryMeta;
+}
+
+interface HistorySummaryMeta {
+  revision: number;
+  messageCount: number;
+  firstMessage: string;
 }
 
 const MAX_HISTORY_MESSAGES = 200;
@@ -1269,6 +1277,8 @@ export class PiSessionRuntime implements SessionRuntime {
       }
       const images = await loadPromptImages(imagePaths, this.sessionFiles);
       managed.lastActivityAt = new Date().toISOString();
+      // A prompt may mutate history before its first SDK event is emitted.
+      managed.historyRevision += 1;
       const options = {
         ...(streamingBehavior === undefined ? {} : { streamingBehavior }),
         ...(images === undefined ? {} : { images }),
@@ -1434,6 +1444,7 @@ export class PiSessionRuntime implements SessionRuntime {
       lastActivityAt: now,
       defaultToolNames,
       contextUsageKey: JSON.stringify(contextUsage),
+      historyRevision: 0,
       ...(resourceLoader ? { resourceLoader } : {}),
     };
     this.sessions.set(session.sessionId, managed);
@@ -1515,7 +1526,10 @@ export class PiSessionRuntime implements SessionRuntime {
     }
 
     const managed = this.sessions.get(session.sessionId);
-    if (managed) managed.lastActivityAt = new Date().toISOString();
+    if (managed) {
+      managed.lastActivityAt = new Date().toISOString();
+      managed.historyRevision += 1;
+    }
 
     let runtimeEvent: RuntimeEvent | undefined;
     if (event.type === "agent_start") {
@@ -1605,6 +1619,16 @@ function describeManagedSession(
 ): CreatedAgentSession {
   const historyStartedAt = performanceNow();
   const messages = summarizeMessages(managed.session.messages);
+  // The open/create response already paid for this projection. Reuse its small
+  // metadata object when the next catalog refresh asks for the live summary.
+  managed.historySummaryMeta = {
+    revision: managed.historyRevision,
+    messageCount: messages.filter(isConversationMessage).length,
+    firstMessage: clipText(
+      messages.find((message) => message.role === "user")?.content ?? "",
+      MAX_SUMMARY_CHARS,
+    ),
+  };
   if (diagnostics && operation) {
     emitPerformanceDiagnostic(diagnostics, operation, "history.project", historyStartedAt);
   }
@@ -1626,8 +1650,7 @@ function toLiveSessionSummary(
 ): AgentSessionSummary | null {
   const path = managed.session.sessionFile;
   if (!path || !disk) return null;
-  const messages = summarizeMessages(managed.session.messages);
-  const firstMessage = messages.find((message) => message.role === "user")?.content ?? "";
+  const summary = summarizeManagedHistoryMeta(managed);
   return {
     id: managed.session.sessionId,
     path,
@@ -1635,9 +1658,26 @@ function toLiveSessionSummary(
     name: disk.name,
     created: disk.created,
     modified: managed.lastActivityAt > disk.modified ? managed.lastActivityAt : disk.modified,
-    messageCount: Math.max(disk.messageCount, messages.filter(isConversationMessage).length),
-    firstMessage: clipText(firstMessage || disk.firstMessage, MAX_SUMMARY_CHARS),
+    messageCount: Math.max(disk.messageCount, summary.messageCount),
+    firstMessage: clipText(summary.firstMessage || disk.firstMessage, MAX_SUMMARY_CHARS),
   };
+}
+
+function summarizeManagedHistoryMeta(managed: ManagedSession): HistorySummaryMeta {
+  const cached = managed.historySummaryMeta;
+  if (cached?.revision === managed.historyRevision) return cached;
+
+  const messages = summarizeMessages(managed.session.messages);
+  const summary: HistorySummaryMeta = {
+    revision: managed.historyRevision,
+    messageCount: messages.filter(isConversationMessage).length,
+    firstMessage: clipText(
+      messages.find((message) => message.role === "user")?.content ?? "",
+      MAX_SUMMARY_CHARS,
+    ),
+  };
+  managed.historySummaryMeta = summary;
+  return summary;
 }
 
 function isConversationMessage(message: AgentMessageSummary): boolean {

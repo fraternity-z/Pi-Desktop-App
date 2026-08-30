@@ -159,6 +159,8 @@ interface PendingAutoRestore {
   cancelSchedule: () => void;
 }
 
+const SESSION_CATALOG_REFRESH_DEBOUNCE_MS = 100;
+
 export function useChatSession(): ChatSessionState {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [projections, setProjections] = useState<Record<string, SessionProjection>>({});
@@ -184,8 +186,9 @@ export function useChatSession(): ChatSessionState {
   const draftSequence = useRef(1);
   const restoreAttempted = useRef(false);
   const lastConfirmedThinkingLevel = useRef<ThinkingLevel | null>(null);
-  const refreshSessionsRef = useRef<() => Promise<void>>(async () => undefined);
+  const refreshSessionsRef = useRef<() => void>(() => undefined);
   const pendingAutoRestore = useRef<PendingAutoRestore | null>(null);
+  const pendingCatalogRefresh = useRef<number | null>(null);
   const pendingProjectionRender = useRef<(() => void) | null>(null);
 
   const commitProjections = useCallback(
@@ -302,9 +305,21 @@ export function useChatSession(): ChatSessionState {
     }
   }, [applySessionCatalog]);
 
+  const scheduleSessionCatalogRefresh = useCallback(() => {
+    if (pendingCatalogRefresh.current !== null) return;
+    pendingCatalogRefresh.current = window.setTimeout(() => {
+      pendingCatalogRefresh.current = null;
+      void refreshSessionCatalog();
+    }, SESSION_CATALOG_REFRESH_DEBOUNCE_MS);
+  }, [refreshSessionCatalog]);
+
   const loadCatalogs = useCallback(async () => {
     pendingAutoRestore.current?.cancelSchedule();
     pendingAutoRestore.current = null;
+    if (pendingCatalogRefresh.current !== null) {
+      window.clearTimeout(pendingCatalogRefresh.current);
+      pendingCatalogRefresh.current = null;
+    }
     const requestId = ++catalogRequestId.current;
     const sessionRequestId = ++sessionCatalogRequestId.current;
     setCatalogPhase("loading");
@@ -312,29 +327,38 @@ export function useChatSession(): ChatSessionState {
     const failures: string[] = [];
     let sessionLoadSuperseded = false;
     let nextWorkspace = EMPTY_WORKSPACE_STATE;
-    try {
-      nextWorkspace = await getWorkspaceState();
-      if (requestId !== catalogRequestId.current) return;
+    let nextSessions: AgentSessionSummary[] = [];
+
+    // These reads use independent stores/IPC commands. Start them together so
+    // the combined catalog wait is bounded by the slower read rather than their sum.
+    const workspaceTask = Promise.resolve().then(() => getWorkspaceState());
+    const sessionsTask = Promise.resolve().then(() => listAgentSessions());
+    const [workspaceResult, sessionsResult] = await Promise.allSettled([
+      workspaceTask,
+      sessionsTask,
+    ]);
+    if (requestId !== catalogRequestId.current) return;
+
+    if (workspaceResult.status === "fulfilled") {
+      nextWorkspace = workspaceResult.value;
       setWorkspaceState(nextWorkspace);
-    } catch (error) {
-      if (requestId !== catalogRequestId.current) return;
-      failures.push(formatError(error));
+    } else {
+      failures.push(formatError(workspaceResult.reason));
     }
 
-    let nextSessions: AgentSessionSummary[] = [];
-    try {
-      nextSessions = await listAgentSessions();
-      if (requestId !== catalogRequestId.current) return;
+    if (sessionsResult.status === "fulfilled") {
+      nextSessions = sessionsResult.value;
       if (sessionRequestId === sessionCatalogRequestId.current) {
         applySessionCatalog(nextSessions);
       } else {
         sessionLoadSuperseded = true;
         nextSessions = catalogSessionsRef.current;
       }
-    } catch (error) {
+    } else {
       if (requestId !== catalogRequestId.current) return;
-      if (sessionRequestId === sessionCatalogRequestId.current) failures.push(formatError(error));
-      else {
+      if (sessionRequestId === sessionCatalogRequestId.current) {
+        failures.push(formatError(sessionsResult.reason));
+      } else {
         sessionLoadSuperseded = true;
         nextSessions = catalogSessionsRef.current;
       }
@@ -394,7 +418,7 @@ export function useChatSession(): ChatSessionState {
     });
   }, [applySessionCatalog, installSession]);
 
-  refreshSessionsRef.current = refreshSessionCatalog;
+  refreshSessionsRef.current = scheduleSessionCatalogRefresh;
 
   useEffect(() => {
     let active = true;
@@ -421,7 +445,7 @@ export function useChatSession(): ChatSessionState {
           scheduleProjectionRender();
         }
       }
-      if (event.name === "agent.settled") void refreshSessionsRef.current();
+      if (event.name === "agent.settled") refreshSessionsRef.current();
     })
       .then((stopListening) => {
         if (active) {
@@ -450,6 +474,10 @@ export function useChatSession(): ChatSessionState {
       sessionCatalogRequestId.current += 1;
       pendingAutoRestore.current?.cancelSchedule();
       pendingAutoRestore.current = null;
+      if (pendingCatalogRefresh.current !== null) {
+        window.clearTimeout(pendingCatalogRefresh.current);
+        pendingCatalogRefresh.current = null;
+      }
     },
     [],
   );
@@ -515,6 +543,12 @@ export function useChatSession(): ChatSessionState {
         activeSessionIdRef.current = projection.sessionId;
         setActiveSessionId(projection.sessionId);
         setGlobalError(null);
+        // A cached switch can happen before the coalesced animation-frame
+        // publish. Flush the authoritative projection so the target session
+        // never renders a stale message list.
+        pendingProjectionRender.current?.();
+        pendingProjectionRender.current = null;
+        setProjections(projectionsRef.current);
         return true;
       }
       if (session.lifecycle !== "persisted") {
@@ -950,12 +984,21 @@ function projectionFromSession(
         : {}),
     };
   });
-  const restoredStartedAt = replaced?.runStartedAt ?? (session.streaming ? Date.now() : null);
+  messages = restoreHistoryTimers(messages);
+  const lastUser = [...messages].reverse().find((message) => message.role === "user");
+  const restoredStartedAt =
+    replaced?.runStartedAt ??
+    (session.streaming ? parseMessageTimestamp(lastUser?.timestamp) ?? Date.now() : null);
   let activeRunUserId = replaced?.activeRunUserId ?? null;
   if (session.streaming) {
-    const lastUser = [...messages].reverse().find((message) => message.role === "user");
     activeRunUserId = activeRunUserId ?? lastUser?.id ?? null;
-    if (lastUser && restoredStartedAt !== null && !lastUser.timer) {
+    if (
+      lastUser &&
+      restoredStartedAt !== null &&
+      (!lastUser.timer ||
+        lastUser.timer.endedAt !== null ||
+        lastUser.timer.startedAt !== restoredStartedAt)
+    ) {
       messages = messages.map((message) =>
         message.id === lastUser.id
           ? { ...message, timer: createRunningTimer(restoredStartedAt) }
@@ -1309,6 +1352,54 @@ function updateProjectionError(
 
 function createRunningTimer(startedAt: number): SessionTimerState {
   return { startedAt, endedAt: null, durationMs: null };
+}
+
+function restoreHistoryTimers(messages: ChatMessage[]): ChatMessage[] {
+  const timers = new Map<number, SessionTimerState>();
+  let userIndex = -1;
+  let startedAt: number | null = null;
+  let latestResponseAt: number | null = null;
+
+  const finishTurn = (boundaryAt: number | null) => {
+    if (userIndex < 0 || startedAt === null) return;
+    const candidateEnd = latestResponseAt ?? boundaryAt;
+    if (candidateEnd === null) return;
+    const boundedEnd = boundaryAt === null ? candidateEnd : Math.min(candidateEnd, boundaryAt);
+    const endedAt = Math.max(startedAt, boundedEnd);
+    timers.set(userIndex, {
+      startedAt,
+      endedAt,
+      durationMs: endedAt - startedAt,
+    });
+  };
+
+  messages.forEach((message, index) => {
+    const timestamp = parseMessageTimestamp(message.timestamp);
+    if (message.role === "user") {
+      finishTurn(timestamp);
+      userIndex = index;
+      startedAt = timestamp;
+      latestResponseAt = null;
+      return;
+    }
+    if (userIndex >= 0 && timestamp !== null) {
+      latestResponseAt =
+        latestResponseAt === null ? timestamp : Math.max(latestResponseAt, timestamp);
+    }
+  });
+  finishTurn(null);
+
+  if (timers.size === 0) return messages;
+  return messages.map((message, index) => {
+    const timer = timers.get(index);
+    return timer && !message.timer ? { ...message, timer } : message;
+  });
+}
+
+function parseMessageTimestamp(value: unknown): number | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
 }
 
 function finishTimerState(timer: SessionTimerState, endedAt: number): SessionTimerState {

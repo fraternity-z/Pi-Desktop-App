@@ -588,6 +588,40 @@ describe("useChatSession", () => {
     }
   });
 
+  it("启动时并行读取工作区与会话目录", async () => {
+    let resolveWorkspace: ((value: {
+      recentWorkspaces: string[];
+      lastWorkspace: string | null;
+      conversationHome: string;
+    }) => void) | undefined;
+    vi.mocked(getWorkspaceState).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveWorkspace = resolve;
+        }),
+    );
+    vi.mocked(listAgentSessions).mockResolvedValueOnce([]);
+
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    let loadTask: Promise<void> = Promise.resolve();
+    act(() => {
+      loadTask = result.current.loadCatalogs();
+    });
+
+    await waitFor(() => expect(listAgentSessions).toHaveBeenCalledOnce());
+    expect(getWorkspaceState).toHaveBeenCalledOnce();
+    await act(async () => {
+      resolveWorkspace?.({
+        recentWorkspaces: [],
+        lastWorkspace: null,
+        conversationHome: "C:\\Users\\me\\Documents\\Pix\\conversations",
+      });
+      await loadTask;
+    });
+    expect(result.current.catalogPhase).toBe("ready");
+  });
+
   it("用户主动导航时取消尚未开始的自动恢复，但仍加载模型目录", async () => {
     let idleCallback: (() => void) | undefined;
     vi.stubGlobal(
@@ -644,7 +678,10 @@ describe("useChatSession", () => {
     vi.mocked(listAgentModels).mockClear();
     vi.mocked(getWorkspaceState).mockClear();
 
-    act(() => emit?.(event("agent.settled")));
+    act(() => {
+      emit?.(event("agent.settled"));
+      emit?.(event("agent.settled"));
+    });
     await waitFor(() => expect(listAgentSessions).toHaveBeenCalledOnce());
 
     expect(listAgentModels).not.toHaveBeenCalled();
@@ -903,6 +940,105 @@ describe("useChatSession", () => {
           timer: { startedAt: 5_000, endedAt: 9_000, durationMs: 4_000 },
         }),
       ]);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("重启恢复历史会话时按持久化时间戳重建每轮用时", async () => {
+    vi.mocked(openAgentSession).mockResolvedValueOnce(
+      agentSession({
+        sessionId: "saved",
+        sessionPath: savedSummary.path,
+        messages: [
+          { role: "user", content: "第一问", timestamp: "2026-08-28T08:00:00.000Z" },
+          { role: "thinking", content: "分析中", timestamp: "2026-08-28T08:00:01.000Z" },
+          { role: "assistant", content: "第一答", timestamp: "2026-08-28T08:00:03.250Z" },
+          { role: "user", content: "第二问", timestamp: "2026-08-28T08:00:05.000Z" },
+          {
+            role: "tool",
+            content: "",
+            toolCallId: "tool-1",
+            toolName: "read",
+            timestamp: "2026-08-28T08:00:06.000Z",
+          },
+          { role: "assistant", content: "第二答", timestamp: "2026-08-28T08:00:09.500Z" },
+          { role: "user", content: "第三问", timestamp: "2026-08-28T08:00:11.000Z" },
+          { role: "user", content: "第四问", timestamp: "2026-08-28T08:00:12.000Z" },
+        ],
+      }),
+    );
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+
+    await act(() =>
+      result.current.openSession({ ...savedSummary, lifecycle: "persisted" }),
+    );
+
+    const users = result.current.messages.filter((item) => item.role === "user");
+    expect(users).toEqual([
+      expect.objectContaining({
+        content: "第一问",
+        timer: {
+          startedAt: Date.parse("2026-08-28T08:00:00.000Z"),
+          endedAt: Date.parse("2026-08-28T08:00:03.250Z"),
+          durationMs: 3_250,
+        },
+      }),
+      expect.objectContaining({
+        content: "第二问",
+        timer: {
+          startedAt: Date.parse("2026-08-28T08:00:05.000Z"),
+          endedAt: Date.parse("2026-08-28T08:00:09.500Z"),
+          durationMs: 4_500,
+        },
+      }),
+      expect.objectContaining({
+        content: "第三问",
+        timer: {
+          startedAt: Date.parse("2026-08-28T08:00:11.000Z"),
+          endedAt: Date.parse("2026-08-28T08:00:12.000Z"),
+          durationMs: 1_000,
+        },
+      }),
+      expect.objectContaining({ content: "第四问" }),
+    ]);
+    expect(users[3]).not.toHaveProperty("timer");
+  });
+
+  it("恢复流式会话时沿用历史用户时间戳继续计时", async () => {
+    const startedAt = Date.parse("2026-08-28T08:00:00.000Z");
+    const now = vi.spyOn(Date, "now").mockReturnValue(startedAt + 5_000);
+    vi.mocked(openAgentSession).mockResolvedValueOnce(
+      agentSession({
+        sessionId: "saved",
+        sessionPath: savedSummary.path,
+        streaming: true,
+        messages: [
+          { role: "user", content: "继续任务", timestamp: "2026-08-28T08:00:00.000Z" },
+          { role: "assistant", content: "部分结果", timestamp: "2026-08-28T08:00:03.000Z" },
+        ],
+      }),
+    );
+
+    try {
+      const { result } = renderHook(() => useChatSession());
+      await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+      await act(() =>
+        result.current.openSession({ ...savedSummary, lifecycle: "persisted" }),
+      );
+
+      expect(result.current.phase).toBe("streaming");
+      expect(result.current.timer).toEqual({
+        startedAt,
+        endedAt: null,
+        durationMs: null,
+      });
+      expect(result.current.messages[0]).toEqual(
+        expect.objectContaining({
+          timer: { startedAt, endedAt: null, durationMs: null },
+        }),
+      );
     } finally {
       now.mockRestore();
     }

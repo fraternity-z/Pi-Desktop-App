@@ -7,7 +7,8 @@ export type PerformanceOperation =
   | "model.runtime"
   | "session.create"
   | "session.open"
-  | "resource.list";
+  | "resource.list"
+  | "command.list";
 
 export type PerformancePhase =
   | "sdk.import"

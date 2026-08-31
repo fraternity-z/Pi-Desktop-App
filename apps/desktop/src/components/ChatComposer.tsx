@@ -2,6 +2,7 @@ import {
   ArrowUp,
   Check,
   ChevronDown,
+  Command as CommandIcon,
   File,
   Folder,
   FolderOpen,
@@ -17,6 +18,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   ShieldOff,
+  Sparkles,
   Square,
   X,
 } from "lucide-react";
@@ -53,9 +55,19 @@ import type {
 import type { ToolPermissionMode } from "../stores/useToolPermissions";
 import { ComposerQueueCard } from "./ComposerQueueCard";
 import { isPromptImagePath, MAX_COMPOSER_ATTACHMENTS } from "./composerAttachments";
+import {
+  buildComposerCommandCatalog,
+  composerCommandsFromGroups,
+  detectComposerTrigger,
+  filterComposerCommands,
+  groupComposerCommands,
+  replaceTextRange,
+  type ComposerCommand,
+} from "./composerCommands";
 
 type ComposerMenu = "project" | "resources" | "permission" | "model" | "thinking";
 type ResourcePhase = "idle" | "loading" | "ready" | "error";
+type SlashCommandsPhase = "idle" | "loading" | "ready" | "error";
 
 interface ChatComposerProps {
   workspaceName: string;
@@ -74,6 +86,9 @@ interface ChatComposerProps {
   contextUsage?: ContextUsage | null;
   attachments?: string[];
   attachmentError?: string | null;
+  slashCommands?: ComposerCommand[];
+  slashCommandsPhase?: SlashCommandsPhase;
+  slashCommandsError?: string | null;
   canSend: boolean;
   queuedMessages: QueuedMessages;
   queuePaused: boolean;
@@ -118,6 +133,9 @@ export function ChatComposer({
   contextUsage = null,
   attachments = [],
   attachmentError = null,
+  slashCommands = [],
+  slashCommandsPhase = "idle",
+  slashCommandsError = null,
   canSend,
   queuedMessages,
   queuePaused,
@@ -145,6 +163,7 @@ export function ChatComposer({
   onAbort,
 }: ChatComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerFormRef = useRef<HTMLFormElement>(null);
   const menuRootRef = useRef<HTMLDivElement>(null);
   const floatingMenuRef = useRef<HTMLDivElement>(null);
   const projectTriggerRef = useRef<HTMLButtonElement>(null);
@@ -156,6 +175,10 @@ export function ChatComposer({
   const [resourceResults, setResourceResults] = useState<WorkspacePathMatch[]>([]);
   const [resourcePhase, setResourcePhase] = useState<ResourcePhase>("idle");
   const [resourceError, setResourceError] = useState<string | null>(null);
+  const [composerAnchor, setComposerAnchor] = useState<HTMLFormElement | null>(null);
+  const [caretPosition, setCaretPosition] = useState(draft.length);
+  const [suggestionIndex, setSuggestionIndex] = useState(-1);
+  const [suggestionsDismissed, setSuggestionsDismissed] = useState(false);
   const streaming = phase === "streaming";
   const disabled = eventConnection !== "ready";
   const modelDisabled = disabled || streaming || configuring;
@@ -197,6 +220,37 @@ export function ChatComposer({
   );
   const selectedModel = configuration?.model ?? models[0] ?? null;
   const selectedThinkingLevel = configuration?.thinkingLevel ?? displayThinkingLevel;
+  const commandCatalog = useMemo(
+    () => buildComposerCommandCatalog(slashCommands),
+    [slashCommands],
+  );
+  const composerTrigger = useMemo(
+    () => detectComposerTrigger(draft, caretPosition),
+    [caretPosition, draft],
+  );
+  const filteredComposerCommands = useMemo(
+    () =>
+      composerTrigger
+        ? filterComposerCommands(commandCatalog, composerTrigger.query)
+        : [],
+    [commandCatalog, composerTrigger],
+  );
+  const composerCommandGroups = useMemo(
+    () => groupComposerCommands(filteredComposerCommands),
+    [filteredComposerCommands],
+  );
+  const composerMenuItems = useMemo(
+    () => composerCommandsFromGroups(composerCommandGroups),
+    [composerCommandGroups],
+  );
+  const slashPanelOpen =
+    openMenu === null && composerTrigger !== null && !suggestionsDismissed && !disabled;
+
+  useLayoutEffect(() => {
+    if (composerFormRef.current) {
+      setComposerAnchor(composerFormRef.current);
+    }
+  }, []);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -204,6 +258,28 @@ export function ChatComposer({
     textarea.style.height = "0px";
     textarea.style.height = `${Math.min(textarea.scrollHeight, 220)}px`;
   }, [draft]);
+
+  useEffect(() => {
+    setCaretPosition((current) => Math.max(0, Math.min(draft.length, current)));
+  }, [draft.length]);
+
+  useEffect(() => {
+    setSuggestionIndex(-1);
+  }, [composerTrigger?.rangeStart, composerTrigger?.rangeEnd, composerTrigger?.query]);
+
+  useEffect(() => {
+    setSuggestionIndex((current) =>
+      current >= 0 && current < composerMenuItems.length ? current : -1,
+    );
+  }, [composerMenuItems.length]);
+
+  useLayoutEffect(() => {
+    if (!slashPanelOpen || suggestionIndex < 0) return;
+    const item = floatingMenuRef.current?.querySelector<HTMLElement>(
+      `[data-suggest-index="${suggestionIndex}"]`,
+    );
+    item?.scrollIntoView?.({ block: "nearest" });
+  }, [composerMenuItems.length, slashPanelOpen, suggestionIndex]);
 
   useEffect(() => {
     if (openMenu === null) return;
@@ -235,6 +311,29 @@ export function ChatComposer({
       window.removeEventListener("resize", closeOnViewportChange);
     };
   }, [openMenu]);
+
+  useEffect(() => {
+    if (!slashPanelOpen) return;
+    function closeOnPointerDown(event: MouseEvent) {
+      const target = event.target as Node;
+      if (!menuRootRef.current?.contains(target) && !floatingMenuRef.current?.contains(target)) {
+        setSuggestionsDismissed(true);
+      }
+    }
+    function closeOnViewportChange(event: Event) {
+      const target = event.target;
+      if (target instanceof Node && floatingMenuRef.current?.contains(target)) return;
+      setSuggestionsDismissed(true);
+    }
+    document.addEventListener("mousedown", closeOnPointerDown);
+    window.addEventListener("scroll", closeOnViewportChange, true);
+    window.addEventListener("resize", closeOnViewportChange);
+    return () => {
+      document.removeEventListener("mousedown", closeOnPointerDown);
+      window.removeEventListener("scroll", closeOnViewportChange, true);
+      window.removeEventListener("resize", closeOnViewportChange);
+    };
+  }, [slashPanelOpen]);
 
   useEffect(() => {
     if (
@@ -276,8 +375,84 @@ export function ChatComposer({
     };
   }, [onSearchWorkspacePaths, openMenu, workspacePath]);
 
+  function updateCaretPosition() {
+    const textarea = textareaRef.current;
+    if (textarea) setCaretPosition(textarea.selectionStart ?? draft.length);
+  }
+
+  function handleDraftChange(value: string) {
+    const selectionStart = textareaRef.current?.selectionStart;
+    const looksLikeAppend =
+      selectionStart === 0 && draft.length > 0 && value.length > draft.length && value.startsWith(draft);
+    const nextCursor =
+      selectionStart === null ||
+      selectionStart === undefined ||
+      (selectionStart === 0 && draft.length === 0 && value.length > 0) ||
+      looksLikeAppend
+        ? value.length
+        : selectionStart;
+    setCaretPosition(nextCursor);
+    setSuggestionsDismissed(false);
+    if (detectComposerTrigger(value, nextCursor)) setOpenMenu(null);
+    onDraftChange(value);
+  }
+
+  function selectComposerCommand(command: ComposerCommand) {
+    if (!composerTrigger) return;
+    const replacement = replaceTextRange(
+      draft,
+      composerTrigger.rangeStart,
+      composerTrigger.rangeEnd,
+      `/${command.name} `,
+    );
+    setSuggestionsDismissed(true);
+    setCaretPosition(replacement.cursor);
+    onDraftChange(replacement.text);
+    const focus = () => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(replacement.cursor, replacement.cursor);
+    };
+    if (typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(focus);
+    } else {
+      window.setTimeout(focus, 0);
+    }
+  }
+
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (isImeCompositionEvent(event.nativeEvent)) return;
+    if (slashPanelOpen) {
+      if (event.key === "ArrowDown" && composerMenuItems.length > 0) {
+        event.preventDefault();
+        setSuggestionIndex((current) => (current + 1) % composerMenuItems.length);
+        return;
+      }
+      if (event.key === "ArrowUp" && composerMenuItems.length > 0) {
+        event.preventDefault();
+        setSuggestionIndex(
+          (current) =>
+            current < 0
+              ? composerMenuItems.length - 1
+              : (current - 1 + composerMenuItems.length) % composerMenuItems.length,
+        );
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setSuggestionsDismissed(true);
+        return;
+      }
+      const shouldCommit =
+        (event.key === "Tab" && !event.shiftKey && !event.metaKey && !event.ctrlKey) ||
+        (event.key === "Enter" && !event.shiftKey && !event.altKey && suggestionIndex >= 0);
+      if (shouldCommit && composerMenuItems.length > 0) {
+        event.preventDefault();
+        selectComposerCommand(composerMenuItems[suggestionIndex] ?? composerMenuItems[0]!);
+        return;
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey && (!event.altKey || streaming)) {
       event.preventDefault();
       onSend(undefined, streaming ? (event.altKey ? "followUp" : "steer") : undefined);
@@ -381,12 +556,28 @@ export function ChatComposer({
         )}
       </div>
 
-      <form className="composer-frame" onSubmit={onSend} aria-busy={streaming || configuring}>
+      <form
+        ref={composerFormRef}
+        className="composer-frame"
+        onSubmit={onSend}
+        aria-busy={streaming || configuring}
+      >
         <textarea
           ref={textareaRef}
           aria-label="发送给 Pi 的消息"
+          aria-autocomplete="list"
+          aria-controls={slashPanelOpen ? "composer-slash-menu" : undefined}
+          aria-activedescendant={
+            slashPanelOpen && suggestionIndex >= 0
+              ? `composer-slash-item-${suggestionIndex}`
+              : undefined
+          }
+          aria-expanded={slashPanelOpen}
           value={draft}
-          onChange={(event) => onDraftChange(event.target.value)}
+          onChange={(event) => handleDraftChange(event.target.value)}
+          onSelect={updateCaretPosition}
+          onClick={updateCaretPosition}
+          onKeyUp={updateCaretPosition}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           placeholder={streaming ? "继续输入可加入后续队列" : "描述你想构建的内容..."}
@@ -799,6 +990,80 @@ export function ChatComposer({
           </div>
         </div>
       </form>
+
+      {slashPanelOpen && (
+        <AnchoredComposerMenu
+          id="composer-slash-menu"
+          anchor={composerAnchor}
+          menuRef={floatingMenuRef}
+          className="composer-slash-menu"
+          ariaLabel="命令"
+          align="left"
+          defaultWidth={560}
+          maximumHeight={360}
+        >
+          <div className="composer-suggest-scroll">
+            {slashCommandsPhase === "loading" && (
+              <p className="composer-suggest-state">
+                <LoaderCircle className="spin" size={15} aria-hidden="true" />
+                正在读取命令
+              </p>
+            )}
+            {slashCommandsPhase === "error" && slashCommandsError && (
+              <p className="composer-suggest-state composer-suggest-state-error" role="status">
+                {slashCommandsError}
+              </p>
+            )}
+            {composerCommandGroups.map((group) => (
+              <section className="composer-suggest-group" key={group.id}>
+                <div className="composer-suggest-group-label">
+                  {group.id === "skill" ? "技能" : "命令"}
+                </div>
+                {group.items.map(({ command, flatIndex }) => {
+                  const active = suggestionIndex >= 0 && flatIndex === suggestionIndex;
+                  return (
+                    <button
+                      className="composer-suggest-item"
+                      data-active={active}
+                      data-suggest-index={flatIndex}
+                      data-testid="composer-slash-item"
+                      id={`composer-slash-item-${flatIndex}`}
+                      key={`${command.source}:${command.name}`}
+                      type="button"
+                      role="menuitem"
+                      aria-selected={active}
+                      title={command.description}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onMouseMove={() => setSuggestionIndex(flatIndex)}
+                      onClick={() => selectComposerCommand(command)}
+                    >
+                      <span className="composer-suggest-icon" aria-hidden="true">
+                        {command.source === "skill" ? (
+                          <Sparkles size={16} />
+                        ) : (
+                          <CommandIcon size={16} />
+                        )}
+                      </span>
+                      <span className="composer-suggest-copy">
+                        <span className="composer-suggest-name">/{command.name}</span>
+                        {command.description && (
+                          <span className="composer-suggest-description">{command.description}</span>
+                        )}
+                      </span>
+                      {command.argumentHint && (
+                        <span className="composer-suggest-hint">{command.argumentHint}</span>
+                      )}
+                    </button>
+                  );
+                })}
+              </section>
+            ))}
+            {composerMenuItems.length === 0 && slashCommandsPhase !== "loading" && (
+              <p className="composer-suggest-state">没有匹配的命令</p>
+            )}
+          </div>
+        </AnchoredComposerMenu>
+      )}
     </div>
   );
 }

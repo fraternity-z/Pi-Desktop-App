@@ -19,6 +19,7 @@ interface RuntimeMock {
   updatePackage: ReturnType<typeof vi.fn>;
   checkPackageUpdates: ReturnType<typeof vi.fn>;
   listResources: ReturnType<typeof vi.fn>;
+  listCommands: ReturnType<typeof vi.fn>;
   configureRequestHeaders: ReturnType<typeof vi.fn>;
   configureSession: ReturnType<typeof vi.fn>;
   prompt: ReturnType<typeof vi.fn>;
@@ -71,6 +72,9 @@ function createRuntimeMock(): RuntimeMock {
   const updatePackage = vi.fn(async () => []);
   const checkPackageUpdates = vi.fn(async () => []);
   const listResources = vi.fn(async () => []);
+  const listCommands = vi.fn(async () => [
+    { name: "review", description: "审查变更", source: "extension" as const },
+  ]);
   const configureRequestHeaders = vi.fn((settings) => settings);
   const configureSession = vi.fn(async () => ({
     model: null,
@@ -98,6 +102,7 @@ function createRuntimeMock(): RuntimeMock {
     updatePackage,
     checkPackageUpdates,
     listResources,
+    listCommands,
     configureSession,
     prompt,
     clearQueue,
@@ -123,6 +128,7 @@ function createRuntimeMock(): RuntimeMock {
     updatePackage,
     checkPackageUpdates,
     listResources,
+    listCommands,
     configureRequestHeaders,
     configureSession,
     prompt,
@@ -282,6 +288,7 @@ describe("BridgeServer", () => {
       },
       { v: 1, id: "updates", op: "package.check-updates", cwd: "C:\\work" },
       { v: 1, id: "resources", op: "resource.list", cwd: "C:\\work" },
+      { v: 1, id: "commands", op: "command.list", sessionId: "s-1" },
     ];
 
     for (const request of requests) {
@@ -308,6 +315,7 @@ describe("BridgeServer", () => {
     expect(runtimeMock.updatePackage).toHaveBeenCalledWith("C:\\work", "npm:pi-test");
     expect(runtimeMock.checkPackageUpdates).toHaveBeenCalledWith("C:\\work");
     expect(runtimeMock.listResources).toHaveBeenCalledWith("C:\\work");
+    expect(runtimeMock.listCommands).toHaveBeenCalledWith("s-1");
     for (const request of requests) {
       expect(frames).toContainEqual(expect.objectContaining({ id: request.id, ok: true }));
     }

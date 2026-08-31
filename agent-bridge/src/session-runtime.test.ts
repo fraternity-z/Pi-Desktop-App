@@ -108,6 +108,8 @@ function createSessionMock(
     tools?: Array<{ name: string; description?: string }>;
     activeTools?: string[];
     contextUsage?: unknown;
+    extensionCommands?: unknown[];
+    promptTemplates?: unknown[];
   } = {},
 ): SessionMock {
   let listener: (event: unknown) => void = () => undefined;
@@ -155,6 +157,10 @@ function createSessionMock(
       return thinkingLevel;
     },
     messages: options.messages ?? [],
+    extensionRunner: {
+      getRegisteredCommands: () => options.extensionCommands ?? [],
+    },
+    promptTemplates: options.promptTemplates ?? [],
     prompt,
     abort,
     clearQueue,
@@ -241,6 +247,67 @@ function sdkReturning(...sessions: SessionMock[]): PiSdkLike & {
 }
 
 describe("PiSessionRuntime", () => {
+  it("列出会话可执行的扩展与提示词命令并按名称去重", async () => {
+    const sessionMock = createSessionMock("commands", {
+      extensionCommands: [
+        { invocationName: "review", description: "审查变更" },
+        { invocationName: "Review", description: "重复命令" },
+        { invocationName: "bad name", description: "不应展示" },
+      ],
+      promptTemplates: [
+        { name: "docs", description: "生成文档" },
+        { name: "review", description: "模板重复" },
+      ],
+    });
+    const runtime = new PiSessionRuntime(sdkReturning(sessionMock), "C:\\agent");
+    await runtime.createSession("C:\\work");
+
+    await expect(runtime.listCommands("commands")).resolves.toEqual([
+      { name: "review", description: "审查变更", source: "extension" },
+      { name: "docs", description: "生成文档", source: "prompt" },
+    ]);
+    await expect(runtime.listCommands("missing")).rejects.toMatchObject({
+      code: "SESSION_NOT_FOUND",
+    });
+  });
+
+  it("将资源加载器中的技能映射为 skill: 命令并保留技能描述", async () => {
+    const sessionMock = createSessionMock("skill-commands");
+    const sdk = sdkReturning(sessionMock);
+    type LoaderOptions = ConstructorParameters<
+      NonNullable<PiSdkLike["DefaultResourceLoader"]>
+    >[0];
+    sdk.DefaultResourceLoader = class {
+      constructor(_options: LoaderOptions) {}
+
+      async reload(): Promise<void> {}
+
+      getSkills() {
+        return {
+          skills: [
+            {
+              name: "docs",
+              description: "生成文档",
+              filePath: "C:\\agent\\skills\\docs\\SKILL.md",
+            },
+            {
+              name: "review",
+              description: "技能重复",
+              filePath: "C:\\agent\\skills\\review\\SKILL.md",
+            },
+          ],
+        };
+      }
+    };
+    const runtime = new PiSessionRuntime(sdk, "C:\\agent");
+    await runtime.createSession("C:\\work");
+
+    await expect(runtime.listCommands("skill-commands")).resolves.toEqual([
+      { name: "skill:docs", description: "生成文档", source: "skill" },
+      { name: "skill:review", description: "技能重复", source: "skill" },
+    ]);
+  });
+
   it("创建会话、列出真实模型与会话并映射 SDK 事件", async () => {
     const sessionMock = createSessionMock();
     const sdk = sdkReturning(sessionMock);

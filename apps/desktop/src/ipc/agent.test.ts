@@ -12,6 +12,7 @@ import {
   deleteAgentSessions,
   installAgentPackage,
   listAgentModels,
+  listAgentCommands,
   listAgentPackages,
   listAgentResources,
   listAgentSessions,
@@ -61,6 +62,7 @@ describe("agent IPC", () => {
     await updateAgentPackage("C:\\work");
     await checkAgentPackageUpdates("C:\\work");
     await listAgentResources("C:\\work");
+    await listAgentCommands("session-1");
 
     expect(invoke).toHaveBeenNthCalledWith(1, "agent_list_packages", { cwd: "C:\\work" });
     expect(invoke).toHaveBeenNthCalledWith(2, "agent_install_package", {
@@ -88,6 +90,7 @@ describe("agent IPC", () => {
       cwd: "C:\\work",
     });
     expect(invoke).toHaveBeenNthCalledWith(8, "agent_list_resources", { cwd: "C:\\work" });
+    expect(invoke).toHaveBeenNthCalledWith(9, "agent_list_commands", { sessionId: "session-1" });
   });
 
   it("只调用固定、类型化的会话命令", async () => {

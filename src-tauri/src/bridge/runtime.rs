@@ -15,7 +15,8 @@ use crate::{
         protocol::{
             AgentModel, AgentSessionSummary, CreatedSession, DeleteSessionsResult, PackageScope,
             PackageSummary, PackageUpdateInfo, PromptStreamingBehavior, RequestHeaderSettings,
-            ResourceSummary, SessionConfiguration, SessionConfigurationUpdate, THINKING_LEVELS,
+            ResourceSummary, SessionConfiguration, SessionConfigurationUpdate, SlashCommandSummary,
+            THINKING_LEVELS,
         },
         supervisor::{
             BridgeEventSink, BridgeFaultSink, BridgeLaunchConfig, BridgeSupervisor,
@@ -264,6 +265,12 @@ impl BridgeRuntime {
     pub fn list_resources(&self, cwd: String) -> Result<Vec<ResourceSummary>, AppError> {
         let cwd = canonical_workspace(Path::new(cwd.trim()))?;
         self.with_supervisor(|supervisor| supervisor.list_resources(&cwd))
+    }
+
+    pub fn list_commands(&self, session_id: String) -> Result<Vec<SlashCommandSummary>, AppError> {
+        validate_session_id(&session_id)?;
+        self.ensure_known_session(&session_id)?;
+        self.with_supervisor(|supervisor| supervisor.list_commands(&session_id))
     }
 
     pub fn configure_request_headers(

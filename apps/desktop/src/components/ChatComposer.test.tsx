@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { useState } from "react";
 
 import { ChatComposer, isImeCompositionEvent } from "./ChatComposer";
 
@@ -356,6 +357,232 @@ describe("ChatComposer", () => {
     expect(onSend).not.toHaveBeenCalled();
     fireEvent.keyDown(textarea, { key: "Enter" });
     expect(onSend).toHaveBeenCalledOnce();
+  });
+
+  it("输入 slash 时在编辑框上方展示命令栏，并支持键盘选中插入", () => {
+    const onDraftChange = vi.fn();
+    const baseProps = {
+      workspaceName: "workspace",
+      phase: "ready" as const,
+      eventConnection: "ready" as const,
+      models: [],
+      configuration: null,
+      configuring: false,
+      slashCommands: [
+        { name: "review", description: "审查当前变更", source: "extension" as const },
+        { name: "docs", description: "文档技能", source: "skill" as const },
+      ],
+      canSend: true,
+      queuedMessages: { steering: [], followUp: [] },
+      queuePaused: false,
+      ...permissionProps,
+      onModelChange: vi.fn(),
+      onThinkingLevelChange: vi.fn(),
+      onSend: vi.fn(),
+      onClearQueue: vi.fn(),
+      onAbort: vi.fn(),
+    };
+    function SlashHarness() {
+      const [draft, setDraft] = useState("");
+      return (
+        <ChatComposer
+          {...baseProps}
+          draft={draft}
+          onDraftChange={(value) => {
+            setDraft(value);
+            onDraftChange(value);
+          }}
+        />
+      );
+    }
+    render(<SlashHarness />);
+
+    const textarea = screen.getByLabelText("发送给 Pi 的消息");
+    fireEvent.change(textarea, { target: { value: "/rev" } });
+    const menu = screen.getByRole("menu", { name: "命令" });
+    expect(menu.parentElement).toBe(document.body);
+    expect(screen.getByText("/review")).toBeInTheDocument();
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onDraftChange).toHaveBeenLastCalledWith("/review ");
+  });
+
+  it("首次按上键选中命令末项，并兼容程序化逐字输入", () => {
+    const onDraftChange = vi.fn();
+    const baseProps = {
+      workspaceName: "workspace",
+      phase: "ready" as const,
+      eventConnection: "ready" as const,
+      models: [],
+      configuration: null,
+      configuring: false,
+      slashCommands: [
+        { name: "alpha", description: "第一个", source: "extension" as const },
+        { name: "beta", description: "第二个", source: "extension" as const },
+      ],
+      canSend: true,
+      queuedMessages: { steering: [], followUp: [] },
+      queuePaused: false,
+      ...permissionProps,
+      onModelChange: vi.fn(),
+      onThinkingLevelChange: vi.fn(),
+      onSend: vi.fn(),
+      onClearQueue: vi.fn(),
+      onAbort: vi.fn(),
+    };
+    function SlashHarness() {
+      const [draft, setDraft] = useState("");
+      return (
+        <ChatComposer
+          {...baseProps}
+          draft={draft}
+          onDraftChange={(value) => {
+            setDraft(value);
+            onDraftChange(value);
+          }}
+        />
+      );
+    }
+    render(<SlashHarness />);
+
+    const textarea = screen.getByLabelText("发送给 Pi 的消息");
+    fireEvent.change(textarea, { target: { value: "/" } });
+    fireEvent.change(textarea, { target: { value: "/b" } });
+    fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onDraftChange).toHaveBeenLastCalledWith("/beta ");
+  });
+
+  it("展示命令加载、错误和空结果状态", () => {
+    const baseProps = {
+      workspaceName: "workspace",
+      phase: "ready" as const,
+      eventConnection: "ready" as const,
+      models: [],
+      configuration: null,
+      configuring: false,
+      canSend: true,
+      queuedMessages: { steering: [], followUp: [] },
+      queuePaused: false,
+      ...permissionProps,
+      onDraftChange: vi.fn(),
+      onModelChange: vi.fn(),
+      onThinkingLevelChange: vi.fn(),
+      onSend: vi.fn(),
+      onClearQueue: vi.fn(),
+      onAbort: vi.fn(),
+    };
+    const { rerender } = render(
+      <ChatComposer
+        {...baseProps}
+        draft="/unknown"
+        slashCommandsPhase="loading"
+      />,
+    );
+    expect(screen.getByRole("menu", { name: "命令" })).toHaveTextContent("正在读取命令");
+    expect(screen.queryByText("没有匹配的命令")).not.toBeInTheDocument();
+
+    rerender(
+      <ChatComposer
+        {...baseProps}
+        draft="/unknown"
+        slashCommandsPhase="error"
+        slashCommandsError="COMMAND_LIST_FAILED: 暂时不可用"
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("COMMAND_LIST_FAILED: 暂时不可用");
+
+    rerender(
+      <ChatComposer
+        {...baseProps}
+        draft="/unknown"
+        slashCommandsPhase="ready"
+      />,
+    );
+    expect(screen.getByText("没有匹配的命令")).toBeInTheDocument();
+  });
+
+  it("支持 Tab、鼠标高亮、Escape 关闭和重新触发命令栏", () => {
+    const onDraftChange = vi.fn();
+    const onSend = vi.fn();
+    const baseProps = {
+      workspaceName: "workspace",
+      phase: "ready" as const,
+      eventConnection: "ready" as const,
+      models: [],
+      configuration: null,
+      configuring: false,
+      slashCommands: [
+        { name: "review", description: "审查变更", source: "extension" as const },
+        { name: "docs", description: "文档技能", source: "skill" as const },
+      ],
+      canSend: true,
+      queuedMessages: { steering: [], followUp: [] },
+      queuePaused: false,
+      ...permissionProps,
+      onModelChange: vi.fn(),
+      onThinkingLevelChange: vi.fn(),
+      onSend,
+      onClearQueue: vi.fn(),
+      onAbort: vi.fn(),
+    };
+    const { rerender } = render(
+      <ChatComposer
+        {...baseProps}
+        draft="/rev"
+        onDraftChange={onDraftChange}
+      />,
+    );
+    const textarea = screen.getByLabelText("发送给 Pi 的消息");
+    const review = screen.getByRole("menuitem", { name: /\/review/ });
+    fireEvent.keyDown(textarea, { key: "Tab", shiftKey: true });
+    expect(onDraftChange).not.toHaveBeenCalled();
+    fireEvent.mouseMove(review);
+    expect(review).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(textarea, { key: "Tab" });
+    expect(onDraftChange).toHaveBeenLastCalledWith("/review ");
+
+    rerender(
+      <ChatComposer
+        {...baseProps}
+        draft="/rev"
+        onDraftChange={onDraftChange}
+      />,
+    );
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(screen.queryByRole("menu", { name: "命令" })).not.toBeInTheDocument();
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onSend).toHaveBeenCalledOnce();
+
+    fireEvent.change(textarea, { target: { value: "/d" } });
+    expect(screen.getByRole("menu", { name: "命令" })).toBeInTheDocument();
+  });
+
+  it("连接未就绪时不展示命令栏", () => {
+    render(
+      <ChatComposer
+        workspaceName="workspace"
+        draft="/"
+        phase="ready"
+        eventConnection="connecting"
+        models={[]}
+        configuration={null}
+        configuring={false}
+        slashCommands={[{ name: "review", description: "审查变更", source: "extension" }]}
+        canSend={false}
+        queuedMessages={{ steering: [], followUp: [] }}
+        queuePaused={false}
+        {...permissionProps}
+        onDraftChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onThinkingLevelChange={vi.fn()}
+        onSend={vi.fn()}
+        onClearQueue={vi.fn()}
+        onAbort={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("menu", { name: "命令" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("发送给 Pi 的消息")).toBeDisabled();
   });
 
   it("按 Escape 关闭已打开的配置菜单", () => {

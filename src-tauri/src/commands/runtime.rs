@@ -5,7 +5,7 @@ use crate::{
         protocol::{
             AgentModel, AgentSessionSummary, CreatedSession, DeleteSessionsResult, PackageScope,
             PackageSummary, PackageUpdateInfo, PromptStreamingBehavior, ResourceSummary,
-            SessionConfiguration, SessionConfigurationUpdate,
+            SessionConfiguration, SessionConfigurationUpdate, SlashCommandSummary,
         },
         runtime::{BridgeRuntime, RuntimeSnapshot},
     },
@@ -151,6 +151,14 @@ pub async fn agent_list_resources(
         runtime.list_resources(app.state::<WorkspaceStore>().authorize(&cwd)?)
     })
     .await
+}
+
+#[tauri::command]
+pub async fn agent_list_commands(
+    app: AppHandle,
+    session_id: String,
+) -> Result<Vec<SlashCommandSummary>, AppError> {
+    run_runtime(app, move |_, runtime| runtime.list_commands(session_id)).await
 }
 
 #[tauri::command]

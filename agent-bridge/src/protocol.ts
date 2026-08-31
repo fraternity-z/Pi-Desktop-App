@@ -14,6 +14,9 @@ export const MAX_TOOL_NAME_CHARS = 128;
 export const MAX_SESSION_IDS = 1024;
 export const MAX_SESSION_ID_CHARS = 128;
 export const MAX_PROMPT_IMAGES = 12;
+export const MAX_COMMANDS = 512;
+export const MAX_COMMAND_NAME_CHARS = 128;
+export const MAX_COMMAND_DESCRIPTION_CHARS = 1_024;
 
 export const THINKING_LEVELS = [
   "off",
@@ -36,6 +39,7 @@ export const BRIDGE_OPERATIONS = [
   "package.update",
   "package.check-updates",
   "resource.list",
+  "command.list",
   "request-headers.configure",
   "session.create",
   "session.list",
@@ -66,6 +70,7 @@ export const BRIDGE_CAPABILITIES = [
   "resources",
   "context-usage",
   "images",
+  "commands",
 ] as const;
 
 export type BridgeOperation = (typeof BRIDGE_OPERATIONS)[number];
@@ -73,10 +78,18 @@ export type BridgeCapability = (typeof BRIDGE_CAPABILITIES)[number];
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export type PromptStreamingBehavior = "steer" | "followUp";
 export type PackageScope = "global" | "project";
+export type SlashCommandSource = "extension" | "prompt" | "skill";
 
 export interface ModelSelection {
   provider: string;
   id: string;
+}
+
+export interface SlashCommandSummary {
+  name: string;
+  description: string;
+  source: SlashCommandSource;
+  argumentHint?: string;
 }
 
 interface RequestBase {
@@ -87,6 +100,7 @@ interface RequestBase {
 export type BridgeRequest =
   | (RequestBase & { op: "ping" | "health" | "model.list" | "session.list" | "shutdown" })
   | (RequestBase & { op: "package.list" | "package.check-updates" | "resource.list"; cwd: string })
+  | (RequestBase & { op: "command.list"; sessionId: string })
   | (RequestBase & {
       op: "package.install" | "package.remove";
       cwd: string;
@@ -191,6 +205,14 @@ function requireString(
     );
   }
   return fieldValue;
+}
+
+function requireSessionId(value: Record<string, unknown>): string {
+  const sessionId = requireString(value, "sessionId", MAX_SESSION_ID_CHARS);
+  if (sessionId.trim().length === 0 || /[\r\n\0]/.test(sessionId)) {
+    throw new ProtocolError("INVALID_REQUEST", "sessionId 包含无效字符");
+  }
+  return sessionId;
 }
 
 function readModelSelection(value: Record<string, unknown>): ModelSelection | undefined {
@@ -400,6 +422,13 @@ export function parseRequest(line: string): BridgeRequest {
         op: value.op as "package.list" | "package.check-updates" | "resource.list",
         cwd: requireAbsolutePath(value, "cwd"),
       };
+    case "command.list":
+      return {
+        v: PROTOCOL_VERSION,
+        id,
+        op: "command.list",
+        sessionId: requireSessionId(value),
+      };
     case "package.install":
     case "package.remove": {
       return {
@@ -456,7 +485,7 @@ export function parseRequest(line: string): BridgeRequest {
         v: PROTOCOL_VERSION,
         id,
         op: "session.configure",
-        sessionId: requireString(value, "sessionId"),
+        sessionId: requireSessionId(value),
         ...(model === undefined ? {} : { model }),
         ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
       };
@@ -469,7 +498,7 @@ export function parseRequest(line: string): BridgeRequest {
         v: PROTOCOL_VERSION,
         id,
         op: "prompt",
-        sessionId: requireString(value, "sessionId"),
+        sessionId: requireSessionId(value),
         text: requireString(value, "text", MAX_PROMPT_CHARS),
         ...(streamingBehavior === undefined ? {} : { streamingBehavior }),
         ...(activeTools === undefined ? {} : { activeTools }),
@@ -482,7 +511,7 @@ export function parseRequest(line: string): BridgeRequest {
         v: PROTOCOL_VERSION,
         id,
         op: value.op as "queue.clear" | "abort",
-        sessionId: requireString(value, "sessionId"),
+        sessionId: requireSessionId(value),
       };
   }
 }

@@ -97,6 +97,7 @@ pub fn run() {
             commands::runtime::agent_update_package,
             commands::runtime::agent_check_package_updates,
             commands::runtime::agent_list_resources,
+            commands::runtime::agent_list_commands,
             commands::runtime::agent_configure_session,
             commands::runtime::agent_prompt,
             commands::runtime::agent_clear_queue,

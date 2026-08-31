@@ -3,9 +3,13 @@ import { readFile, realpath, stat, unlink } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative, win32 } from "node:path";
 
 import {
+  MAX_COMMANDS,
+  MAX_COMMAND_DESCRIPTION_CHARS,
+  MAX_COMMAND_NAME_CHARS,
   MAX_SESSION_ID_CHARS,
   MAX_SESSION_IDS,
   THINKING_LEVELS,
+  type SlashCommandSummary,
   type ModelSelection,
   type PromptStreamingBehavior,
   type ThinkingLevel,
@@ -102,13 +106,28 @@ interface PiResourceLoaderLike {
     extensions: Array<{ path: string; sourceInfo?: { source?: string } }>;
   };
   getSkills?(): {
-    skills: Array<{ name: string; filePath: string; sourceInfo?: { source?: string } }>;
+    skills: Array<{
+      name: string;
+      description?: string;
+      filePath: string;
+      sourceInfo?: { source?: string };
+    }>;
   };
   getPrompts?(): {
-    prompts: Array<{ name: string; filePath: string; sourceInfo?: { source?: string } }>;
+    prompts: Array<{
+      name: string;
+      description?: string;
+      argumentHint?: string;
+      filePath: string;
+      sourceInfo?: { source?: string };
+    }>;
   };
   getThemes?(): { themes: Array<{ name?: string; path?: string }> };
   getAgentsFiles?(): { agentsFiles: Array<{ path: string }> };
+}
+
+interface PiExtensionRunnerLike {
+  getRegisteredCommands?(): unknown[];
 }
 
 interface PackageContext {
@@ -134,6 +153,9 @@ export interface PiSessionLike {
   readonly model?: PiModelLike;
   readonly thinkingLevel: ThinkingLevel;
   readonly messages: unknown[];
+  readonly extensionRunner?: PiExtensionRunnerLike;
+  readonly promptTemplates?: readonly unknown[];
+  readonly resourceLoader?: PiResourceLoaderLike;
   prompt(
     text: string,
     options?: { streamingBehavior?: PromptStreamingBehavior; images?: PiImageContent[] },
@@ -330,6 +352,8 @@ export interface SessionRuntime {
   updatePackage(cwd: string, source?: string): Promise<PackageSummary[]>;
   checkPackageUpdates(cwd: string): Promise<PackageUpdateInfo[]>;
   listResources(cwd: string): Promise<ResourceSummary[]>;
+  /** 返回当前会话可执行的扩展、提示词模板和技能命令。 */
+  listCommands?(sessionId: string): Promise<SlashCommandSummary[]>;
   configureSession(
     sessionId: string,
     update: { model?: ModelSelection; thinkingLevel?: ThinkingLevel },
@@ -695,6 +719,104 @@ function listResourcesFromLoader(
     }
   }
   return resources;
+}
+
+function listCommandsFromSession(
+  session: PiSessionLike,
+  resourceLoader?: PiResourceLoaderLike,
+): SlashCommandSummary[] {
+  const commands: SlashCommandSummary[] = [];
+  const names = new Set<string>();
+
+  const append = (candidate: SlashCommandSummary | null) => {
+    if (!candidate) return;
+    const key = candidate.name.toLocaleLowerCase("en-US");
+    if (names.has(key) || commands.length >= MAX_COMMANDS) return;
+    names.add(key);
+    commands.push(candidate);
+  };
+
+  // Extension commands have the same precedence as Pi's resolver, so collect
+  // them before file prompt templates and skills with the same name.
+  let extensionCommands: unknown[] = [];
+  try {
+    const runner = session.extensionRunner;
+    if (runner && typeof runner.getRegisteredCommands === "function") {
+      const value = runner.getRegisteredCommands();
+      if (Array.isArray(value)) extensionCommands = value;
+    }
+  } catch {
+    // A legacy SDK may expose an extension runner before it is fully bound.
+  }
+  for (const command of extensionCommands) {
+    append(readSlashCommand(command, "extension"));
+  }
+
+  let templates: unknown[] = [];
+  try {
+    const value = session.promptTemplates;
+    if (Array.isArray(value)) templates = value;
+  } catch {
+    // Keep the rest of the catalog available when templates are unreadable.
+  }
+  try {
+    const loaderTemplates = resourceLoader?.getPrompts?.().prompts ?? session.resourceLoader?.getPrompts?.().prompts;
+    if (Array.isArray(loaderTemplates)) templates = [...templates, ...loaderTemplates];
+  } catch {
+    // Keep the session-provided templates when the loader is unavailable.
+  }
+  for (const template of templates) {
+    append(readSlashCommand(template, "prompt"));
+  }
+
+  let skills: unknown[] = [];
+  try {
+    const value = resourceLoader?.getSkills?.().skills ?? session.resourceLoader?.getSkills?.().skills;
+    if (Array.isArray(value)) skills = value;
+  } catch {
+    // Skill discovery is optional for older/custom resource loaders.
+  }
+  for (const skill of skills) {
+    const command = readSlashCommand(skill, "skill");
+    if (!command) continue;
+    append({
+      ...command,
+      name: command.name.startsWith("skill:") ? command.name : `skill:${command.name}`,
+    });
+  }
+
+  return commands;
+}
+
+function readSlashCommand(
+  value: unknown,
+  source: SlashCommandSummary["source"],
+): SlashCommandSummary | null {
+  if (!isRecord(value)) return null;
+  const rawName = source === "extension" ? value.invocationName ?? value.name : value.name;
+  if (typeof rawName !== "string") return null;
+  const name = rawName.trim();
+  if (
+    name.length === 0 ||
+    name.length > MAX_COMMAND_NAME_CHARS ||
+    /[\r\n\0\s/]/.test(name)
+  ) {
+    return null;
+  }
+  const description =
+    typeof value.description === "string"
+      ? value.description.trim().slice(0, MAX_COMMAND_DESCRIPTION_CHARS)
+      : "";
+  const argumentHint =
+    typeof value.argumentHint === "string"
+      ? value.argumentHint.trim().slice(0, MAX_COMMAND_DESCRIPTION_CHARS)
+      : undefined;
+  return {
+    name,
+    description,
+    source,
+    ...(argumentHint ? { argumentHint } : {}),
+  };
 }
 
 function normalizeRuntimePath(path: string): string {
@@ -1197,6 +1319,18 @@ export class PiSessionRuntime implements SessionRuntime {
         return listResourcesFromLoader(loader, cwd, this.agentDir);
       } catch (error) {
         throw mapRuntimeError(error, "RESOURCE_LIST_FAILED", "无法读取 Pi 资源与技能");
+      }
+    });
+  }
+
+  async listCommands(sessionId: string): Promise<SlashCommandSummary[]> {
+    this.ensureOpen();
+    return measurePerformance(this.diagnostics, "command.list", "total", async () => {
+      const managed = this.requireSession(sessionId);
+      try {
+        return listCommandsFromSession(managed.session, managed.resourceLoader);
+      } catch (error) {
+        throw mapRuntimeError(error, "COMMAND_LIST_FAILED", "无法读取当前 Pi 命令清单");
       }
     });
   }

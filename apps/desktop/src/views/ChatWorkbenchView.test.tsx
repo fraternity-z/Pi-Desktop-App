@@ -9,6 +9,7 @@ import {
   createAgentSession,
   deleteAgentSessions,
   installAgentPackage,
+  listAgentCommands,
   listAgentModels,
   listAgentPackages,
   listAgentResources,
@@ -80,6 +81,7 @@ vi.mock("../ipc/agent", () => ({
   createAgentSession: vi.fn(),
   deleteAgentSessions: vi.fn(),
   installAgentPackage: vi.fn(),
+  listAgentCommands: vi.fn(),
   listAgentModels: vi.fn(),
   listAgentPackages: vi.fn(),
   listAgentResources: vi.fn(),
@@ -244,6 +246,7 @@ describe("ChatWorkbenchView", () => {
       { provider: "openai", id: "gpt", name: "GPT", reasoning: true },
       { provider: "anthropic", id: "claude", name: "Claude", reasoning: true },
     ]);
+    vi.mocked(listAgentCommands).mockReset().mockResolvedValue([]);
     vi.mocked(configureAgentSession).mockReset().mockResolvedValue(defaultSession.configuration);
     vi.mocked(promptAgent).mockReset().mockImplementation(() => new Promise<number>(() => {}));
     vi.mocked(abortAgent).mockReset().mockResolvedValue(undefined);
@@ -381,6 +384,51 @@ describe("ChatWorkbenchView", () => {
     expect(screen.getAllByText("已完成").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("失败").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+  });
+
+  it("发送内置 slash 命令执行桌面动作，运行时命令仍交给 Pi", async () => {
+    vi.mocked(listAgentCommands).mockResolvedValueOnce([
+      { name: "review", description: "审查变更", source: "extension" },
+    ]);
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    await addProject("C:\\work");
+    const composer = await screen.findByLabelText("发送给 Pi 的消息");
+
+    fireEvent.change(composer, { target: { value: "/settings" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    expect(await screen.findByRole("heading", { name: "设置" })).toBeInTheDocument();
+    expect(promptAgent).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "返回会话工作台" }));
+    const chatComposer = await screen.findByLabelText("发送给 Pi 的消息");
+    fireEvent.change(chatComposer, { target: { value: "/review" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(promptAgent).toHaveBeenCalledWith("s-1", "/review", undefined, defaultToolNames));
+  });
+
+  it("运行时命令优先于旧版内置别名", async () => {
+    vi.mocked(listAgentCommands).mockResolvedValueOnce([
+      { name: "models", description: "运行时模型命令", source: "extension" },
+    ]);
+    vi.mocked(promptAgent).mockResolvedValueOnce(1);
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    await addProject("C:\\work");
+    const composer = await screen.findByLabelText("发送给 Pi 的消息");
+
+    fireEvent.change(composer, { target: { value: "建立会话" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(promptAgent).toHaveBeenCalledWith("s-1", "建立会话", undefined, defaultToolNames));
+    act(() => emitAgentEvent?.(agentEvent("agent.settled", undefined, 1)));
+    await waitFor(() => expect(listAgentCommands).toHaveBeenCalledWith("s-1"));
+
+    const liveComposer = await screen.findByLabelText("发送给 Pi 的消息");
+    fireEvent.change(liveComposer, { target: { value: "/models" } });
+    expect(await screen.findByTestId("composer-slash-item")).toHaveTextContent("/models");
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => expect(promptAgent).toHaveBeenCalledWith("s-1", "/models", undefined, defaultToolNames));
   });
 
   it("保存粘贴图片并通过 SDK images 参数发送", async () => {

@@ -27,7 +27,11 @@ import { QuickPreview } from "../components/QuickPreview";
 import { RightPanel, type RightPanelTabId } from "../components/RightPanel";
 import { RuntimeStatusControl } from "../components/RuntimeStatusControl";
 import { SettingsSidebar, type SettingsSectionId } from "../components/SettingsSidebar";
-import type { PromptStreamingBehavior } from "../ipc/agent";
+import {
+  listAgentCommands,
+  type AgentSlashCommand,
+  type PromptStreamingBehavior,
+} from "../ipc/agent";
 import {
   selectAttachmentDirectory,
   selectAttachmentFiles,
@@ -65,6 +69,11 @@ import {
 import { useRightPanelLayout, useRightPanelVisibility } from "../stores/useRightPanelLayout";
 import { useSidebarPreferences } from "../stores/useSidebarPreferences";
 import { useToolPermissions } from "../stores/useToolPermissions";
+import {
+  buildComposerCommandCatalog,
+  parseSlashLine,
+  type ComposerCommand,
+} from "../components/composerCommands";
 import { PackageManagerView, ResourcesView } from "./EcosystemViews";
 import { SettingsView } from "./SettingsView";
 import appIconUrl from "../../../../src-tauri/icons/64x64.png";
@@ -109,6 +118,11 @@ export function ChatWorkbenchView() {
   const [pastedImagePaths, setPastedImagePaths] = useState<string[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [branchName, setBranchName] = useState<string | null>(null);
+  const [slashCommands, setSlashCommands] = useState<AgentSlashCommand[]>([]);
+  const [slashCommandsPhase, setSlashCommandsPhase] = useState<
+    "idle" | "loading" | "ready" | "error"
+  >("idle");
+  const [slashCommandsError, setSlashCommandsError] = useState<string | null>(null);
   const messagesEnd = useRef<HTMLDivElement>(null);
   const conversationScroll = useRef<HTMLDivElement>(null);
   const shouldStickToBottom = useRef(true);
@@ -214,6 +228,35 @@ export function ChatWorkbenchView() {
       void session.loadCatalogs();
     }
   }, [eventChannelReady, runtimeReady, session.catalogPhase, session.loadCatalogs]);
+
+  useEffect(() => {
+    const sessionId = session.sessionId;
+    if (!runtimeReady || !eventChannelReady || !sessionId || sessionId.startsWith("draft:")) {
+      setSlashCommands([]);
+      setSlashCommandsPhase("idle");
+      setSlashCommandsError(null);
+      return;
+    }
+    let cancelled = false;
+    setSlashCommands([]);
+    setSlashCommandsPhase("loading");
+    setSlashCommandsError(null);
+    void listAgentCommands(sessionId)
+      .then((commands) => {
+        if (cancelled) return;
+        setSlashCommands(commands);
+        setSlashCommandsPhase("ready");
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setSlashCommands([]);
+        setSlashCommandsPhase("error");
+        setSlashCommandsError(formatCommandError(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [eventChannelReady, runtimeReady, session.sessionId]);
 
   useEffect(() => {
     if (activeView !== "packages" && activeView !== "resources") {
@@ -432,13 +475,17 @@ export function ChatWorkbenchView() {
 
   function sendPrompt(event?: FormEvent, behavior?: PromptStreamingBehavior) {
     event?.preventDefault();
-    if (!canSend) {
-      return;
-    }
     const prompt = draft;
     const imagePaths = pastedImagePaths;
     const imagePathSet = new Set(imagePaths);
     const attachedPaths = attachments.filter((path) => !imagePathSet.has(path));
+    if (attachedPaths.length === 0 && imagePaths.length === 0 && runBuiltinCommand(prompt)) {
+      resetComposerInput();
+      return;
+    }
+    if (!canSend) {
+      return;
+    }
     shouldStickToBottom.current = true;
     setAtConversationBottom(true);
     setDraft("");
@@ -456,6 +503,76 @@ export function ChatWorkbenchView() {
           setPastedImagePaths((current) => normalizeAttachedPaths([...imagePaths, ...current]));
         }
       });
+  }
+
+  function runBuiltinCommand(prompt: string): boolean {
+    const parsed = parseSlashLine(prompt);
+    if (!parsed) return false;
+    const normalizedName = parsed.name.toLocaleLowerCase("en-US");
+    const catalog = buildComposerCommandCatalog(slashCommands);
+    // Runtime commands may intentionally use a name that is also a legacy
+    // built-in alias, so an exact registration always wins over aliasing.
+    const exactCommand = catalog.find(
+      (item) => item.name.toLocaleLowerCase("en-US") === normalizedName,
+    );
+    const aliasName =
+      normalizedName === "models"
+        ? "model"
+        : normalizedName === "keybindings"
+          ? "hotkeys"
+          : normalizedName;
+    const canonicalName = exactCommand ? normalizedName : aliasName;
+    const command =
+      exactCommand ??
+      catalog.find((item) => item.name.toLocaleLowerCase("en-US") === canonicalName);
+    if (!command || command.source !== "builtin") return false;
+
+    switch (canonicalName) {
+      case "new":
+        void createConversation();
+        return true;
+      case "settings":
+        openSettings();
+        return true;
+      case "session":
+        session.cancelAutoRestore();
+        setSidebarOpen(true);
+        return true;
+      case "name":
+        if (session.sessionId && parsed.args) {
+          sidebarPreferences.setThreadAlias(session.sessionId, parsed.args);
+        }
+        setSidebarOpen(true);
+        return true;
+      case "packages":
+        openEcosystem("packages");
+        return true;
+      case "resources":
+        openEcosystem("resources");
+        return true;
+      case "reload":
+        void runtime.refresh();
+        return true;
+      case "hotkeys":
+        session.cancelAutoRestore();
+        setSettingsSection("behavior");
+        setActiveView("settings");
+        closeSidebarAfterNavigation();
+        return true;
+      case "model": {
+        const separator = parsed.args.indexOf("/");
+        if (separator > 0 && separator < parsed.args.length - 1) {
+          const provider = parsed.args.slice(0, separator).trim();
+          const id = parsed.args.slice(separator + 1).trim();
+          if (provider && id) void session.updateModel(provider, id);
+        } else {
+          openSettings();
+        }
+        return true;
+      }
+      default:
+        return false;
+    }
   }
 
   function resetComposerInput() {
@@ -890,6 +1007,9 @@ export function ChatWorkbenchView() {
                   availableTools={toolPermissions.availableTools}
                   selectedToolNames={toolPermissions.selectedToolNames}
                   defaultToolNames={toolPermissions.defaultToolNames}
+                  slashCommands={slashCommands as ComposerCommand[]}
+                  slashCommandsPhase={slashCommandsPhase}
+                  slashCommandsError={slashCommandsError}
                   onDraftChange={setDraft}
                   onProjectChange={(cwd) => void createSession(cwd)}
                   onAddProject={openProjectDialog}
@@ -1281,6 +1401,20 @@ function formatAttachmentError(error: unknown): string {
     return `${error.code}: ${error.message}`;
   }
   return "CLIPBOARD_IMAGE_SAVE_FAILED: 无法保存剪贴板图片，请重试";
+}
+
+function formatCommandError(error: unknown): string {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    "message" in error &&
+    typeof error.code === "string" &&
+    typeof error.message === "string"
+  ) {
+    return `${error.code}: ${error.message}`;
+  }
+  return "COMMAND_LIST_FAILED: 无法读取当前命令，请稍后重试";
 }
 
 function isNarrowViewport(): boolean {

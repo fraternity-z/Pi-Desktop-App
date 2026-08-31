@@ -5964,6 +5964,104 @@ body {
   justify-self: start;
 }
 
+.composer-slash-menu {
+  width: min(560px, calc(100vw - 16px));
+  padding: 7px;
+}
+
+.composer-suggest-scroll {
+  max-height: 346px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.composer-suggest-group + .composer-suggest-group {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid #d7e1e0;
+}
+
+.composer-suggest-group-label {
+  padding: 6px 9px 4px;
+  color: #899493;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.composer-menu .composer-suggest-item {
+  display: grid;
+  min-height: 46px;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+}
+
+.composer-suggest-item[data-active="true"],
+.composer-suggest-item:not(:disabled):hover {
+  background: #e4f3f0;
+  color: #253332;
+}
+
+.composer-suggest-icon {
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  color: #5e8c86;
+}
+
+.composer-suggest-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.composer-suggest-name,
+.composer-suggest-description,
+.composer-suggest-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-suggest-name {
+  color: inherit;
+  font-size: 13px;
+  font-weight: 560;
+}
+
+.composer-suggest-description {
+  color: #80908f;
+  font-size: 11px;
+}
+
+.composer-suggest-hint {
+  max-width: 160px;
+  color: #899493;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+}
+
+.composer-suggest-state {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin: 0;
+  padding: 6px 8px;
+  color: #899694;
+  font-size: 12px;
+  text-align: center;
+}
+
+.composer-suggest-state-error {
+  color: #ad4b43;
+}
+
 @media (max-width: 760px) {
   .composer-dock {
     width: 100%;
@@ -5979,6 +6077,18 @@ body {
 
   .composer-project-trigger {
     max-width: min(220px, 52vw);
+  }
+
+  .composer-slash-menu {
+    width: min(560px, calc(100vw - 16px));
+  }
+
+  .composer-menu .composer-suggest-item {
+    grid-template-columns: 22px minmax(0, 1fr);
+  }
+
+  .composer-suggest-hint {
+    display: none;
   }
 
   .composer-environment-chip:last-child {
@@ -6646,6 +6756,10 @@ body,
   border-color: var(--line);
 }
 
+.composer-suggest-group + .composer-suggest-group {
+  border-color: var(--line);
+}
+
 .composer-menu-group > p,
 .composer-menu-title,
 .composer-resources-title {
@@ -6656,8 +6770,25 @@ body,
   color: var(--text);
 }
 
+.composer-suggest-group-label,
+.composer-suggest-description,
+.composer-suggest-hint,
+.composer-suggest-state {
+  color: var(--muted);
+}
+
+.composer-suggest-icon {
+  color: var(--success);
+}
+
 .composer-menu button:not(:disabled):hover,
 .composer-menu button[aria-checked="true"] {
+  background: var(--selected);
+  color: var(--text);
+}
+
+.composer-suggest-item[data-active="true"],
+.composer-suggest-item:not(:disabled):hover {
   background: var(--selected);
   color: var(--text);
 }

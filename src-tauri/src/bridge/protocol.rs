@@ -5,6 +5,9 @@ use crate::error::AppError;
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 pub const MAX_TOOL_DISPLAY_CHARS: usize = 120_000;
+pub const MAX_COMMANDS: usize = 512;
+pub const MAX_COMMAND_NAME_CHARS: usize = 128;
+pub const MAX_COMMAND_DESCRIPTION_CHARS: usize = 1_024;
 pub const THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -127,6 +130,16 @@ pub struct ResourceSummary {
     pub name: String,
     pub path: String,
     pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SlashCommandSummary {
+    pub name: String,
+    pub description: String,
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argument_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -555,6 +568,32 @@ pub(crate) fn valid_session_configuration(configuration: &SessionConfiguration) 
         && valid_tool_selection(&configuration.default_tool_names, &available_names)
 }
 
+pub(crate) fn valid_slash_command(command: &SlashCommandSummary) -> bool {
+    let name = command.name.as_str();
+    let description = command.description.as_str();
+    let argument_hint_valid = command
+        .argument_hint
+        .as_deref()
+        .is_none_or(|hint| hint.chars().count() <= MAX_COMMAND_DESCRIPTION_CHARS);
+    matches!(command.source.as_str(), "extension" | "prompt" | "skill")
+        && !name.trim().is_empty()
+        && name.chars().count() <= MAX_COMMAND_NAME_CHARS
+        && !name.contains(['\r', '\n', '\0', ' ', '\t'])
+        && !name.contains('/')
+        && description.chars().count() <= MAX_COMMAND_DESCRIPTION_CHARS
+        && argument_hint_valid
+}
+
+pub(crate) fn valid_slash_commands(commands: &[SlashCommandSummary]) -> bool {
+    if commands.len() > MAX_COMMANDS {
+        return false;
+    }
+    let mut names = std::collections::HashSet::new();
+    commands.iter().all(|command| {
+        valid_slash_command(command) && names.insert(command.name.to_ascii_lowercase())
+    })
+}
+
 fn valid_context_usage(usage: &ContextUsage) -> bool {
     usage.context_window > 0 && usage.percent.is_finite() && (0.0..=100.0).contains(&usage.percent)
 }
@@ -801,6 +840,32 @@ mod tests {
             validate_frame_size(&"x".repeat(MAX_FRAME_BYTES + 1)).expect_err("超大帧必须被拒绝");
 
         assert_eq!(error.code, "BRIDGE_FRAME_TOO_LARGE");
+    }
+
+    #[test]
+    fn validates_slash_command_contract() {
+        let valid = SlashCommandSummary {
+            name: "review".to_owned(),
+            description: "审查变更".to_owned(),
+            source: "extension".to_owned(),
+            argument_hint: Some("[path]".to_owned()),
+        };
+        assert!(valid_slash_command(&valid));
+        assert!(valid_slash_commands(std::slice::from_ref(&valid)));
+
+        let duplicate = SlashCommandSummary {
+            source: "prompt".to_owned(),
+            ..valid.clone()
+        };
+        assert!(!valid_slash_commands(&[valid.clone(), duplicate]));
+
+        let mut invalid_name = valid.clone();
+        invalid_name.name = "bad/name".to_owned();
+        assert!(!valid_slash_command(&invalid_name));
+
+        let mut invalid_source = valid;
+        invalid_source.source = "builtin".to_owned();
+        assert!(!valid_slash_command(&invalid_source));
     }
 
     #[test]

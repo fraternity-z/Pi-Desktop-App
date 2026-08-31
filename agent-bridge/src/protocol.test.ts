@@ -172,6 +172,10 @@ describe("parseRequest", () => {
       JSON.stringify({ v: 1, id: "r-13", op: "resource.list", cwd: "C:\\work" }),
       { v: 1, id: "r-13", op: "resource.list", cwd: "C:\\work" },
     ],
+    [
+      JSON.stringify({ v: 1, id: "r-14", op: "command.list", sessionId: "s-1" }),
+      { v: 1, id: "r-14", op: "command.list", sessionId: "s-1" },
+    ],
   ])("解析受支持的请求 %s", (line, expected) => {
     expect(parseRequest(line)).toEqual(expected);
   });
@@ -247,6 +251,14 @@ describe("parseRequest", () => {
       "INVALID_REQUEST",
       '{"v":1,"id":"r-1","op":"package.set-enabled","cwd":"C:\\\\work","source":"npm:test","scope":"global","enabled":"yes"}',
     ],
+    [
+      "INVALID_REQUEST",
+      '{"v":1,"id":"r-1","op":"command.list","sessionId":""}',
+    ],
+    [
+      "INVALID_REQUEST",
+      '{"v":1,"id":"r-1","op":"command.list","sessionId":"s-1\\nnext"}',
+    ],
   ])("对无效输入返回稳定错误码 %s", (code, line) => {
     expect(() => parseRequest(line)).toThrowError(
       expect.objectContaining<Partial<ProtocolError>>({ code }),
@@ -309,6 +321,7 @@ describe("outbound frames", () => {
         "resources",
         "context-usage",
         "images",
+        "commands",
       ],
     });
   });

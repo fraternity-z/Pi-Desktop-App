@@ -19,7 +19,8 @@ use crate::{
         AgentModel, AgentSessionSummary, BridgeEvent, BridgeHello, BridgeResponse, CreatedSession,
         DeleteSessionsResult, PROTOCOL_VERSION, PackageScope, PackageSummary, PackageUpdateInfo,
         PromptStreamingBehavior, RequestHeaderSettings, ResourceSummary, SessionConfiguration,
-        parse_hello_frame, valid_session_configuration, validate_event, validate_frame_size,
+        SlashCommandSummary, parse_hello_frame, valid_session_configuration,
+        valid_slash_commands, validate_event, validate_frame_size,
     },
     error::AppError,
 };
@@ -430,6 +431,34 @@ impl BridgeSupervisor {
             "Bridge resource.list 响应字段无效",
             self.response_timeout,
         )
+    }
+
+    pub fn list_commands(&self, session_id: &str) -> Result<Vec<SlashCommandSummary>, AppError> {
+        let data = self
+            .request(
+                "command.list",
+                json!({"sessionId": session_id}),
+                self.response_timeout,
+            )?
+            .ok_or_else(|| {
+                AppError::new(
+                    "BRIDGE_COMMAND_LIST_INVALID",
+                    "Bridge command.list 响应缺少命令数据",
+                )
+            })?;
+        let commands: Vec<SlashCommandSummary> = serde_json::from_value(data).map_err(|_| {
+            AppError::new(
+                "BRIDGE_COMMAND_LIST_INVALID",
+                "Bridge command.list 响应字段无效",
+            )
+        })?;
+        if !valid_slash_commands(&commands) {
+            return Err(AppError::new(
+                "BRIDGE_COMMAND_LIST_INVALID",
+                "Bridge command.list 返回了无效或重复的命令",
+            ));
+        }
+        Ok(commands)
     }
 
     fn package_mutation(
@@ -1498,7 +1527,12 @@ fn sanitize_bridge_diagnostic(line: &str) -> Option<String> {
     let operation = object.get("operation")?.as_str()?;
     if !matches!(
         operation,
-        "startup" | "model.runtime" | "session.create" | "session.open" | "resource.list"
+        "startup"
+            | "model.runtime"
+            | "session.create"
+            | "session.open"
+            | "resource.list"
+            | "command.list"
     ) {
         return None;
     }
@@ -1797,6 +1831,10 @@ mod tests {
             r#"PI_BRIDGE_DIAGNOSTIC {"event":"performance","operation":"prompt","phase":"total","durationMs":1,"outcome":"ok"}"#,
         )
         .is_none());
+        assert!(sanitize_bridge_diagnostic(
+            r#"PI_BRIDGE_DIAGNOSTIC {"event":"performance","operation":"command.list","phase":"total","durationMs":12,"outcome":"ok"}"#,
+        )
+        .is_some());
     }
 
     #[test]
@@ -2431,6 +2469,58 @@ mod tests {
                 json!({"v": 1, "id": "rust-4", "op": "resource.list", "cwd": r"C:\work"}),
             ]
         );
+    }
+
+    #[test]
+    fn sends_and_validates_command_list_request() {
+        let transport = MockTransport::new([
+            Ok(HELLO),
+            Ok(
+                r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":[{"name":"review","description":"审查变更","source":"extension","argumentHint":"[path]"}]}"#,
+            ),
+        ]);
+        let writes = transport.writes.clone();
+        let supervisor = connect(transport);
+
+        let commands = supervisor
+            .list_commands("s-1")
+            .expect("command.list 应返回类型化命令");
+
+        assert_eq!(
+            commands,
+            vec![SlashCommandSummary {
+                name: "review".to_owned(),
+                description: "审查变更".to_owned(),
+                source: "extension".to_owned(),
+                argument_hint: Some("[path]".to_owned()),
+            }]
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&writes.lock().unwrap()[0]).unwrap(),
+            json!({
+                "v": 1,
+                "id": "rust-1",
+                "op": "command.list",
+                "sessionId": "s-1"
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_command_list_response() {
+        let transport = MockTransport::new([
+            Ok(HELLO),
+            Ok(
+                r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":[{"name":"review","description":"one","source":"extension"},{"name":"REVIEW","description":"two","source":"prompt"}]}"#,
+            ),
+        ]);
+        let supervisor = connect(transport);
+
+        let error = supervisor
+            .list_commands("s-1")
+            .expect_err("重复命令名必须被拒绝");
+
+        assert_eq!(error.code, "BRIDGE_COMMAND_LIST_INVALID");
     }
 
     #[test]

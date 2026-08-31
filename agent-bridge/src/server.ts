@@ -78,6 +78,11 @@ export class BridgeServer {
         case "resource.list":
           data = await this.runtime.listResources(request.cwd);
           break;
+        case "command.list":
+          data = this.runtime.listCommands
+            ? await this.runtime.listCommands(request.sessionId)
+            : [];
+          break;
         case "request-headers.configure":
           data = this.runtime.configureRequestHeaders({
             enabled: request.enabled,

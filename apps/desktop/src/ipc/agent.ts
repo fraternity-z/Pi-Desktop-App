@@ -156,6 +156,15 @@ export interface AgentResourceSummary {
   source?: string;
 }
 
+export type AgentSlashCommandSource = "extension" | "prompt" | "skill";
+
+export interface AgentSlashCommand {
+  name: string;
+  description: string;
+  source: AgentSlashCommandSource;
+  argumentHint?: string;
+}
+
 export interface AgentEvent {
   v: 1;
   kind: "event";
@@ -287,6 +296,10 @@ export async function checkAgentPackageUpdates(cwd: string): Promise<AgentPackag
 
 export async function listAgentResources(cwd: string): Promise<AgentResourceSummary[]> {
   return invoke<AgentResourceSummary[]>("agent_list_resources", { cwd });
+}
+
+export async function listAgentCommands(sessionId: string): Promise<AgentSlashCommand[]> {
+  return invoke<AgentSlashCommand[]>("agent_list_commands", { sessionId });
 }
 
 export async function configureAgentSession(

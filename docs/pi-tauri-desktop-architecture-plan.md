@@ -2,11 +2,11 @@
 
 **文档状态**：方案草案  
 **日期**：2026-08-18  
-**产品定位**：用桌面 GUI 替代官方 Pi TUI，同时复用用户已经安装的官方 Pi 包、Node.js 环境和 Pi 用户目录。
+**产品定位**：用桌面 GUI 替代官方 Pi TUI，优先使用应用提供的独立 Pi 运行时，并在缺失或不兼容时复用用户的官方 Pi 包、Node.js 环境和 Pi 用户目录。
 
 ## 1. 执行摘要
 
-本项目不应被设计成重新分发 Pi 运行时的便携版 Agent。产品的主要职责是提供桌面 UI、会话管理、扩展 UI 适配和桌面级配置；Pi SDK、模型调用、工具执行和用户扩展仍由用户安装的官方 Pi 包负责。
+本项目不应在 Renderer 中重新实现 Pi Agent Runtime。产品的主要职责是提供桌面 UI、会话管理、扩展 UI 适配和桌面级配置；Pi SDK、模型调用、工具执行和用户扩展仍由通过统一校验流程加载的官方 Pi 包负责。
 
 推荐架构：
 
@@ -22,11 +22,13 @@
             |
             | JSONL over stdin/stdout
             v
-    用户 Node.js + 应用内置 pi-bridge.mjs
+    应用独立 Node.js + 应用独立 Pi SDK
+            或
+    用户 Node.js + 用户安装的官方 Pi SDK
             |
-            | dynamic import
+            | dynamic import（统一 Bridge）
             v
-    用户安装的官方 Pi SDK
+    应用内置 pi-bridge.mjs
             |
             v
     ~/.pi/agent
@@ -34,7 +36,7 @@
 核心决策：
 
 1. Pi npm 包只作为 Bridge 的运行时依赖，不作为 Tauri Renderer 依赖。
-2. 默认使用用户已安装的 Node.js 和官方 Pi 包。
+2. 默认优先使用应用提供的独立 Node/Pi 包；包不可用时回退到用户已安装的 Node.js 和官方 Pi 包。
 3. 应用内置一个很薄的 pi-bridge.mjs，不默认打包完整 Node/Pi runtime。
 4. Rust 是桌面应用的控制平面和安全边界；Pi Bridge 是领域运行时。
 5. 默认复用 ~/.pi/agent，保持与官方 CLI 的会话、配置、模型登录和扩展兼容。
@@ -52,7 +54,7 @@
 - 拥有可用的 ~/.pi/agent。
 - 可能已经安装 Pi 扩展。
 
-标准安装包应尽量小，不应重复分发用户已经安装的 Pi 包。
+标准安装包可携带经过签名和校验的独立候选；未携带或候选不可用时，不应阻止用户复用已经安装的 Pi 包。
 
 ### 2.2 目标
 
@@ -68,7 +70,7 @@
 
 - 重写 Pi Agent Runtime。
 - 在 Rust/WASM 中实现 Pi 核心。
-- 默认打包完整 Node.js、Python 和 Pi runtime。
+- 在源码仓库中静态提交完整 Node.js、Python 和 Pi runtime；发行包是否携带独立候选由发布配置决定。
 - 通过解析 ANSI 终端输出实现完整桌面 UI。
 - 在后台静默执行 npm install -g ...@latest。
 
@@ -104,7 +106,9 @@ Pix 的核心架构是：
 - 使用事件序号检测丢失事件。
 - 运行时和 CLI 资源提取到用户可写目录，而不是修改只读安装包。
 
-本项目应采用 Pix 的 global SDK 思路；Pix 的 managed Node/Python runtime 作为未来 fallback，不作为标准安装路径。
+本项目沿用 Pix 的来源校验、隔离和回退思路；内置独立 Node/SDK 作为默认候选，
+用户 global/local SDK 作为可配置回退。Pix 的 managed Node/Python runtime 仍可作为未来
+更完整的受管 generation，但不在本变更中静默安装或升级。
 
 ### 3.2 pi-app
 
@@ -153,7 +157,7 @@ pi-app 的进程边界是：
         ↕ JSONL over stdin/stdout
     pi-bridge.mjs
         ↕ dynamic import
-    用户安装的官方 Pi SDK
+    已选中的官方 Pi SDK（内置候选优先，或用户本地候选）
         ↕
     ~/.pi/agent
 
@@ -171,7 +175,7 @@ Rust 只把用户操作转换为固定的高层 Pi 命令，不透传任意 shel
 
 ### 4.3 Pi Bridge
 
-负责使用用户 Node.js、加载官方 Pi SDK、创建和恢复 Session、模型调用、工具执行、扩展加载，以及把 Pi 事件转换为桌面协议。
+负责使用已选中的 Node.js、加载官方 Pi SDK、创建和恢复 Session、模型调用、工具执行、扩展加载，以及把 Pi 事件转换为桌面协议。
 
 Rust 不应重新实现 Pi Agent Runtime。
 
@@ -179,15 +183,26 @@ Rust 不应重新实现 Pi Agent Runtime。
 
 ### 5.1 发现优先级
 
-1. 用户显式配置的 nodePath 和 sdkPath。
-2. 用户显式配置的 piCommand。
-3. PATH 中的 pi/pi.cmd。
-4. 由 pi 可执行文件推导出的 Node 和包路径。
+默认 `builtin` 模式按以下顺序尝试：
+
+1. 应用资源目录或环境变量指定的独立 Node + 官方 SDK。
+2. 用户显式配置的 nodePath + sdkPath。
+3. 用户显式配置的 piCommand。
+4. PATH 中的 pi/pi.cmd，以及由命令推导出的 Node 和包路径。
 5. npm、pnpm、Volta、fnm 等包管理器的全局目录。
-6. 用户选择的项目级安装。
-7. 可选的受管 runtime fallback。
+
+`local` 模式将第 1 项放到最后，其余本地发现顺序不变；每个候选都失败时返回结构化错误。
 
 不要无条件扫描任意项目的 node_modules。项目级 SDK 必须由用户明确选择。
+
+当前实现将运行时来源作为持久化偏好（`runtimeMode`）处理：
+
+- `builtin`（默认）先校验应用资源目录或 `PI_DESKTOP_BUILTIN_NODE_PATH` /
+  `PI_DESKTOP_BUILTIN_SDK_ROOT` 指定的独立 Node 与官方 SDK，失败后回退到本地发现。
+- `local` 先按显式 `nodePath` + `sdkPath`、显式 `piCommand`、PATH 中的 Pi 命令发现，
+  失败后仍可回退到有效的内置候选。
+- 两种来源都必须通过同一套绝对路径、官方包身份、入口和版本校验；不会自动安装或修改用户包。
+- 内置候选缺失时应用仍进入可用界面，并显示可操作的运行时状态，后台按有限次数重试。
 
 ### 5.2 启动参数
 
@@ -213,13 +228,14 @@ Rust 在握手阶段检查协议版本、Node 主版本、Pi SDK 版本、必需
 
 ## 6. Node.js 和 Pi runtime 策略
 
-### 6.1 默认模式：系统 Node + 官方 Pi
+### 6.1 默认模式：内置优先，系统 Node + 官方 Pi 回退
 
-标准安装模式是：
+标准安装模式优先使用应用资源中的独立运行时；发行包未携带独立 Node/SDK 时，自动使用本地安装：
 
-    用户 Node.js
-      + 用户安装的官方 Pi 包
-      + 应用内置 pi-bridge.mjs
+    应用独立 Node.js + 应用独立官方 Pi 包
+      或
+    用户 Node.js + 用户安装的官方 Pi 包
+      + 应用内置 pi-bridge.mjs（两种模式共用）
 
 优点：
 
@@ -407,7 +423,7 @@ Bridge 脱敏和截断的展示载荷：`tool.started.data.input` 表示调用�
 
     {
       "schemaVersion": 1,
-      "runtimeMode": "system",
+      "runtimeMode": "builtin",
       "nodePath": null,
       "sdkPath": null,
       "piCommand": null,
@@ -466,9 +482,9 @@ Rust 使用结构化 tracing，收集 Bridge 的 stderr：
 
 ## 13. Tauri 配置和启动示意
 
-### 13.1 标准模式：系统 Node
+### 13.1 标准模式：内置优先，系统 Node 回退
 
-标准模式不需要把完整 Pi runtime 放进 externalBin。Bridge 可作为应用资源，由 Rust 使用检测到的 Node 启动。
+标准模式优先从应用资源目录加载独立 Node/官方 Pi SDK；缺失或校验失败时，Bridge 由 Rust 使用检测到的系统 Node 和官方 Pi SDK 启动。完整受管 runtime 仍不需要放进 externalBin。
 
 示意配置：
 
@@ -491,14 +507,13 @@ Rust 使用结构化 tracing，收集 Bridge 的 stderr：
 
 Rust 伪代码：
 
-    let node_path = discover_node(&settings)?;
     let bridge_path = resolve_resource("pi-bridge.mjs")?;
-    let sdk_root = discover_pi_sdk(&settings)?;
+    let runtime = resolve_runtime(&settings)?;
 
-    let child = std::process::Command::new(node_path)
+    let child = std::process::Command::new(runtime.node_path)
         .arg(bridge_path)
         .arg("--sdk-root")
-        .arg(sdk_root)
+        .arg(runtime.sdk_root)
         .arg("--agent-dir")
         .arg(agent_dir)
         .arg("--stdio")
@@ -543,7 +558,7 @@ Pi 版本由用户的 npm/pnpm/其他官方包管理器管理。App 可以显示
 
 ## 15. 集成方案对比
 
-| 维度 | 系统官方包（默认） | 内置完整 runtime | 按需下载 runtime |
+| 维度 | 内置优先 + 本地回退（默认） | 内置完整 runtime | 按需下载 runtime |
 |---|---|---|---|
 | 安装包体积 | 最小 | 较大 | 初始最小 |
 | 启动速度 | 启动 Node 并加载 SDK | 无需查找环境，但可能解压 | 首次最慢 |
@@ -561,7 +576,7 @@ Pi 版本由用户的 npm/pnpm/其他官方包管理器管理。App 可以显示
 
 - 编写 pi-bridge.mjs。
 - 支持 hello、session、prompt、stream、abort、shutdown。
-- 使用系统 Node。
+- 验证内置候选，并验证系统 Node + 官方 Pi 回退。
 - 先用命令行模拟 Rust 调用。
 
 验收：能连接用户安装的官方 Pi SDK，能创建会话、流式输出和取消；不兼容时返回结构化错误。
@@ -608,11 +623,11 @@ Pi 版本由用户的 npm/pnpm/其他官方包管理器管理。App 可以显示
 
 ## 18. 关键架构决策
 
-### ADR-001：默认使用系统官方 Pi 包
+### ADR-001：内置运行时优先并保留本地回退
 
-**决定**：标准模式使用用户已安装的官方 Pi 包和 Node.js。  
-**原因**：产品定位是 TUI 替代品；用户环境和 CLI 已经存在，重复打包会增加体积和更新复杂度。  
-**代价**：需要运行时发现和版本兼容矩阵。
+**决定**：标准模式优先使用校验过的内置独立 Node/SDK；缺失或不兼容时回退到用户已安装的官方 Pi 包和 Node.js。
+**原因**：独立候选可减少本地环境差异和启动失败；本地回退保留与官方 CLI 的兼容性。
+**代价**：发行包需要管理独立候选的供应链和体积，同时仍需维护本地发现与版本兼容矩阵。
 
 ### ADR-002：使用 Node Bridge，不在 Renderer 加载 Pi SDK
 
@@ -628,7 +643,7 @@ Pi 版本由用户的 npm/pnpm/其他官方包管理器管理。App 可以显示
 
 ### ADR-004：保留受管 runtime 作为可选模式
 
-**决定**：未来支持不依赖系统 Node 的 fallback，但不作为标准模式。  
+**决定**：未来支持包含完整 Node/Pi 的受管 fallback，但不替代当前的内置候选 + 本地回退标准模式。
 **原因**：兼顾便携版、企业部署和离线场景，同时不增加普通用户的默认包体积。
 
 ## 19. 参考资料

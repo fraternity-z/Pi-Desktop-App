@@ -4,9 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   getArchitectureStatus,
+  getRuntimeSettings,
   getRuntimeStatus,
   listenToRuntimeStatus,
   restartRuntime,
+  setRuntimeMode,
 } from "./system";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -98,5 +100,49 @@ describe("getRuntimeStatus", () => {
 
     expect(handler).toHaveBeenCalledOnce();
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ status: "starting" }));
+  });
+});
+
+describe("runtime settings", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  const settings = {
+    schemaVersion: 1,
+    runtimeMode: "builtin" as const,
+    nodePath: null,
+    sdkPath: null,
+    piCommand: null,
+    agentDir: "~/.pi/agent",
+    supportedSdkRange: ">=0.83 <0.86",
+    telemetry: false,
+  };
+
+  it("读取并校验持久化的运行时来源", async () => {
+    vi.mocked(invoke).mockResolvedValue(settings);
+
+    await expect(getRuntimeSettings()).resolves.toEqual(settings);
+    expect(invoke).toHaveBeenCalledWith("get_runtime_settings");
+  });
+
+  it("切换运行时来源时只发送允许的模式并校验响应", async () => {
+    const localSettings = { ...settings, runtimeMode: "local" as const };
+    vi.mocked(invoke).mockResolvedValue(localSettings);
+
+    await expect(setRuntimeMode("local")).resolves.toEqual(localSettings);
+    expect(invoke).toHaveBeenCalledWith("set_runtime_mode", { mode: "local" });
+  });
+
+  it("拒绝结构不完整的运行时设置", async () => {
+    vi.mocked(invoke).mockResolvedValue({ ...settings, runtimeMode: "unknown" });
+
+    await expect(getRuntimeSettings()).rejects.toThrow("RUNTIME_SETTINGS_INVALID");
+  });
+
+  it("拒绝不兼容的运行时设置 schema", async () => {
+    vi.mocked(invoke).mockResolvedValue({ ...settings, schemaVersion: 2 });
+
+    await expect(getRuntimeSettings()).rejects.toThrow("RUNTIME_SETTINGS_INVALID");
   });
 });

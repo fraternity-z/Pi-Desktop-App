@@ -47,6 +47,7 @@ describe("RuntimeStatusControl", () => {
     expect(screen.getByRole("status", { name: "状态异常" })).toHaveClass(
       "runtime-status-icon-error",
     );
+    expect(screen.getByTitle("RUNTIME_NOT_FOUND: 未找到可用运行时")).toBeInTheDocument();
   });
 
   it("检测或连接期间显示单个加载图标", () => {

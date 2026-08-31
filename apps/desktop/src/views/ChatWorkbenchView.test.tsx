@@ -41,7 +41,14 @@ import {
   gitUnstage,
 } from "../ipc/git";
 import { getRequestHeaderSettings, updateRequestHeaderSettings } from "../ipc/settings";
-import { getRuntimeStatus, listenToRuntimeStatus, restartRuntime } from "../ipc/system";
+import {
+  getRuntimeSettings,
+  getRuntimeStatus,
+  listenToRuntimeStatus,
+  restartRuntime,
+  setRuntimeMode,
+  type RuntimeStatus,
+} from "../ipc/system";
 import {
   createWorkspaceWorktree,
   ensureConversationWorkspace,
@@ -126,9 +133,11 @@ vi.mock("../ipc/settings", async (importOriginal) => ({
   updateRequestHeaderSettings: vi.fn(),
 }));
 vi.mock("../ipc/system", () => ({
+  getRuntimeSettings: vi.fn(),
   getRuntimeStatus: vi.fn(),
   listenToRuntimeStatus: vi.fn(),
   restartRuntime: vi.fn(),
+  setRuntimeMode: vi.fn(),
 }));
 vi.mock("../ipc/workspace", () => ({
   createWorkspaceWorktree: vi.fn(),
@@ -188,15 +197,44 @@ const defaultSession: AgentSession = {
 
 describe("ChatWorkbenchView", () => {
   let emitAgentEvent: ((event: AgentEvent) => void) | undefined;
+  let emitRuntimeStatus: ((status: RuntimeStatus) => void) | undefined;
+  let runtimeUnlisten: Mock<() => void>;
   let unlisten: Mock<() => void>;
 
   beforeEach(() => {
     window.localStorage.clear();
     emitAgentEvent = undefined;
+    emitRuntimeStatus = undefined;
+    runtimeUnlisten = vi.fn<() => void>();
     unlisten = vi.fn<() => void>();
     vi.mocked(getRuntimeStatus).mockReset().mockResolvedValue(readyRuntime);
     vi.mocked(restartRuntime).mockReset().mockResolvedValue(readyRuntime);
-    vi.mocked(listenToRuntimeStatus).mockReset().mockResolvedValue(vi.fn());
+    vi.mocked(getRuntimeSettings).mockReset().mockResolvedValue({
+      schemaVersion: 1,
+      runtimeMode: "builtin",
+      nodePath: null,
+      sdkPath: null,
+      piCommand: null,
+      agentDir: "~/.pi/agent",
+      supportedSdkRange: ">=0.83 <0.86",
+      telemetry: false,
+    });
+    vi.mocked(setRuntimeMode).mockReset().mockResolvedValue({
+      schemaVersion: 1,
+      runtimeMode: "builtin",
+      nodePath: null,
+      sdkPath: null,
+      piCommand: null,
+      agentDir: "~/.pi/agent",
+      supportedSdkRange: ">=0.83 <0.86",
+      telemetry: false,
+    });
+    vi.mocked(listenToRuntimeStatus)
+      .mockReset()
+      .mockImplementation(async (handler) => {
+        emitRuntimeStatus = handler;
+        return runtimeUnlisten;
+      });
     vi.mocked(getRequestHeaderSettings)
       .mockReset()
       .mockResolvedValue({ enabled: false, client: "claude-code" });
@@ -608,6 +646,66 @@ describe("ChatWorkbenchView", () => {
         .getAllByRole("button", { name: "添加项目" })
         .every((button) => button.hasAttribute("disabled")),
     ).toBe(true);
+  });
+
+  it("运行时恢复后自动重新加载目录和模型，不需要刷新页面", async () => {
+    const unavailableRuntime: RuntimeStatus = {
+      status: "unavailable",
+      runtimeSource: null,
+      piVersion: null,
+      nodeVersion: null,
+      error: { code: "RUNTIME_NOT_FOUND", message: "Pi 尚未启动" },
+    };
+    vi.mocked(getRuntimeStatus).mockImplementation(() => new Promise(() => undefined));
+    render(<ChatWorkbenchView />);
+
+    await waitFor(() => expect(emitRuntimeStatus).toBeDefined());
+    act(() => emitRuntimeStatus?.(unavailableRuntime));
+    await waitFor(() => expect(screen.getByText("RUNTIME_NOT_FOUND: Pi 尚未启动")).toBeInTheDocument());
+    expect(listAgentSessions).not.toHaveBeenCalled();
+
+    act(() => emitRuntimeStatus?.(readyRuntime));
+
+    await waitFor(() => {
+      expect(listAgentSessions).toHaveBeenCalled();
+      expect(listAgentModels).toHaveBeenCalled();
+    });
+  });
+
+  it("目录同步暂时失败时自动退避重试，不需要刷新页面", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(listAgentSessions)
+        .mockRejectedValueOnce({
+          code: "SESSION_LIST_TEMPORARY",
+          message: "Pi 会话目录暂时不可用",
+        })
+        .mockResolvedValueOnce([]);
+
+      render(<ChatWorkbenchView />);
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(listAgentSessions).toHaveBeenCalledOnce();
+      await vi.waitFor(() =>
+        expect(screen.getByText("SESSION_LIST_TEMPORARY: Pi 会话目录暂时不可用")).toBeInTheDocument(),
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_500);
+      });
+      await vi.waitFor(() => expect(listAgentSessions).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() =>
+        expect(
+          screen.queryByText("SESSION_LIST_TEMPORARY: Pi 会话目录暂时不可用"),
+        ).not.toBeInTheDocument(),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("展示结构化会话错误并在卸载时解绑事件", async () => {

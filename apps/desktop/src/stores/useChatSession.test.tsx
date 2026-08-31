@@ -819,6 +819,74 @@ describe("useChatSession", () => {
     expect(result.current.phase).toBe("ready");
   });
 
+  it("Bridge 重启后接受从 1 重新开始的事件序号", async () => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:\\work"));
+    let resolvePrompt: ((finalSequence: number) => void) | undefined;
+    vi.mocked(promptAgent).mockImplementationOnce(
+      () =>
+        new Promise<number>((resolve) => {
+          resolvePrompt = resolve;
+        }),
+    );
+    act(() => {
+      void result.current.sendPrompt("重启后继续");
+    });
+    await waitFor(() => expect(promptAgent).toHaveBeenCalled());
+
+    act(() => {
+      emit?.({ ...event("agent.started"), seq: 1 });
+      emit?.({ ...event("message.delta", { delta: "旧进度" }), seq: 2 });
+    });
+    await waitFor(() => expect(result.current.messages.at(-1)?.content).toBe("旧进度"));
+
+    act(() => {
+      emit?.({ ...event("message.delta", { delta: "新进度" }), seq: 1 });
+    });
+
+    await waitFor(() => expect(result.current.messages.at(-1)?.content).toBe("旧进度新进度"));
+    expect(result.current.error ?? "").not.toContain("AGENT_EVENT_SEQUENCE_GAP");
+    await act(async () => resolvePrompt?.(1));
+  });
+
+  it("旧 Bridge 只发送一个事件时也能接受新 Bridge 的首帧", async () => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:\\work"));
+    vi.mocked(promptAgent).mockImplementationOnce(() => new Promise<number>(() => {}));
+    act(() => {
+      void result.current.sendPrompt("单事件重启");
+      emit?.({ ...event("agent.started"), seq: 1 });
+    });
+    await waitFor(() => expect(result.current.phase).toBe("streaming"));
+
+    act(() => {
+      emit?.({ ...event("message.delta", { delta: "恢复" }), seq: 1 });
+    });
+
+    await waitFor(() => expect(result.current.messages.at(-1)?.content).toBe("恢复"));
+  });
+
+  it("运行时恢复后重新打开当前持久化会话", async () => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+
+    await act(() =>
+      result.current.openSession({ ...savedSummary, lifecycle: "persisted" }),
+    );
+    expect(result.current.sessionPath).toBe(savedSummary.path);
+    vi.mocked(openAgentSession).mockClear();
+
+    let reconnected = false;
+    await act(async () => {
+      reconnected = await result.current.reconnectActiveSession();
+    });
+    expect(reconnected).toBe(true);
+    expect(openAgentSession).toHaveBeenCalledOnce();
+    expect(openAgentSession).toHaveBeenCalledWith(savedSummary.path);
+  });
+
   it("将同一帧内的高频文本增量合并为一次渲染发布", async () => {
     let frameCallback: FrameRequestCallback | undefined;
     const requestFrame = vi.fn((callback: FrameRequestCallback) => {

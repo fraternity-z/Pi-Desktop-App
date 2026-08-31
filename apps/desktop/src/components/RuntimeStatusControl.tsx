@@ -29,9 +29,15 @@ export function RuntimeStatusControl({ runtime, eventConnection }: RuntimeStatus
   const runtimeReady = runtime.phase === "ready" && runtime.status.status === "ready";
   const connectionReady = eventConnection === "ready";
   const ready = runtimeReady && connectionReady;
+  const errorDetail =
+    runtime.phase === "error"
+      ? runtime.message
+      : runtime.phase === "ready" && runtime.status.error
+        ? `${runtime.status.error.code}: ${runtime.status.error.message}`
+        : "状态异常";
   const detail = ready
     ? `状态正常：Pi ${runtime.status.piVersion ?? "ready"} · Node ${runtime.status.nodeVersion ?? "ready"}`
-    : "状态异常";
+    : errorDetail;
 
   return (
     <span

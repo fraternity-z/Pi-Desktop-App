@@ -94,6 +94,10 @@ const EMPTY_RIGHT_PANEL_FILE_STATE: RightPanelFileLoadState = {
   error: null,
 };
 
+// Catalog reads are independent from the runtime health probe. Retry a
+// transient SDK response failure without keeping the startup path blocked.
+const CATALOG_RETRY_DELAYS_MS = [1_500, 3_000, 5_000] as const;
+
 export function ChatWorkbenchView() {
   const runtime = useRuntimeStatus();
   const session = useChatSession();
@@ -146,6 +150,13 @@ export function ChatWorkbenchView() {
     EMPTY_RIGHT_PANEL_FILE_STATE,
   );
   const [localCodeComments, setLocalCodeComments] = useState(readLocalCodeComments);
+  const runtimeAvailability = useRef({
+    runtimeReady: false,
+    eventChannelReady: false,
+    initialized: false,
+  });
+  const catalogRetryAttempt = useRef(0);
+  const catalogRetryTimer = useRef<number | null>(null);
   const activeRightPanelFile = rightPanelTab === "file"
     ? fileTab
     : rightPanelTab === "preview"
@@ -179,6 +190,18 @@ export function ChatWorkbenchView() {
     (draft.trim().length > 0 || attachments.length > 0);
   const lastMessage = session.messages.at(-1);
   const conversationRevision = `${session.messages.length}:${lastMessage?.id ?? ""}:${lastMessage?.content.length ?? 0}:${lastMessage?.status ?? ""}`;
+
+  const clearCatalogRetry = useCallback(() => {
+    if (catalogRetryTimer.current === null) return;
+    window.clearTimeout(catalogRetryTimer.current);
+    catalogRetryTimer.current = null;
+  }, []);
+
+  const reloadCatalogs = useCallback(() => {
+    catalogRetryAttempt.current = 0;
+    clearCatalogRetry();
+    return session.loadCatalogs();
+  }, [clearCatalogRetry, session.loadCatalogs]);
 
   const scheduleConversationScroll = useCallback(
     (behavior: ScrollBehavior = "auto", replacePending = false) => {
@@ -224,10 +247,65 @@ export function ChatWorkbenchView() {
   }, [sidebarWidth]);
 
   useEffect(() => {
-    if (runtimeReady && eventChannelReady && session.catalogPhase === "idle") {
-      void session.loadCatalogs();
+    const previouslyInitialized = runtimeAvailability.current.initialized;
+    const becameAvailable =
+      runtimeReady &&
+      eventChannelReady &&
+      previouslyInitialized &&
+      (!runtimeAvailability.current.runtimeReady ||
+        !runtimeAvailability.current.eventChannelReady);
+    runtimeAvailability.current = { runtimeReady, eventChannelReady, initialized: true };
+    if (
+      runtimeReady &&
+      eventChannelReady &&
+      (session.catalogPhase === "idle" || becameAvailable)
+    ) {
+      const catalogTask = reloadCatalogs();
+      if (becameAvailable) {
+        void catalogTask.then(
+          () => session.reconnectActiveSession(),
+          () => undefined,
+        );
+      }
     }
-  }, [eventChannelReady, runtimeReady, session.catalogPhase, session.loadCatalogs]);
+  }, [
+    eventChannelReady,
+    runtimeReady,
+    session.catalogPhase,
+    reloadCatalogs,
+    session.reconnectActiveSession,
+  ]);
+
+  useEffect(() => {
+    if (!runtimeReady || !eventChannelReady) {
+      catalogRetryAttempt.current = 0;
+      clearCatalogRetry();
+      return;
+    }
+    if (session.catalogPhase === "ready") {
+      catalogRetryAttempt.current = 0;
+      clearCatalogRetry();
+      return;
+    }
+    if (session.catalogPhase !== "error" || catalogRetryTimer.current !== null) return;
+
+    const delay = CATALOG_RETRY_DELAYS_MS[catalogRetryAttempt.current];
+    if (delay === undefined) return;
+    catalogRetryAttempt.current += 1;
+    catalogRetryTimer.current = window.setTimeout(() => {
+      catalogRetryTimer.current = null;
+      if (!runtimeReady || !eventChannelReady || session.catalogPhase !== "error") return;
+      void session.loadCatalogs();
+    }, delay);
+  }, [
+    clearCatalogRetry,
+    eventChannelReady,
+    runtimeReady,
+    session.catalogPhase,
+    session.loadCatalogs,
+  ]);
+
+  useEffect(() => () => clearCatalogRetry(), [clearCatalogRetry]);
 
   useEffect(() => {
     const sessionId = session.sessionId;
@@ -797,7 +875,7 @@ export function ChatWorkbenchView() {
           onCreateWorktree={createWorkspaceWorktree}
           onOpenCreatedWorktree={openCreatedWorktree}
           onSelectSession={(selected) => void openSession(selected)}
-          onRefresh={() => void session.loadCatalogs()}
+          onRefresh={() => void reloadCatalogs()}
           onOpenPackages={() => openEcosystem("packages")}
           onOpenResources={() => openEcosystem("resources")}
           onOpenSettings={openSettings}
@@ -912,7 +990,7 @@ export function ChatWorkbenchView() {
               <div className="inline-alert inline-alert-secondary" role="alert">
                 <AlertTriangle size={17} />
                 <span>{session.catalogError}</span>
-                <button type="button" onClick={() => void session.loadCatalogs()}>
+                <button type="button" onClick={() => void reloadCatalogs()}>
                   <RefreshCw size={15} />
                   重试同步
                 </button>
@@ -1023,7 +1101,7 @@ export function ChatWorkbenchView() {
                     setPastedImagePaths((current) => current.filter((item) => item !== path));
                     setAttachmentError(null);
                   }}
-                  onRetryModels={() => void session.loadCatalogs()}
+                  onRetryModels={() => void reloadCatalogs()}
                   onPrepareConfiguration={session.prepareConfiguration}
                   onModelChange={(provider, id) => void session.updateModel(provider, id)}
                   onThinkingLevelChange={(level) => void session.updateThinkingLevel(level)}

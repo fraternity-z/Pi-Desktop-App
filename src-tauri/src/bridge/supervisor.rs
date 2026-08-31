@@ -19,8 +19,8 @@ use crate::{
         AgentModel, AgentSessionSummary, BridgeEvent, BridgeHello, BridgeResponse, CreatedSession,
         DeleteSessionsResult, PROTOCOL_VERSION, PackageScope, PackageSummary, PackageUpdateInfo,
         PromptStreamingBehavior, RequestHeaderSettings, ResourceSummary, SessionConfiguration,
-        SlashCommandSummary, parse_hello_frame, valid_session_configuration,
-        valid_slash_commands, validate_event, validate_frame_size,
+        SlashCommandSummary, parse_hello_frame, valid_session_configuration, valid_slash_commands,
+        validate_event, validate_frame_size,
     },
     error::AppError,
 };
@@ -179,10 +179,18 @@ impl BridgeSupervisor {
         &self,
         settings: &RequestHeaderSettings,
     ) -> Result<(), AppError> {
+        self.configure_request_headers_with_timeout(settings, self.response_timeout)
+    }
+
+    pub(crate) fn configure_request_headers_with_timeout(
+        &self,
+        settings: &RequestHeaderSettings,
+        timeout: Duration,
+    ) -> Result<(), AppError> {
         let fields = serde_json::to_value(settings)
             .map_err(|_| AppError::new("BRIDGE_REQUEST_INVALID", "无法序列化请求头客户端配置"))?;
         let data = self
-            .request("request-headers.configure", fields, self.response_timeout)?
+            .request("request-headers.configure", fields, timeout)?
             .ok_or_else(|| {
                 AppError::new(
                     "BRIDGE_REQUEST_HEADERS_INVALID",
@@ -623,6 +631,10 @@ impl BridgeSupervisor {
     }
 
     pub fn shutdown(&self) -> Result<(), AppError> {
+        self.shutdown_with_timeout(self.response_timeout)
+    }
+
+    pub(crate) fn shutdown_with_timeout(&self, timeout: Duration) -> Result<(), AppError> {
         let mut closed = self
             .closed
             .lock()
@@ -634,11 +646,7 @@ impl BridgeSupervisor {
         drop(closed);
 
         let response = self
-            .request_inner(
-                "shutdown",
-                json!({}),
-                RequestTimeoutPolicy::Soft(self.response_timeout),
-            )
+            .request_inner("shutdown", json!({}), RequestTimeoutPolicy::Soft(timeout))
             .map(|_| ());
         let stopped = self.stop_worker();
         response.and(stopped)
@@ -1716,6 +1724,23 @@ mod tests {
                 "client": "codex"
             })
         );
+    }
+
+    #[test]
+    fn request_header_sync_honors_a_bounded_startup_timeout() {
+        let supervisor = connect(MockTransport::new([Ok(HELLO)]));
+        let settings = RequestHeaderSettings {
+            enabled: true,
+            client: crate::bridge::protocol::RequestHeaderClient::Codex,
+        };
+        let started = Instant::now();
+
+        let error = supervisor
+            .configure_request_headers_with_timeout(&settings, Duration::from_millis(20))
+            .expect_err("无响应时请求头同步应超时");
+
+        assert_eq!(error.code, "BRIDGE_TIMEOUT");
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

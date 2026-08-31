@@ -5,7 +5,11 @@ pub mod error;
 mod image;
 pub mod storage;
 
-use std::sync::Arc;
+use std::{
+    env,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use tauri::{Emitter, Manager, path::BaseDirectory};
 
@@ -15,9 +19,94 @@ use crate::{
         runtime::{BridgeRuntime, RuntimeStatusSink},
         supervisor::{BridgeEventSink, BridgeFaultSink},
     },
+    discovery::{RuntimeDiscoveryOptions, RuntimeMode, RuntimeSelectionOptions},
     error::AppError,
-    storage::{RequestHeaderSettingsStore, WorkspaceStore},
+    storage::{AppSettings, AppSettingsStore, RequestHeaderSettingsStore, WorkspaceStore},
 };
+
+fn runtime_selection(settings: &AppSettings, bridge_script: &Path) -> RuntimeSelectionOptions {
+    let resource_dir = bridge_script.parent().unwrap_or_else(|| Path::new("."));
+    let resource_root = resource_dir.parent().unwrap_or(resource_dir);
+    let builtin_sdk_root = env::var_os("PI_DESKTOP_BUILTIN_SDK_ROOT")
+        .map(PathBuf::from)
+        .or_else(|| {
+            [
+                resource_dir
+                    .join("pi-sdk")
+                    .join("node_modules")
+                    .join("@earendil-works")
+                    .join("pi-coding-agent"),
+                resource_dir
+                    .join("pi-runtime")
+                    .join("node_modules")
+                    .join("@earendil-works")
+                    .join("pi-coding-agent"),
+                resource_dir
+                    .join("node_modules")
+                    .join("@earendil-works")
+                    .join("pi-coding-agent"),
+                resource_root
+                    .join("pi-sdk")
+                    .join("node_modules")
+                    .join("@earendil-works")
+                    .join("pi-coding-agent"),
+                resource_root
+                    .join("runtimes")
+                    .join("node_modules")
+                    .join("@earendil-works")
+                    .join("pi-coding-agent"),
+                resource_root
+                    .join("app.asar.unpacked")
+                    .join("node_modules")
+                    .join("@earendil-works")
+                    .join("pi-coding-agent"),
+            ]
+            .into_iter()
+            .find(|candidate| candidate.is_dir())
+        });
+    let builtin_node_path = env::var_os("PI_DESKTOP_BUILTIN_NODE_PATH")
+        .map(PathBuf::from)
+        .or_else(|| {
+            let name = if cfg!(windows) { "node.exe" } else { "node" };
+            [
+                resource_dir.join("pi-runtime").join(name),
+                resource_dir.join("pi-runtime").join("bin").join(name),
+                resource_dir.join("node").join(name),
+                resource_root.join("runtimes").join("node").join(name),
+                resource_root
+                    .join("runtimes")
+                    .join("node")
+                    .join("bin")
+                    .join(name),
+                resource_root.join("node").join(name),
+            ]
+            .into_iter()
+            .find(|candidate| candidate.is_file())
+        });
+    let mode = RuntimeMode::parse(&settings.runtime_mode).unwrap_or_default();
+    RuntimeSelectionOptions {
+        mode,
+        builtin_node_path,
+        builtin_sdk_root,
+        local: RuntimeDiscoveryOptions {
+            node_path: settings
+                .node_path
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .map(PathBuf::from),
+            sdk_root: settings
+                .sdk_path
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .map(PathBuf::from),
+            pi_command: settings
+                .pi_command
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .map(PathBuf::from),
+        },
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -29,6 +118,8 @@ pub fn run() {
                 .path()
                 .app_config_dir()
                 .map_err(|error| error.to_string())?;
+            let app_settings_store = AppSettingsStore::new(config_dir.clone());
+            let app_settings = app_settings_store.state();
             let request_header_store = RequestHeaderSettingsStore::new(config_dir.clone());
             let request_header_settings = request_header_store.state();
             let event_app = app.handle().clone();
@@ -47,12 +138,14 @@ pub fn run() {
                 .path()
                 .resolve("resources/pi-bridge/pi-bridge.mjs", BaseDirectory::Resource)
                 .map(|path| {
-                    BridgeRuntime::initialize_with_sinks(
+                    let selection = runtime_selection(&app_settings, &path);
+                    BridgeRuntime::initialize_with_sinks_and_selection(
                         path,
                         event_sink,
                         fault_sink,
                         status_sink,
                         request_header_settings.clone(),
+                        selection,
                     )
                 })
                 .unwrap_or_else(|_| {
@@ -62,6 +155,7 @@ pub fn run() {
                     )
                 });
             app.manage(runtime);
+            app.manage(app_settings_store);
             let warmup_app = app.handle().clone();
             let _ = tauri::async_runtime::spawn_blocking(move || {
                 warmup_app.state::<BridgeRuntime>().warm_up()
@@ -102,6 +196,8 @@ pub fn run() {
             commands::runtime::agent_prompt,
             commands::runtime::agent_clear_queue,
             commands::runtime::agent_abort,
+            commands::settings::get_runtime_settings,
+            commands::settings::set_runtime_mode,
             commands::settings::get_request_header_settings,
             commands::settings::update_request_header_settings,
             commands::updates::check_for_updates,

@@ -683,7 +683,11 @@ function RuntimeSettings({
         ? "检测失败"
         : runtime.status.status === "ready"
           ? "可用"
-          : "不可用";
+          : runtime.status.status === "starting"
+            ? "连接中"
+            : "不可用";
+  const runtimeMode = runtime.runtimeMode ?? "builtin";
+  const modeBusy = runtime.runtimeSettingsPhase === "loading";
 
   return (
     <SettingsSection
@@ -726,6 +730,26 @@ function RuntimeSettings({
         }
       />
       <SettingsRow
+        title="Pi SDK 包源"
+        description="默认使用应用内置包；不可用时自动回退到本地包。切换后会在后台重启 Bridge。"
+        control={
+          <SettingsSelect
+            label="Pi SDK 包源"
+            value={runtimeMode}
+            options={[
+              { value: "builtin", label: "内置独立包" },
+              { value: "local", label: "本地包" },
+            ]}
+            disabled={modeBusy || typeof runtime.setRuntimeMode !== "function"}
+            onChange={(value) => {
+              if (value === "builtin" || value === "local") {
+                void runtime.setRuntimeMode?.(value).catch(() => undefined);
+              }
+            }}
+          />
+        }
+      />
+      <SettingsRow
         title="事件连接"
         control={
           <SettingsStatus
@@ -739,6 +763,11 @@ function RuntimeSettings({
       {runtime.phase === "ready" && runtime.status.error && (
         <p className="settings-runtime-error">
           {runtime.status.error.code}: {runtime.status.error.message}
+        </p>
+      )}
+      {runtime.runtimeSettingsError && (
+        <p className="settings-runtime-error" role="alert">
+          {runtime.runtimeSettingsError}
         </p>
       )}
     </SettingsSection>

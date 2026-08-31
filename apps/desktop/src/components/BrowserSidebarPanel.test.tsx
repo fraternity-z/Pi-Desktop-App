@@ -191,7 +191,9 @@ describe("BrowserSidebarPanel", () => {
 
   it("自动打开失败时显示可定位错误", async () => {
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(rectFor(520));
-    vi.mocked(openBrowserSidebar).mockRejectedValueOnce({ message: "原生浏览器不可用" });
+    // Both the layout RAF and the post-layout effect may attempt the initial
+    // open under a busy test runner; every attempt must model the same failure.
+    vi.mocked(openBrowserSidebar).mockRejectedValue({ message: "原生浏览器不可用" });
 
     render(<BrowserSidebarPanel active />);
 

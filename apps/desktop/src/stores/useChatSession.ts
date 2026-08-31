@@ -126,6 +126,7 @@ export interface ChatSessionState {
   contextUsage: ContextUsage | null;
   timer: SessionTimerState | null;
   loadCatalogs: () => Promise<void>;
+  reconnectActiveSession: () => Promise<boolean>;
   cancelAutoRestore: () => void;
   createSession: (cwd: string) => Promise<boolean>;
   createConversation: () => Promise<boolean>;
@@ -183,6 +184,7 @@ export function useChatSession(): ChatSessionState {
   const sessionCatalogRequestId = useRef(0);
   const promptRequests = useRef(new Map<string, number>());
   const materializingDrafts = useRef(new Set<string>());
+  const reconnectingSessionId = useRef<string | null>(null);
   const draftSequence = useRef(1);
   const restoreAttempted = useRef(false);
   const lastConfirmedThinkingLevel = useRef<ThinkingLevel | null>(null);
@@ -418,14 +420,64 @@ export function useChatSession(): ChatSessionState {
     });
   }, [applySessionCatalog, installSession]);
 
+  const reconnectActiveSession = useCallback(async (): Promise<boolean> => {
+    const sessionId = activeSessionIdRef.current;
+    const projection = sessionId ? projectionsRef.current[sessionId] : undefined;
+    const sessionPath = projection?.sessionPath;
+    if (
+      !sessionId ||
+      !projection ||
+      projection.lifecycle === "draft" ||
+      !sessionPath ||
+      eventConnection !== "ready" ||
+      navigationPending
+    ) {
+      return false;
+    }
+    if (reconnectingSessionId.current === sessionId) return false;
+    reconnectingSessionId.current = sessionId;
+    pendingAutoRestore.current?.cancelSchedule();
+    pendingAutoRestore.current = null;
+    setNavigationPending(true);
+    try {
+      const reopened = await openAgentSession(sessionPath);
+      if (activeSessionIdRef.current !== sessionId) return false;
+      installSession(reopened, "persisted", sessionId);
+      return true;
+    } catch (error) {
+      if (activeSessionIdRef.current === sessionId) {
+        setGlobalError(`SESSION_RECONNECT_FAILED: ${formatError(error)}`);
+      }
+      return false;
+    } finally {
+      setNavigationPending(false);
+      if (reconnectingSessionId.current === sessionId) {
+        reconnectingSessionId.current = null;
+      }
+    }
+  }, [eventConnection, installSession, navigationPending]);
+
   refreshSessionsRef.current = scheduleSessionCatalogRefresh;
 
   useEffect(() => {
     let active = true;
     let unlisten: (() => void) | undefined;
     setEventConnection("connecting");
+    // A listener retry may follow a Bridge restart, so the next process can
+    // legitimately start its sequence at any value we have not observed.
+    lastEventSequence.current = 0;
     listenToAgentEvents((event) => {
-      if (!active || event.seq <= lastEventSequence.current) return;
+      if (!active) return;
+      // Bridge event sequences are scoped to a process. A restarted Bridge
+      // starts at 1 again; accept that first frame so the renderer does not
+      // require a page refresh to resume updates.
+      if (event.seq <= lastEventSequence.current) {
+        if (event.seq === 1 && lastEventSequence.current > 0) {
+          lastEventSequence.current = 0;
+        } else {
+          return;
+        }
+      }
       const expected = lastEventSequence.current + 1;
       lastEventSequence.current = event.seq;
       if (event.seq !== expected) {
@@ -945,6 +997,7 @@ export function useChatSession(): ChatSessionState {
     contextUsage: active?.contextUsage ?? null,
     timer: active ? projectionTimer(active) : null,
     loadCatalogs,
+    reconnectActiveSession,
     cancelAutoRestore,
     createSession,
     createConversation,

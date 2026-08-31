@@ -47,16 +47,25 @@ async function run(): Promise<void> {
       (frame) => process.stdout.write(serializeFrame(frame)),
     );
     server.start();
-    runtime.warmUp();
+    const lines = createInterface({ input: process.stdin, crlfDelay: Number.POSITIVE_INFINITY });
+    const pending = new Set<Promise<void>>();
+
+    // Keep stdin responsive while Pi initializes its model catalog. The hello
+    // frame and ping/health requests must not wait for an optional warm-up.
+    setImmediate(() => {
+      try {
+        runtime.warmUp();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`Pi Bridge warm-up failed: ${message}\n`);
+      }
+    });
     emitPerformanceDiagnostic(
       stderrPerformanceDiagnosticSink,
       "startup",
       "total",
       startupStartedAt,
     );
-
-    const lines = createInterface({ input: process.stdin, crlfDelay: Number.POSITIVE_INFINITY });
-    const pending = new Set<Promise<void>>();
 
     await new Promise<void>((resolve) => {
       lines.on("line", (line) => {

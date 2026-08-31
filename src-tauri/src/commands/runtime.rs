@@ -1,3 +1,8 @@
+use std::{
+    thread,
+    time::{Duration, Instant},
+};
+
 use tauri::{AppHandle, Manager};
 
 use crate::{
@@ -7,12 +12,18 @@ use crate::{
             PackageSummary, PackageUpdateInfo, PromptStreamingBehavior, ResourceSummary,
             SessionConfiguration, SessionConfigurationUpdate, SlashCommandSummary,
         },
-        runtime::{BridgeRuntime, RuntimeSnapshot},
+        runtime::{BridgeRuntime, RestartRequest, RuntimeSnapshot},
     },
     error::AppError,
     image::PROMPT_IMAGE_CACHE_DIR,
     storage::WorkspaceStore,
 };
+
+// A startup can try both runtime sources and retry the Bridge handshake. Keep
+// queued mode switches bounded, but long enough for that entire background
+// sequence to settle before giving up on the queued restart.
+const RESTART_QUEUE_WAIT_TIMEOUT: Duration = Duration::from_secs(4 * 60);
+const RESTART_QUEUE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 #[tauri::command]
 pub async fn get_runtime_status(app: AppHandle) -> Result<RuntimeSnapshot, AppError> {
@@ -21,7 +32,52 @@ pub async fn get_runtime_status(app: AppHandle) -> Result<RuntimeSnapshot, AppEr
 
 #[tauri::command]
 pub async fn restart_runtime(app: AppHandle) -> Result<RuntimeSnapshot, AppError> {
-    run_runtime(app, |_, runtime| Ok(runtime.restart())).await
+    let runtime = app.state::<BridgeRuntime>();
+    let request = runtime.request_restart()?;
+    let snapshot = runtime.snapshot();
+    schedule_runtime_restart(&app, request);
+    Ok(snapshot)
+}
+
+pub(crate) fn schedule_runtime_restart(app: &AppHandle, request: Option<RestartRequest>) {
+    let background_app = app.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        let runtime = background_app.state::<BridgeRuntime>();
+        if let Some(request) = request {
+            runtime.finish_restart(request);
+            return;
+        }
+
+        // A restart requested while the first startup is still running is
+        // queued behind that attempt. Polling is bounded so a broken process
+        // can never leave a detached task alive forever.
+        let deadline = Instant::now() + RESTART_QUEUE_WAIT_TIMEOUT;
+        while Instant::now() < deadline {
+            if runtime.bridge_status() == "starting" {
+                thread::sleep(RESTART_QUEUE_POLL_INTERVAL);
+                continue;
+            }
+            match runtime.request_restart() {
+                Ok(Some(request)) => {
+                    runtime.finish_restart(request);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    eprintln!(
+                        "[pi-runtime] queued restart could not be scheduled (code={})",
+                        error.code
+                    );
+                }
+            }
+            break;
+        }
+        if Instant::now() >= deadline && runtime.bridge_status() == "starting" {
+            eprintln!(
+                "[pi-runtime] queued restart expired after {}s while Bridge was still starting",
+                RESTART_QUEUE_WAIT_TIMEOUT.as_secs()
+            );
+        }
+    });
 }
 
 #[tauri::command]

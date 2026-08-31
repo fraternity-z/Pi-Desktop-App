@@ -12,9 +12,46 @@ const PI_PACKAGE_NAME: &str = "@earendil-works/pi-coding-agent";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeSource {
+    Builtin,
     ExplicitPaths,
     ExplicitPiCommand,
     PathPiCommand,
+}
+
+/// Preferred source for the Pi SDK. The selected source is only a preference:
+/// resolution always falls back to the other source when the preferred one is
+/// unavailable or fails validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeMode {
+    Builtin,
+    Local,
+}
+
+impl Default for RuntimeMode {
+    fn default() -> Self {
+        Self::Builtin
+    }
+}
+
+impl RuntimeMode {
+    pub fn parse(value: &str) -> Result<Self, AppError> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "builtin" | "bundled" => Ok(Self::Builtin),
+            // "system" is kept as a migration alias for the previous config.
+            "local" | "system" | "global" => Ok(Self::Local),
+            _ => Err(AppError::new(
+                "RUNTIME_MODE_INVALID",
+                "运行时来源必须是 builtin 或 local",
+            )),
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Builtin => "builtin",
+            Self::Local => "local",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +67,25 @@ pub struct RuntimeDiscoveryOptions {
     pub node_path: Option<PathBuf>,
     pub sdk_root: Option<PathBuf>,
     pub pi_command: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeSelectionOptions {
+    pub mode: RuntimeMode,
+    pub builtin_node_path: Option<PathBuf>,
+    pub builtin_sdk_root: Option<PathBuf>,
+    pub local: RuntimeDiscoveryOptions,
+}
+
+impl Default for RuntimeSelectionOptions {
+    fn default() -> Self {
+        Self {
+            mode: RuntimeMode::Builtin,
+            builtin_node_path: None,
+            builtin_sdk_root: None,
+            local: RuntimeDiscoveryOptions::default(),
+        }
+    }
 }
 
 pub trait DiscoveryEnvironment {
@@ -125,6 +181,106 @@ pub fn discover_runtime_with(
         "RUNTIME_NOT_FOUND",
         "未找到可用的官方 Pi 运行时；请安装 Pi 或显式配置运行时路径",
     ))
+}
+
+/// Resolve the preferred SDK source and apply the documented fallback order.
+///
+/// `RuntimeDiscoveryOptions` remains unchanged for callers that only need the
+/// historical local discovery API. New callers should use this selector so a
+/// missing bundled package never blocks the application from trying a local
+/// installation (and vice versa).
+pub fn resolve_runtime(options: &RuntimeSelectionOptions) -> Result<RuntimePaths, AppError> {
+    resolve_runtime_with(options, &SystemDiscoveryEnvironment)
+}
+
+pub fn resolve_runtime_with(
+    options: &RuntimeSelectionOptions,
+    environment: &dyn DiscoveryEnvironment,
+) -> Result<RuntimePaths, AppError> {
+    resolve_runtime_candidates_with(options, environment)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::new("RUNTIME_NOT_FOUND", "未找到可用的官方 Pi 运行时"))
+}
+
+/// Resolve both sources in preference order so the caller can fall back when
+/// a valid runtime fails later during process spawn or Bridge handshake.
+pub fn resolve_runtime_candidates(
+    options: &RuntimeSelectionOptions,
+) -> Result<Vec<RuntimePaths>, AppError> {
+    resolve_runtime_candidates_with(options, &SystemDiscoveryEnvironment)
+}
+
+pub fn resolve_runtime_candidates_with(
+    options: &RuntimeSelectionOptions,
+    environment: &dyn DiscoveryEnvironment,
+) -> Result<Vec<RuntimePaths>, AppError> {
+    let mut preferred_error: Option<AppError> = None;
+    let mut fallback_error: Option<AppError> = None;
+    let mut candidates = Vec::with_capacity(2);
+
+    let try_builtin = |error: &mut Option<AppError>| -> Option<RuntimePaths> {
+        let (Some(node_path), Some(sdk_root)) = (
+            options.builtin_node_path.as_ref(),
+            options.builtin_sdk_root.as_ref(),
+        ) else {
+            return None;
+        };
+        let explicit = RuntimeDiscoveryOptions {
+            node_path: Some(node_path.clone()),
+            sdk_root: Some(sdk_root.clone()),
+            pi_command: None,
+        };
+        match discover_runtime_with(&explicit, environment) {
+            Ok(mut paths) => {
+                paths.source = RuntimeSource::Builtin;
+                Some(paths)
+            }
+            Err(cause) => {
+                *error = Some(cause);
+                None
+            }
+        }
+    };
+
+    let try_local = |error: &mut Option<AppError>| -> Option<RuntimePaths> {
+        match discover_runtime_with(&options.local, environment) {
+            Ok(paths) => Some(paths),
+            Err(cause) => {
+                *error = Some(cause);
+                None
+            }
+        }
+    };
+
+    match options.mode {
+        RuntimeMode::Builtin => {
+            if let Some(paths) = try_builtin(&mut preferred_error) {
+                candidates.push(paths);
+            }
+            if let Some(paths) = try_local(&mut fallback_error) {
+                candidates.push(paths);
+            }
+        }
+        RuntimeMode::Local => {
+            if let Some(paths) = try_local(&mut preferred_error) {
+                candidates.push(paths);
+            }
+            if let Some(paths) = try_builtin(&mut fallback_error) {
+                candidates.push(paths);
+            }
+        }
+    }
+    if !candidates.is_empty() {
+        return Ok(candidates);
+    }
+
+    // Keep the preferred error code/message stable for existing callers. When
+    // the preferred source was not configured, expose the local discovery
+    // result instead of manufacturing a misleading built-in error.
+    Err(preferred_error
+        .or(fallback_error)
+        .unwrap_or_else(|| AppError::new("RUNTIME_NOT_FOUND", "未找到可用的官方 Pi 运行时")))
 }
 
 fn discover_from_pi_command(
@@ -534,5 +690,117 @@ mod tests {
         .expect_err("没有候选时必须失败");
 
         assert_eq!(error.code, "RUNTIME_NOT_FOUND");
+    }
+
+    #[test]
+    fn prefers_a_valid_builtin_runtime() {
+        let root = absolute(&["builtin"]);
+        let environment = valid_environment(&root);
+        let sdk_root = root
+            .join("node_modules")
+            .join("@earendil-works")
+            .join("pi-coding-agent");
+        let options = RuntimeSelectionOptions {
+            mode: RuntimeMode::Builtin,
+            builtin_node_path: Some(root.join(&executable_names("node")[0])),
+            builtin_sdk_root: Some(sdk_root.clone()),
+            local: RuntimeDiscoveryOptions::default(),
+        };
+
+        let result = resolve_runtime_with(&options, &environment).expect("内置运行时应优先");
+
+        assert_eq!(result.source, RuntimeSource::Builtin);
+        assert_eq!(result.sdk_root, sdk_root);
+    }
+
+    #[test]
+    fn falls_back_to_local_when_builtin_is_invalid() {
+        let builtin_root = absolute(&["builtin"]);
+        let local_root = absolute(&["local"]);
+        let mut environment = valid_environment(&local_root);
+        let local_pi = local_root.join(pi_command_names()[0]);
+        environment.files.insert(local_pi.clone());
+        environment.path_entries = vec![local_root.clone()];
+        let options = RuntimeSelectionOptions {
+            mode: RuntimeMode::Builtin,
+            builtin_node_path: Some(builtin_root.join(&executable_names("node")[0])),
+            builtin_sdk_root: Some(builtin_root.join("sdk")),
+            local: RuntimeDiscoveryOptions::default(),
+        };
+
+        let result = resolve_runtime_with(&options, &environment).expect("应回退到本地运行时");
+
+        assert_eq!(result.source, RuntimeSource::PathPiCommand);
+        assert_eq!(result.pi_command, Some(local_pi));
+    }
+
+    #[test]
+    fn local_mode_can_fall_back_to_builtin() {
+        let root = absolute(&["builtin"]);
+        let environment = valid_environment(&root);
+        let options = RuntimeSelectionOptions {
+            mode: RuntimeMode::Local,
+            builtin_node_path: Some(root.join(&executable_names("node")[0])),
+            builtin_sdk_root: Some(
+                root.join("node_modules")
+                    .join("@earendil-works")
+                    .join("pi-coding-agent"),
+            ),
+            local: RuntimeDiscoveryOptions::default(),
+        };
+
+        let result = resolve_runtime_with(&options, &environment).expect("应回退到内置运行时");
+
+        assert_eq!(result.source, RuntimeSource::Builtin);
+    }
+
+    #[test]
+    fn returns_preferred_and_fallback_candidates_in_order() {
+        let builtin_root = absolute(&["builtin"]);
+        let local_root = absolute(&["local"]);
+        let mut environment = valid_environment(&builtin_root);
+        let local_environment = valid_environment(&local_root);
+        environment.files.extend(local_environment.files);
+        environment
+            .directories
+            .extend(local_environment.directories);
+        environment.contents.extend(local_environment.contents);
+        let builtin_sdk = builtin_root
+            .join("node_modules")
+            .join("@earendil-works")
+            .join("pi-coding-agent");
+        let local_sdk = local_root
+            .join("node_modules")
+            .join("@earendil-works")
+            .join("pi-coding-agent");
+        let options = RuntimeSelectionOptions {
+            mode: RuntimeMode::Builtin,
+            builtin_node_path: Some(builtin_root.join(&executable_names("node")[0])),
+            builtin_sdk_root: Some(builtin_sdk),
+            local: RuntimeDiscoveryOptions {
+                node_path: Some(local_root.join(&executable_names("node")[0])),
+                sdk_root: Some(local_sdk),
+                pi_command: None,
+            },
+        };
+
+        let candidates = resolve_runtime_candidates_with(&options, &environment)
+            .expect("两种来源都有效时应返回有序候选");
+
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].source, RuntimeSource::Builtin);
+        assert_eq!(candidates[1].source, RuntimeSource::ExplicitPaths);
+    }
+
+    #[test]
+    fn parses_runtime_mode_with_legacy_alias() {
+        assert_eq!(RuntimeMode::parse("builtin"), Ok(RuntimeMode::Builtin));
+        assert_eq!(RuntimeMode::parse("system"), Ok(RuntimeMode::Local));
+        assert_eq!(
+            RuntimeMode::parse("other")
+                .expect_err("未知来源必须被拒绝")
+                .code,
+            "RUNTIME_MODE_INVALID"
+        );
     }
 }

@@ -281,6 +281,36 @@ describe("SettingsView", () => {
     expect(screen.getByRole("button", { name: "打开设置导航" })).toBeInTheDocument();
   });
 
+  it("运行时页面支持切换内置和本地 Pi SDK 包源", async () => {
+    const setRuntimeMode = vi.fn().mockResolvedValue(undefined);
+    render(
+      <SettingsView
+        section="runtime"
+        sidebarOpen
+        sidebarWidth={272}
+        preferences={DEFAULT_APP_PREFERENCES}
+        notifications={readyNotifications()}
+        requestHeaders={readyRequestHeaders()}
+        runtime={{
+          ...readyRuntime,
+          runtimeMode: "builtin",
+          runtimeSettingsPhase: "ready",
+          setRuntimeMode,
+        }}
+        eventConnection="ready"
+        onOpenSidebar={vi.fn()}
+        onBack={vi.fn()}
+        onSidebarWidthChange={vi.fn()}
+        onPreferencesChange={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Pi SDK 包源" }), {
+      target: { value: "local" },
+    });
+    await waitFor(() => expect(setRuntimeMode).toHaveBeenCalledWith("local"));
+  });
+
   it("运行时页面可启停请求头伪装并选择客户端", () => {
     const update = vi.fn().mockResolvedValue(true);
     render(

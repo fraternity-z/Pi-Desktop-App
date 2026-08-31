@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     bridge::{protocol::RequestHeaderSettings, supervisor::normalize_process_path},
+    discovery::RuntimeMode,
     error::AppError,
 };
 
@@ -28,7 +29,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             schema_version: 1,
-            runtime_mode: "system".to_owned(),
+            runtime_mode: RuntimeMode::Builtin.label().to_owned(),
             node_path: None,
             sdk_path: None,
             pi_command: None,
@@ -39,6 +40,7 @@ impl Default for AppSettings {
     }
 }
 
+const APP_SETTINGS_SCHEMA_VERSION: u16 = 1;
 const WORKSPACE_SCHEMA_VERSION: u16 = 1;
 const REQUEST_HEADER_SETTINGS_SCHEMA_VERSION: u16 = 1;
 const MAX_RECENT_WORKSPACES: usize = 12;
@@ -77,6 +79,54 @@ struct RequestHeaderPreferences {
 pub struct RequestHeaderSettingsStore {
     settings_path: PathBuf,
     settings: Mutex<RequestHeaderSettings>,
+}
+
+pub struct AppSettingsStore {
+    settings_path: PathBuf,
+    settings: Mutex<AppSettings>,
+}
+
+impl AppSettingsStore {
+    pub fn new(config_dir: PathBuf) -> Self {
+        let settings_path = config_dir.join("app-settings.json");
+        let settings = read_app_settings(&settings_path);
+        Self {
+            settings_path,
+            settings: Mutex::new(settings),
+        }
+    }
+
+    pub fn state(&self) -> AppSettings {
+        self.settings
+            .lock()
+            .map(|settings| settings.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn set_runtime_mode(&self, mode: RuntimeMode) -> Result<AppSettings, AppError> {
+        let mut current = self
+            .settings
+            .lock()
+            .map_err(|_| AppError::new("APP_SETTINGS_STATE_POISONED", "应用运行时设置锁不可用"))?;
+        let mut next = current.clone();
+        next.runtime_mode = mode.label().to_owned();
+        self.persist(&next)?;
+        *current = next.clone();
+        Ok(next)
+    }
+
+    fn persist(&self, settings: &AppSettings) -> Result<(), AppError> {
+        let parent = self
+            .settings_path
+            .parent()
+            .ok_or_else(|| AppError::new("APP_SETTINGS_PATH_INVALID", "应用运行时设置路径无效"))?;
+        fs::create_dir_all(parent)
+            .map_err(|_| AppError::new("APP_SETTINGS_WRITE_FAILED", "无法创建应用配置目录"))?;
+        let payload = serde_json::to_vec_pretty(settings)
+            .map_err(|_| AppError::new("APP_SETTINGS_WRITE_FAILED", "无法序列化应用运行时设置"))?;
+        fs::write(&self.settings_path, payload)
+            .map_err(|_| AppError::new("APP_SETTINGS_WRITE_FAILED", "无法保存应用运行时设置"))
+    }
 }
 
 impl RequestHeaderSettingsStore {
@@ -315,6 +365,19 @@ fn read_workspace_preferences(path: &Path) -> WorkspacePreferences {
     preferences
 }
 
+fn read_app_settings(path: &Path) -> AppSettings {
+    let mut settings = fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<AppSettings>(&bytes).ok())
+        .filter(|settings| settings.schema_version == APP_SETTINGS_SCHEMA_VERSION)
+        .unwrap_or_default();
+    settings.schema_version = APP_SETTINGS_SCHEMA_VERSION;
+    settings.runtime_mode = RuntimeMode::parse(&settings.runtime_mode)
+        .map(|mode| mode.label().to_owned())
+        .unwrap_or_else(|_| RuntimeMode::default().label().to_owned());
+    settings
+}
+
 fn read_request_header_settings(path: &Path) -> RequestHeaderSettings {
     fs::read(path)
         .ok()
@@ -372,13 +435,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_to_user_managed_runtime_without_telemetry() {
+    fn defaults_to_builtin_runtime_without_telemetry() {
         let settings = AppSettings::default();
 
         assert_eq!(settings.schema_version, 1);
-        assert_eq!(settings.runtime_mode, "system");
+        assert_eq!(settings.runtime_mode, "builtin");
         assert_eq!(settings.agent_dir, "~/.pi/agent");
         assert!(!settings.telemetry);
+    }
+
+    #[test]
+    fn persists_runtime_mode_and_migrates_legacy_system_value() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-desktop-app-settings-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("app-settings.json"),
+            br#"{"schemaVersion":1,"runtimeMode":"system","nodePath":null,"sdkPath":null,"piCommand":null,"agentDir":"~/.pi/agent","supportedSdkRange":">=0.83 <0.86","telemetry":false}"#,
+        )
+        .unwrap();
+        let store = AppSettingsStore::new(root.clone());
+        assert_eq!(store.state().runtime_mode, "local");
+
+        let updated = store.set_runtime_mode(RuntimeMode::Builtin).unwrap();
+        assert_eq!(updated.runtime_mode, "builtin");
+        assert_eq!(
+            AppSettingsStore::new(root.clone()).state().runtime_mode,
+            "builtin"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

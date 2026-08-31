@@ -281,6 +281,14 @@ describe("ChatComposer", () => {
       />,
     );
 
+    const textarea = screen.getByLabelText("发送给 Pi 的消息");
+    const composerFrame = textarea.closest("form");
+    expect(composerFrame).not.toBeNull();
+    const attachmentRegion = composerFrame?.querySelector(".composer-attachment-region");
+    expect(attachmentRegion).not.toBeNull();
+    const frameChildren = Array.from(composerFrame!.children);
+    expect(frameChildren.indexOf(attachmentRegion!)).toBeLessThan(frameChildren.indexOf(textarea));
+
     expect(screen.getByText("main")).toBeInTheDocument();
     const contextMeter = screen.getByRole("meter", { name: "上下文占用量" });
     expect(contextMeter).toHaveAttribute("aria-valuenow", "25");

@@ -562,29 +562,6 @@ export function ChatComposer({
         onSubmit={onSend}
         aria-busy={streaming || configuring}
       >
-        <textarea
-          ref={textareaRef}
-          aria-label="发送给 Pi 的消息"
-          aria-autocomplete="list"
-          aria-controls={slashPanelOpen ? "composer-slash-menu" : undefined}
-          aria-activedescendant={
-            slashPanelOpen && suggestionIndex >= 0
-              ? `composer-slash-item-${suggestionIndex}`
-              : undefined
-          }
-          aria-expanded={slashPanelOpen}
-          value={draft}
-          onChange={(event) => handleDraftChange(event.target.value)}
-          onSelect={updateCaretPosition}
-          onClick={updateCaretPosition}
-          onKeyUp={updateCaretPosition}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          placeholder={streaming ? "继续输入可加入后续队列" : "描述你想构建的内容..."}
-          disabled={disabled}
-          rows={1}
-        />
-
         {(attachments.length > 0 || attachmentError) && (
           <div className="composer-attachment-region">
             {attachments.length > 0 && (
@@ -616,6 +593,29 @@ export function ChatComposer({
             )}
           </div>
         )}
+
+        <textarea
+          ref={textareaRef}
+          aria-label="发送给 Pi 的消息"
+          aria-autocomplete="list"
+          aria-controls={slashPanelOpen ? "composer-slash-menu" : undefined}
+          aria-activedescendant={
+            slashPanelOpen && suggestionIndex >= 0
+              ? `composer-slash-item-${suggestionIndex}`
+              : undefined
+          }
+          aria-expanded={slashPanelOpen}
+          value={draft}
+          onChange={(event) => handleDraftChange(event.target.value)}
+          onSelect={updateCaretPosition}
+          onClick={updateCaretPosition}
+          onKeyUp={updateCaretPosition}
+          onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
+          placeholder={streaming ? "继续输入可加入后续队列" : "描述你想构建的内容..."}
+          disabled={disabled}
+          rows={1}
+        />
 
         <div className="composer-actions">
           <div className="composer-context">

@@ -5460,7 +5460,7 @@ body {
 
 .composer-frame textarea,
 .composer-frame textarea:disabled {
-  min-height: 52px;
+  min-height: 76px;
   max-height: 220px;
   padding: 14px 15px 7px;
   background: transparent;
@@ -5481,13 +5481,14 @@ body {
 .composer-attachment-region {
   display: grid;
   gap: 6px;
-  padding: 0 14px 4px;
+  padding: 10px 14px 4px;
 }
 
 .composer-attachment-list {
   display: flex;
   min-width: 0;
   flex-wrap: wrap;
+  align-items: flex-start;
   gap: 6px;
 }
 
@@ -6101,7 +6102,7 @@ body {
 
   .composer-frame textarea,
   .composer-frame textarea:disabled {
-    min-height: 52px;
+    min-height: 68px;
     padding-inline: 14px;
     font-size: 14px;
   }

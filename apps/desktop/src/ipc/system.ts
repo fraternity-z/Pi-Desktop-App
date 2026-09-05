@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export interface ArchitectureStatus {
   renderer: string;
@@ -45,6 +46,10 @@ export async function getRuntimeStatus(): Promise<RuntimeStatus> {
 
 export async function restartRuntime(): Promise<RuntimeStatus> {
   return invoke<RuntimeStatus>("restart_runtime");
+}
+
+export async function closeAppWindow(): Promise<void> {
+  await getCurrentWindow().close();
 }
 
 export async function getRuntimeSettings(): Promise<RuntimeSettings> {

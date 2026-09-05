@@ -12,6 +12,10 @@ const radiusSection = stylesheet.slice(
 );
 const appearanceStylesMarker = "/* Keep the range row in one column";
 const appearanceStyles = stylesheet.slice(stylesheet.indexOf(appearanceStylesMarker));
+const startupStyles = stylesheet.slice(
+  stylesheet.indexOf(".startup-overlay {"),
+  stylesheet.indexOf(".empty-workspace h2", stylesheet.indexOf(".startup-overlay {")),
+);
 
 function selectorsUsing(declaration: string): Set<string> {
   const selectors = new Set<string>();
@@ -68,6 +72,44 @@ describe("外观设置排版", () => {
     );
     expect(appearanceStyles).toMatch(
       /\.appearance-theme-actions button\s*\{[^}]*font-size:\s*var\(--app-ui-font-size\);/s,
+    );
+  });
+});
+
+describe("启动遮罩动画", () => {
+  it("使用独立于应用缩放的全窗口固定遮罩", () => {
+    expect(startupStyles).toMatch(
+      /\.startup-overlay\s*\{[^}]*position:\s*fixed;[^}]*inset:\s*0;[^}]*width:\s*100vw;[^}]*min-height:\s*100dvh;/s,
+    );
+    expect(startupStyles).toMatch(/\.startup-overlay\s*\{[^}]*contain:\s*paint;/s);
+  });
+
+  it("使用短淡出和局部动效，避免全屏模糊与持续图层提升", () => {
+    expect(startupStyles).toMatch(
+      /\.startup-overlay\s*\{[^}]*transition:\s*opacity var\(--startup-exit-duration, 180ms\)/s,
+    );
+    expect(startupStyles).toMatch(
+      /@keyframes loading-indicator-pulse\s*\{[^}]*opacity:/s,
+    );
+    expect(startupStyles).not.toContain("backdrop-filter");
+    expect(startupStyles).not.toContain("will-change");
+  });
+
+  it("尊重系统和应用的减少动态效果设置", () => {
+    expect(startupStyles).toContain("@media (prefers-reduced-motion: reduce)");
+    expect(startupStyles).toContain(':root[data-reduce-motion="true"] .startup-overlay');
+  });
+
+  it("关闭书写动效或启动结束时仍保留完整笔迹", () => {
+    expect(startupStyles).toMatch(
+      /\.startup-handwriting-stroke\s*\{[^}]*stroke-dashoffset:\s*0;/s,
+    );
+    expect(startupStyles).toMatch(
+      /\.startup-overlay\[data-ready="true"\] \.startup-handwriting-stroke\s*\{\s*animation:\s*none;/s,
+    );
+    expect(startupStyles).toContain('.startup-overlay[data-state="error"] .startup-handwriting-stroke');
+    expect(startupStyles).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)[^{]*\{[^}]*\.startup-overlay \*::after,[^}]*animation:\s*none !important;/s,
     );
   });
 });

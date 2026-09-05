@@ -27,6 +27,7 @@ import { QuickPreview } from "../components/QuickPreview";
 import { RightPanel, type RightPanelTabId } from "../components/RightPanel";
 import { RuntimeStatusControl } from "../components/RuntimeStatusControl";
 import { SettingsSidebar, type SettingsSectionId } from "../components/SettingsSidebar";
+import { StartupOverlay, type StartupStage } from "../components/StartupOverlay";
 import {
   listAgentCommands,
   type AgentSlashCommand,
@@ -37,6 +38,7 @@ import {
   selectAttachmentFiles,
   selectProjectDirectory,
 } from "../ipc/project";
+import { closeAppWindow } from "../ipc/system";
 import {
   createWorkspaceWorktree,
   getWorktreeOptions,
@@ -127,6 +129,8 @@ export function ChatWorkbenchView() {
     "idle" | "loading" | "ready" | "error"
   >("idle");
   const [slashCommandsError, setSlashCommandsError] = useState<string | null>(null);
+  const [startupOverlayVisible, setStartupOverlayVisible] = useState(true);
+  const [startupActionError, setStartupActionError] = useState<string | null>(null);
   const messagesEnd = useRef<HTMLDivElement>(null);
   const conversationScroll = useRef<HTMLDivElement>(null);
   const shouldStickToBottom = useRef(true);
@@ -164,17 +168,7 @@ export function ChatWorkbenchView() {
       : null;
 
   const runtimeReady = runtime.phase === "ready" && runtime.status.status === "ready";
-  const runtimeStarting =
-    runtime.phase === "loading" ||
-    (runtime.phase === "ready" && runtime.status.status === "starting");
   const eventChannelReady = session.eventConnection === "ready";
-  const startupStage = !hasSession
-    ? runtimeStarting
-      ? "runtime"
-      : runtimeReady && session.eventConnection === "connecting"
-        ? "events"
-        : null
-    : null;
   const workspaceName = getWorkspaceName(session.cwd);
   const activeSession = session.sessions.find((item) => item.id === session.sessionId);
   const conversationTitle = activeSession
@@ -822,20 +816,62 @@ export function ChatWorkbenchView() {
   const eventChannelFailed = session.eventConnection === "error";
   const sessionError =
     session.error && !session.error.startsWith("AGENT_EVENT_") ? session.error : null;
+  const startupStage: StartupStage = !runtimeReady
+    ? "runtime"
+    : !eventChannelReady
+      ? "events"
+      : "catalog";
+  const startupError =
+    startupActionError ??
+    runtimeMessage ??
+    (eventChannelFailed
+      ? session.error ?? "AGENT_EVENT_LISTEN_FAILED: 无法接收 Pi 事件"
+      : null) ??
+    (runtimeReady && eventChannelReady && session.catalogPhase === "error"
+      ? session.catalogError ?? "AGENT_CATALOG_LOAD_FAILED: 无法同步工作区与会话数据"
+      : null);
+  const startupReady =
+    runtimeReady && eventChannelReady && session.catalogPhase === "ready";
+  const finishStartup = useCallback(() => setStartupOverlayVisible(false), []);
+  const retryStartup = useCallback(() => {
+    setStartupActionError(null);
+    if (!runtimeReady) void runtime.refresh();
+    if (eventChannelFailed) session.retryEventListener();
+    if (runtimeReady && eventChannelReady && session.catalogPhase === "error") {
+      void reloadCatalogs();
+    }
+  }, [
+    eventChannelFailed,
+    eventChannelReady,
+    reloadCatalogs,
+    runtime.refresh,
+    runtimeReady,
+    session.catalogPhase,
+    session.retryEventListener,
+  ]);
+  const exitStartup = useCallback(() => {
+    void closeAppWindow().catch(() => {
+      setStartupActionError("APP_EXIT_FAILED: 无法退出应用，请使用窗口关闭按钮");
+    });
+  }, []);
 
   return (
-    <div
-      className="desktop-shell"
-      data-sidebar-open={sidebarOpen}
-      data-right-panel-open={rightPanelVisibility.open}
-      data-active-view={activeView}
-      style={{
-        "--sidebar-width": `${sidebarOpen ? sidebarWidth : 0}px`,
-        "--right-panel-shell-width": rightPanelVisibility.available && !rightPanelLayout.expanded
-          ? `${rightPanelLayout.width}px`
-          : "0px",
-      } as CSSProperties}
-    >
+    <>
+      <div
+        className="desktop-shell"
+        data-sidebar-open={sidebarOpen}
+        data-right-panel-open={rightPanelVisibility.open}
+        data-active-view={activeView}
+        data-startup-covered={startupOverlayVisible}
+        aria-busy={startupOverlayVisible}
+        inert={startupOverlayVisible || undefined}
+        style={{
+          "--sidebar-width": `${sidebarOpen ? sidebarWidth : 0}px`,
+          "--right-panel-shell-width": rightPanelVisibility.available && !rightPanelLayout.expanded
+            ? `${rightPanelLayout.width}px`
+            : "0px",
+        } as CSSProperties}
+      >
       {activeView === "settings" ? (
         <SettingsSidebar
           open={sidebarOpen}
@@ -966,7 +1002,7 @@ export function ChatWorkbenchView() {
 
         <section className="conversation-shell" aria-label="Pi 会话工作台">
           <div className="notice-stack">
-            {runtimeMessage && (
+            {!startupOverlayVisible && runtimeMessage && (
               <div className="inline-alert" role="alert">
                 <AlertTriangle size={17} />
                 <span>{runtimeMessage}</span>
@@ -976,7 +1012,7 @@ export function ChatWorkbenchView() {
                 </button>
               </div>
             )}
-            {eventChannelFailed && (
+            {!startupOverlayVisible && eventChannelFailed && (
               <div className="inline-alert" role="alert">
                 <AlertTriangle size={17} />
                 <span>{session.error ?? "AGENT_EVENT_LISTEN_FAILED: 无法接收 Pi 事件"}</span>
@@ -986,7 +1022,7 @@ export function ChatWorkbenchView() {
                 </button>
               </div>
             )}
-            {session.catalogError && (
+            {!startupOverlayVisible && session.catalogError && (
               <div className="inline-alert inline-alert-secondary" role="alert">
                 <AlertTriangle size={17} />
                 <span>{session.catalogError}</span>
@@ -1024,8 +1060,6 @@ export function ChatWorkbenchView() {
                     <LoaderCircle className="spin" size={24} />
                     <span>正在切换会话</span>
                   </div>
-                ) : startupStage ? (
-                  <StartupStatus stage={startupStage} />
                 ) : !hasSession ? (
                   <EmptyWorkspace
                     loading={session.catalogPhase === "loading"}
@@ -1228,26 +1262,18 @@ export function ChatWorkbenchView() {
           onClose={closeProjectDialog}
         />
       )}
-    </div>
-  );
-}
-
-interface StartupStatusProps {
-  stage: "runtime" | "events";
-}
-
-function StartupStatus({ stage }: StartupStatusProps) {
-  return (
-    <div className="startup-status" role="status" aria-live="polite" aria-label="正在启动 Pi">
-      <div className="startup-status-mark" aria-hidden="true">
-        <img src={appIconUrl} alt="" />
-        <span className="startup-status-spinner">
-          <LoaderCircle className="spin" size={18} strokeWidth={2} />
-        </span>
       </div>
-      <h2>正在启动 Pi</h2>
-      <p>{stage === "runtime" ? "正在连接本机 Pi 运行时" : "正在准备会话事件通道"}</p>
-    </div>
+      {startupOverlayVisible && (
+        <StartupOverlay
+          ready={startupReady}
+          stage={startupStage}
+          error={startupError}
+          onRetry={retryStartup}
+          onExit={exitStartup}
+          onFinished={finishStartup}
+        />
+      )}
+    </>
   );
 }
 

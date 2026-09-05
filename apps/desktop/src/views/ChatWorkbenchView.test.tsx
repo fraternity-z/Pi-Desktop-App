@@ -2,6 +2,10 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 import {
+  STARTUP_EXIT_DURATION_MS,
+  STARTUP_MINIMUM_DURATION_MS,
+} from "../components/StartupOverlay";
+import {
   abortAgent,
   checkAgentPackageUpdates,
   clearAgentQueue,
@@ -42,6 +46,7 @@ import {
 } from "../ipc/git";
 import { getRequestHeaderSettings, updateRequestHeaderSettings } from "../ipc/settings";
 import {
+  closeAppWindow,
   getRuntimeSettings,
   getRuntimeStatus,
   listenToRuntimeStatus,
@@ -133,6 +138,7 @@ vi.mock("../ipc/settings", async (importOriginal) => ({
   updateRequestHeaderSettings: vi.fn(),
 }));
 vi.mock("../ipc/system", () => ({
+  closeAppWindow: vi.fn(),
   getRuntimeSettings: vi.fn(),
   getRuntimeStatus: vi.fn(),
   listenToRuntimeStatus: vi.fn(),
@@ -208,6 +214,7 @@ describe("ChatWorkbenchView", () => {
     runtimeUnlisten = vi.fn<() => void>();
     unlisten = vi.fn<() => void>();
     vi.mocked(getRuntimeStatus).mockReset().mockResolvedValue(readyRuntime);
+    vi.mocked(closeAppWindow).mockReset().mockResolvedValue(undefined);
     vi.mocked(restartRuntime).mockReset().mockResolvedValue(readyRuntime);
     vi.mocked(getRuntimeSettings).mockReset().mockResolvedValue({
       schemaVersion: 1,
@@ -340,6 +347,7 @@ describe("ChatWorkbenchView", () => {
   });
 
   it("Bridge 启动期间展示真实启动状态并在就绪后退出", async () => {
+    vi.useFakeTimers();
     let resolveRuntime:
       | ((value: Awaited<ReturnType<typeof getRuntimeStatus>>) => void)
       | undefined;
@@ -350,22 +358,42 @@ describe("ChatWorkbenchView", () => {
         }),
     );
 
-    const { container } = render(<ChatWorkbenchView />);
+    try {
+      const { container } = render(<ChatWorkbenchView />);
 
-    expect(await screen.findByRole("status", { name: "正在启动 Pi" })).toBeInTheDocument();
-    expect(screen.getByText("正在连接本机 Pi 运行时")).toBeInTheDocument();
-    expect(container.querySelector(".startup-status-mark img")).not.toBeNull();
-    expect(container.querySelector(".startup-status-spinner .spin")).not.toBeNull();
+      expect(screen.getByRole("dialog", { name: "PI Desktop 启动界面" })).toBeInTheDocument();
+      expect(screen.getByRole("status", { name: "正在连接本机 Pi 运行时" })).toHaveTextContent(
+        "正在连接本机 Pi 运行时",
+      );
+      expect(screen.getByRole("heading", { name: "PI Desktop" })).toBeInTheDocument();
+      expect(container.querySelector(".startup-brand-icon img")).not.toBeNull();
+      expect(container.querySelector(".desktop-shell")).toHaveAttribute("inert");
+      expect(getRuntimeStatus).toHaveBeenCalledOnce();
+      expect(getRuntimeSettings).toHaveBeenCalledOnce();
+      expect(listenToAgentEvents).toHaveBeenCalledOnce();
 
-    await act(async () => {
-      resolveRuntime?.(readyRuntime);
-      await Promise.resolve();
-    });
+      await act(async () => {
+        resolveRuntime?.(readyRuntime);
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await vi.waitFor(() => expect(listAgentSessions).toHaveBeenCalledOnce());
+      expect(screen.getByRole("dialog", { name: "PI Desktop 启动界面" })).toBeInTheDocument();
 
-    expect(await screen.findByRole("status", { name: "状态正常" })).toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.queryByRole("status", { name: "正在启动 Pi" })).not.toBeInTheDocument(),
-    );
+      await act(async () =>
+        vi.advanceTimersByTimeAsync(
+          STARTUP_MINIMUM_DURATION_MS + STARTUP_EXIT_DURATION_MS,
+        ),
+      );
+      expect(screen.getByRole("status", { name: "状态正常" })).toBeInTheDocument();
+      expect(container.querySelector(".desktop-shell")).not.toHaveAttribute("inert");
+      expect(
+        screen.queryByRole("dialog", { name: "PI Desktop 启动界面" }),
+      ).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("通过项目弹窗创建会话、发送提示并合并流式文本", async () => {
@@ -646,6 +674,30 @@ describe("ChatWorkbenchView", () => {
         .getAllByRole("button", { name: "添加项目" })
         .every((button) => button.hasAttribute("disabled")),
     ).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "退出应用" }));
+    await waitFor(() => expect(closeAppWindow).toHaveBeenCalledOnce());
+  });
+
+  it("退出启动失败时保留遮罩并给出可执行的降级提示", async () => {
+    vi.mocked(getRuntimeStatus).mockResolvedValue({
+      status: "unavailable",
+      runtimeSource: null,
+      piVersion: null,
+      nodeVersion: null,
+      error: { code: "RUNTIME_NOT_FOUND", message: "未找到可用运行时" },
+    });
+    vi.mocked(closeAppWindow).mockRejectedValueOnce(new Error("close denied"));
+    render(<ChatWorkbenchView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "退出应用" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "APP_EXIT_FAILED: 无法退出应用，请使用窗口关闭按钮",
+    );
+    expect(screen.getByRole("dialog", { name: "PI Desktop 启动界面" })).toHaveAttribute(
+      "data-state",
+      "error",
+    );
   });
 
   it("运行时恢复后自动重新加载目录和模型，不需要刷新页面", async () => {
@@ -791,15 +843,13 @@ describe("ChatWorkbenchView", () => {
     render(<ChatWorkbenchView />);
 
     expect(await screen.findByRole("alert")).toHaveTextContent("AGENT_EVENT_LISTEN_FAILED");
-    const addButtons = screen.getAllByRole("button", { name: "添加项目" });
-    const availableAddButton = addButtons.find((button) => !button.hasAttribute("disabled"));
-    expect(availableAddButton).toBeDefined();
-    fireEvent.click(availableAddButton!);
-    expect(screen.getByRole("button", { name: "选择项目文件夹" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "添加并创建会话" })).toBeDisabled();
+    expect(screen.getByRole("dialog", { name: "PI Desktop 启动界面" })).toHaveAttribute(
+      "data-state",
+      "error",
+    );
     expect(selectProjectDirectory).not.toHaveBeenCalled();
     expect(createAgentSession).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "重新连接" }));
+    fireEvent.click(screen.getByRole("button", { name: "重试启动" }));
     await waitFor(() => expect(listenToAgentEvents).toHaveBeenCalledTimes(2));
   });
 

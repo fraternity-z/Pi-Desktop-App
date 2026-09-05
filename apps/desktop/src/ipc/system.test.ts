@@ -1,8 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  closeAppWindow,
   getArchitectureStatus,
   getRuntimeSettings,
   getRuntimeStatus,
@@ -17,6 +19,20 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(),
 }));
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: vi.fn(),
+}));
+
+describe("closeAppWindow", () => {
+  it("只关闭当前 Tauri 窗口", async () => {
+    const close = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(getCurrentWindow).mockReturnValue({ close } as never);
+
+    await expect(closeAppWindow()).resolves.toBeUndefined();
+    expect(getCurrentWindow).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+  });
+});
 
 describe("getArchitectureStatus", () => {
   beforeEach(() => {

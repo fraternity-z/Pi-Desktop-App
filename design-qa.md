@@ -142,6 +142,60 @@ No P0, P1, or P2 visual issue remains in the requested surface.
 
 final result: passed
 
+# Conversation Process Disclosure Design QA
+
+## Visual Sources
+
+- Collapsed reference: `C:\Users\Administrator\AppData\Local\Temp\codex-clipboard-8c0e0b26-f1a1-422f-a882-7be69215f3b4.png`
+- Expanded reference: `C:\Users\Administrator\AppData\Local\Temp\codex-clipboard-ac386d71-1dec-4997-8d7f-de01e5f03e36.png`
+- Collapsed implementation: `C:\Users\Administrator\AppData\Local\Temp\pi-timeline-collapsed-final.png`
+- Expanded implementation: `C:\Users\Administrator\AppData\Local\Temp\pi-timeline-expanded-large.png`
+- Collapsed comparison: `C:\Users\Administrator\AppData\Local\Temp\pi-timeline-comparison-collapsed.png`
+- Expanded comparison: `C:\Users\Administrator\AppData\Local\Temp\pi-timeline-comparison-expanded.png`
+- Narrow collapsed state: `C:\Users\Administrator\AppData\Local\Temp\pi-timeline-collapsed-narrow.png`
+- Narrow expanded state: `C:\Users\Administrator\AppData\Local\Temp\pi-timeline-expanded-narrow.png`
+
+## Viewport And State
+
+- Desktop state: completed conversation at 2200 x 1400 logical pixels, captured through the native
+  Tauri window in both collapsed and expanded states.
+- Narrow state: the same conversation at 900 x 1000 logical pixels in both states.
+- The fixture used a 9m 48s completed timer, intermediate assistant updates, grouped tools, a system
+  status, and a separate final conclusion.
+
+## Comparison Evidence
+
+The Pix references and matching Pi Desktop states were placed together in the two comparison images.
+The completed turn defaults to collapsed, retains the user prompt above the process header, and keeps
+only the final assistant conclusion below it. Expanding restores the intermediate assistant updates,
+tool group, and system status without moving the final conclusion into the disclosure region.
+
+| Surface | Evidence | Result |
+| --- | --- | --- |
+| Typography | The timer remains secondary, process headings retain existing assistant typography, and the final conclusion keeps the strongest response hierarchy. | Passed |
+| Spacing and layout | The timer occupies the full message column, the divider aligns with response content, and neither desktop nor narrow states overlap or clip. | Passed |
+| Colors and tokens | Existing canvas, text, border, hover, and focus tokens are reused; no new palette or decorative surface was introduced. | Passed |
+| Icons and affordances | The existing Lucide chevron rotates between collapsed and expanded states and stays aligned at the trailing edge. | Passed |
+| Copy and structure | The label is `已处理 9m 48s`; collapsed content contains only the final conclusion while expanded content restores the full process. | Passed |
+| Accessibility and interaction | Native disclosure semantics expose Collapsed/Expanded states, accessible labels describe the next action, and each completed turn toggles independently. | Passed |
+| Responsive behavior | At 900 x 1000, long response text wraps naturally and the timer, chevron, process rows, and copy action remain inside the viewport. | Passed |
+
+## Findings
+
+No actionable visual or interaction findings remain. The Pi Desktop fixture intentionally uses the
+application's existing neutral theme rather than copying the reference application's illustrated
+background; the requested disclosure hierarchy and behavior match the reference.
+
+## Automated Evidence
+
+- Renderer: 359 tests passed; 86.46% statements, 80.49% branches, 87.63% functions, and 89.56% lines.
+- `ConversationTimeline.tsx`: 90.46% statements, 81.46% branches, 95.83% functions, and 92.33% lines.
+- Agent Bridge: 123 tests passed; 89.41% statements, 81.00% branches, 96.98% functions, and 92.28% lines.
+- Rust Core: 139 tests passed.
+- `pnpm check`, `pnpm build`, `git diff --check`, and the changed-file sensitive-value scan passed.
+
+final result: passed
+
 # Streaming Conversation Timeline QA
 
 ## Visual Sources

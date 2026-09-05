@@ -20,12 +20,14 @@ import {
   normalizeAttachedPaths,
 } from "../components/composerAttachments";
 import { ConversationTimeline } from "../components/ConversationTimeline";
+import { createDeferredView } from "../components/createDeferredView";
 import { FileSearchDialog, type FileSearchResult } from "../components/FileSearchDialog";
 import { FileViewer } from "../components/FileViewer";
 import { GitReviewPanel } from "../components/GitReviewPanel";
 import { QuickPreview } from "../components/QuickPreview";
 import { RightPanel, type RightPanelTabId } from "../components/RightPanel";
 import { RuntimeStatusControl } from "../components/RuntimeStatusControl";
+import { SessionLoading } from "../components/SessionLoading";
 import { SettingsSidebar, type SettingsSectionId } from "../components/SettingsSidebar";
 import { StartupOverlay, type StartupStage } from "../components/StartupOverlay";
 import {
@@ -76,9 +78,17 @@ import {
   parseSlashLine,
   type ComposerCommand,
 } from "../components/composerCommands";
-import { PackageManagerView, ResourcesView } from "./EcosystemViews";
-import { SettingsView } from "./SettingsView";
 import appIconUrl from "../../../../src-tauri/icons/64x64.png";
+
+const SettingsView = createDeferredView(async () => ({
+  default: (await import("./SettingsView")).SettingsView,
+}));
+const PackageManagerView = createDeferredView(async () => ({
+  default: (await import("./EcosystemViews")).PackageManagerView,
+}));
+const ResourcesView = createDeferredView(async () => ({
+  default: (await import("./EcosystemViews")).ResourcesView,
+}));
 
 interface RightPanelFileLoadState {
   readonly targetPath: string | null;
@@ -1056,10 +1066,7 @@ export function ChatWorkbenchView() {
             <div className="thread-content-column-stack">
               <div className={`thread-body${hasSession && session.messages.length > 0 ? "" : " thread-body-empty"}`}>
                 {session.phase === "creating" ? (
-                  <div className="conversation-loading" role="status">
-                    <LoaderCircle className="spin" size={24} />
-                    <span>正在切换会话</span>
-                  </div>
+                  <SessionLoading />
                 ) : !hasSession ? (
                   <EmptyWorkspace
                     loading={session.catalogPhase === "loading"}

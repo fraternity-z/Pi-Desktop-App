@@ -1159,14 +1159,14 @@ describe("ChatWorkbenchView", () => {
     expect(listAgentResources).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "插件" }));
-    expect(screen.getByRole("heading", { name: "插件" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "插件" })).toBeInTheDocument();
     expect(await screen.findByText("pi-extension")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "插件" })).toHaveTextContent("1");
     expect(listAgentPackages).toHaveBeenCalledOnce();
     expect(listAgentResources).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "资源" }));
-    expect(screen.getByRole("heading", { name: "资源" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "资源" })).toBeInTheDocument();
     expect(await screen.findByText("项目检查")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "资源" })).toHaveTextContent("1");
     expect(listAgentResources).toHaveBeenCalledOnce();
@@ -1180,7 +1180,7 @@ describe("ChatWorkbenchView", () => {
     await screen.findByRole("status", { name: "状态正常" });
 
     fireEvent.click(screen.getByRole("button", { name: "系统设置" }));
-    expect(screen.getByTestId("settings-general")).toBeInTheDocument();
+    expect(await screen.findByTestId("settings-general")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "通知" }));
     expect(screen.getByTestId("settings-notifications")).toBeInTheDocument();

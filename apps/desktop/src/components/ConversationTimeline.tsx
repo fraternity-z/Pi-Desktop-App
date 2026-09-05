@@ -9,7 +9,15 @@ import {
   Square,
   Wrench,
 } from "lucide-react";
-import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  memo,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import type {
   ChatMessage,
@@ -57,63 +65,139 @@ export const ConversationTimeline = memo(function ConversationTimeline({
       ? grouped
       : [{ id: "empty", user: null, messages: [] } satisfies TimelineTurn];
   }, [messages]);
-  const copyTargets = useMemo(
-    () => findTurnCopyTargets(messages, streaming),
-    [messages, streaming],
-  );
 
   return (
     <div className="message-stream" aria-busy={streaming}>
-      {turns.map((turn, index) => {
-        const isCurrentTurn = streaming && index === turns.length - 1;
-        const groups = groupTimelineMessages(turn.messages);
-        const thinkingSegments = findLiveThinkingSegments(turn.messages, isCurrentTurn);
-        // The store attaches a timer to each user message. Keep the prop as a
-        // compatibility fallback for projections created before per-turn timers.
-        const turnTimer = resolveTurnTimer(
-          turn.user?.timer,
-          index === turns.length - 1 ? timer : null,
-        );
-        return (
-          <section className="timeline-turn" data-turn-id={turn.id} key={turn.id}>
-            {turn.user && <TimelineItem message={turn.user} streaming={isCurrentTurn} />}
-            {turnTimer && <ConversationTimer timer={turnTimer} />}
-            {groups.map((group) => {
-              const lastMessage = group.kind === "message" ? group.message : group.messages.at(-1);
-              const copyText = lastMessage ? copyTargets.get(lastMessage.id) : undefined;
-              return (
-                <Fragment key={group.kind + ":" + group.id}>
-                  {group.kind === "message" ? (
-                    <TimelineItem message={group.message} streaming={isCurrentTurn} />
-                  ) : (
-                    <ToolGroup messages={group.messages} />
-                  )}
-                  {copyText && <TurnCopyAction text={copyText} />}
-                </Fragment>
-              );
-            })}
-            {isCurrentTurn && (
-              <ThinkingInline
-                segments={
-                  thinkingSegments.length > 0 ? thinkingSegments : PENDING_THINKING_SEGMENTS
-                }
-              />
-            )}
-          </section>
-        );
-      })}
+      {turns.map((turn, index) => (
+        <ConversationTurn
+          key={turn.id}
+          turn={turn}
+          isCurrentTurn={streaming && index === turns.length - 1}
+          fallbackTimer={index === turns.length - 1 ? timer : null}
+        />
+      ))}
     </div>
+  );
+});
+
+const ConversationTurn = memo(function ConversationTurn({
+  turn,
+  isCurrentTurn,
+  fallbackTimer,
+}: {
+  turn: TimelineTurn;
+  isCurrentTurn: boolean;
+  fallbackTimer: SessionTimerState | null;
+}) {
+  const copyTargets = useMemo(
+    () => findTurnCopyTargets(turn.messages, isCurrentTurn),
+    [turn.messages, isCurrentTurn],
+  );
+  // The store attaches a timer to each user message. Keep the prop as a
+  // compatibility fallback for projections created before per-turn timers.
+  const turnTimer = resolveTurnTimer(turn.user?.timer, fallbackTimer);
+  const finalAssistantIndex = findFinalAssistantIndex(turn.messages);
+  const finalAssistant =
+    finalAssistantIndex >= 0 ? turn.messages[finalAssistantIndex] ?? null : null;
+  const thinkingSegments = findLiveThinkingSegments(turn.messages, isCurrentTurn);
+  const processMessages = finalAssistant
+    ? turn.messages.filter((_, index) => index !== finalAssistantIndex)
+    : turn.messages;
+  const processGroups = groupTimelineMessages(processMessages);
+  const hasProcessContent = processGroups.length > 0 || isCurrentTurn;
+  const hasFailedMessage = turn.messages.some((message) => message.status === "failed");
+  const canCollapseProcess = Boolean(
+    turnTimer &&
+      !hasFailedMessage &&
+      hasProcessContent &&
+      (finalAssistant || isCurrentTurn),
+  );
+
+  function renderGroups(groups: TimelineGroup[]) {
+    return groups.map((group) => {
+      const lastMessage = group.kind === "message" ? group.message : group.messages.at(-1);
+      const copyText = lastMessage ? copyTargets.get(lastMessage.id) : undefined;
+      return (
+        <Fragment key={group.kind + ":" + group.id}>
+          {group.kind === "message" ? (
+            <TimelineItem message={group.message} streaming={isCurrentTurn} />
+          ) : (
+            <ToolGroup messages={group.messages} />
+          )}
+          {copyText && <TurnCopyAction text={copyText} />}
+        </Fragment>
+      );
+    });
+  }
+
+  const processContent = (
+    <>
+      {renderGroups(processGroups)}
+      {isCurrentTurn && (
+        <ThinkingInline
+          segments={
+            thinkingSegments.length > 0 ? thinkingSegments : PENDING_THINKING_SEGMENTS
+          }
+        />
+      )}
+    </>
+  );
+
+  return (
+    <section className="timeline-turn" data-turn-id={turn.id}>
+      {turn.user && <TimelineItem message={turn.user} streaming={isCurrentTurn} />}
+      {canCollapseProcess && turnTimer ? (
+        <>
+          <ConversationTimer timer={turnTimer}>{processContent}</ConversationTimer>
+          {finalAssistant && (
+            <>
+              <TimelineItem message={finalAssistant} streaming={isCurrentTurn} />
+              {copyTargets.has(finalAssistant.id) && (
+                <TurnCopyAction text={copyTargets.get(finalAssistant.id)!} />
+              )}
+            </>
+          )}
+        </>
+      ) : (
+        <>
+          {turnTimer && <ConversationTimer timer={turnTimer} />}
+          {renderGroups(groupTimelineMessages(turn.messages))}
+          {isCurrentTurn && (
+            <ThinkingInline
+              segments={
+                thinkingSegments.length > 0 ? thinkingSegments : PENDING_THINKING_SEGMENTS
+              }
+            />
+          )}
+        </>
+      )}
+    </section>
+  );
+}, (previous, next) => {
+  // Stream updates preserve unchanged message objects in the session store.
+  return (
+    previous.isCurrentTurn === next.isCurrentTurn &&
+    previous.fallbackTimer === next.fallbackTimer &&
+    previous.turn.id === next.turn.id &&
+    previous.turn.user === next.turn.user &&
+    previous.turn.messages.length === next.turn.messages.length &&
+    previous.turn.messages.every((message, index) => message === next.turn.messages[index])
   );
 });
 
 const ConversationTimer = memo(function ConversationTimer({
   timer,
+  children,
 }: {
   timer: SessionTimerState | null;
+  children?: ReactNode;
 }) {
   const startedAt = timer?.startedAt;
   const active = startedAt !== null && startedAt !== undefined && timer?.endedAt === null;
   const [now, setNow] = useState(() => Date.now());
+  const [detailsOpen, setDetailsOpen] = useState(active);
+  const [hasOpened, setHasOpened] = useState(active);
+  const previousActive = useRef(active);
 
   useEffect(() => {
     if (!active) return;
@@ -122,19 +206,63 @@ const ConversationTimer = memo(function ConversationTimer({
     return () => window.clearInterval(interval);
   }, [active, startedAt]);
 
+  useEffect(() => {
+    const wasActive = previousActive.current;
+    previousActive.current = active;
+    if (active && !wasActive) setDetailsOpen(true);
+    if (!active && wasActive) setDetailsOpen(false);
+  }, [active]);
+
+  useEffect(() => {
+    if (detailsOpen) setHasOpened(true);
+  }, [detailsOpen]);
+
   if (startedAt === null || startedAt === undefined) return null;
   const elapsed = timer?.durationMs ?? Math.max(0, (timer?.endedAt ?? now) - startedAt);
   const label = formatSessionDuration(elapsed);
+  const timerText = "已处理 " + label;
+
+  if (children) {
+    return (
+      <details
+        className="conversation-process"
+        open={detailsOpen}
+        onToggle={(event) => setDetailsOpen(event.currentTarget.open)}
+        data-active={active ? "true" : undefined}
+      >
+        <summary
+          className="conversation-run-timer"
+          data-active={active ? "true" : undefined}
+          aria-expanded={detailsOpen}
+          aria-label={timerText + (detailsOpen ? "，折叠处理过程" : "，展开处理过程")}
+          onClick={(event) => {
+            event.preventDefault();
+            setDetailsOpen((current) => !current);
+          }}
+        >
+          <span role={active ? "status" : undefined} aria-live={active ? "polite" : undefined}>
+            {timerText}
+          </span>
+          <ChevronRight className="conversation-run-chevron" size={16} aria-hidden="true" />
+        </summary>
+        {(detailsOpen || hasOpened) && (
+          <div className="conversation-process-body" role="region" aria-label="处理过程">
+            {children}
+          </div>
+        )}
+      </details>
+    );
+  }
+
   return (
     <div
       className="conversation-run-timer"
       data-active={active ? "true" : undefined}
       role="status"
       aria-live={active ? "polite" : undefined}
-      aria-label={"会话用时 " + label}
+      aria-label={"会话" + timerText}
     >
-      <span>用时 {label}</span>
-      <ChevronRight size={16} aria-hidden="true" />
+      <span>{timerText}</span>
     </div>
   );
 });
@@ -564,6 +692,17 @@ function groupTimelineMessages(messages: ChatMessage[]): TimelineGroup[] {
   return groups;
 }
 
+function findFinalAssistantIndex(messages: ChatMessage[]): number {
+  let lastAssistantIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "assistant") continue;
+    if (lastAssistantIndex < 0) lastAssistantIndex = index;
+    if (message.content.trim()) return index;
+  }
+  return lastAssistantIndex;
+}
+
 function groupTimelineTurns(messages: ChatMessage[]): TimelineTurn[] {
   const turns: TimelineTurn[] = [];
   let current: TimelineTurn = { id: "prelude", user: null, messages: [] };
@@ -639,11 +778,11 @@ function findTurnCopyTargets(messages: ChatMessage[], streaming: boolean): Map<s
   function addCompletedTurn(end: number, completed: boolean) {
     if (!completed || end < turnStart) return;
     const turn = messages.slice(turnStart, end + 1);
-    const copyText = turn
-      .filter((message) => message.role === "assistant" && message.content.trim())
-      .map((message) => message.content.trim())
-      .join("\n\n");
-    const target = messages[end];
+    const assistantMessages = turn.filter(
+      (message) => message.role === "assistant" && message.content.trim(),
+    );
+    const copyText = assistantMessages.map((message) => message.content.trim()).join("\n\n");
+    const target = assistantMessages.at(-1);
     if (copyText && target) targets.set(target.id, copyText);
   }
 

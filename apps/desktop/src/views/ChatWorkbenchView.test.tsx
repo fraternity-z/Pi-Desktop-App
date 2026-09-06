@@ -1160,7 +1160,7 @@ describe("ChatWorkbenchView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "插件" }));
     expect(await screen.findByRole("heading", { name: "插件" })).toBeInTheDocument();
-    expect(await screen.findByText("pi-extension")).toBeInTheDocument();
+    expect(await screen.findByText("@example/pi-extension")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "插件" })).toHaveTextContent("1");
     expect(listAgentPackages).toHaveBeenCalledOnce();
     expect(listAgentResources).not.toHaveBeenCalled();

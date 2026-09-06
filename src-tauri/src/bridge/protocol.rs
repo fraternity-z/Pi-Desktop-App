@@ -109,6 +109,8 @@ pub struct PackageSummary {
     pub scope: PackageScope,
     pub kind: String,
     pub installed_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     pub filtered: bool,
     pub enabled: bool,
 }
@@ -708,6 +710,21 @@ fn sanitize_remote_field<'a>(value: &'a str, fallback: &'a str) -> &'a str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn package_version_is_optional_and_round_trips() {
+        let legacy = serde_json::json!({
+            "source": "npm:example", "scope": "global", "kind": "npm",
+            "filtered": false, "enabled": true
+        });
+        let mut package: PackageSummary = serde_json::from_value(legacy).unwrap();
+        assert_eq!(package.version, None);
+        assert!(serde_json::to_value(&package).unwrap().get("version").is_none());
+        package.version = Some("1.2.3".to_owned());
+        let encoded = serde_json::to_value(&package).unwrap();
+        assert_eq!(encoded["version"], "1.2.3");
+        assert_eq!(serde_json::from_value::<PackageSummary>(encoded).unwrap(), package);
+    }
 
     const ALL_CAPABILITIES: &[&str] = &[
         "sessions",

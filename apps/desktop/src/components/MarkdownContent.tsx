@@ -1,8 +1,10 @@
-import { Check, Copy, ExternalLink } from "lucide-react";
+import { Check, Copy, ExternalLink, TriangleAlert } from "lucide-react";
 import {
   Children,
   isValidElement,
   memo,
+  useEffect,
+  useRef,
   useState,
   type ComponentProps,
   type MouseEvent,
@@ -11,6 +13,7 @@ import {
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
+import { HighlightedCodeLine } from "./CodeHighlight";
 
 interface MarkdownContentProps {
   children: string;
@@ -81,16 +84,20 @@ function MarkdownInput({ type, ...props }: ComponentProps<"input">) {
 }
 
 function MarkdownPre({ children, ...props }: ComponentProps<"pre">) {
-  const [copied, setCopied] = useState(false);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const resetTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(resetTimer.current), []);
   const code = nodeText(children).replace(/\n$/, "");
   const language = codeLanguage(children);
+  const copyLabel = copyState === "copied" ? "代码已复制" : copyState === "error" ? "复制失败，点击重试" : "复制代码";
   async function copyCode() {
+    window.clearTimeout(resetTimer.current);
     try {
       await navigator.clipboard.writeText(code);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1_200);
+      setCopyState("copied");
+      resetTimer.current = window.setTimeout(() => setCopyState("idle"), 1_200);
     } catch {
-      setCopied(false);
+      setCopyState("error");
     }
   }
   return (
@@ -101,13 +108,13 @@ function MarkdownPre({ children, ...props }: ComponentProps<"pre">) {
           type="button"
           className="icon-button markdown-code-copy"
           onClick={() => void copyCode()}
-          aria-label="复制代码"
-          title="复制代码"
+          aria-label={copyLabel}
+          title={copyLabel}
         >
-          {copied ? <Check size={14} /> : <Copy size={14} />}
+          {copyState === "copied" ? <Check size={14} /> : copyState === "error" ? <TriangleAlert size={14} /> : <Copy size={14} />}
         </button>
       </div>
-      <pre {...props}>{children}</pre>
+      <pre {...props}><code><HighlightedCodeLine content={code} path={language ?? undefined} /></code></pre>
     </div>
   );
 }

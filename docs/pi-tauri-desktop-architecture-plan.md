@@ -646,6 +646,18 @@ Pi 版本由用户的 npm/pnpm/其他官方包管理器管理。App 可以显示
 **决定**：未来支持包含完整 Node/Pi 的受管 fallback，但不替代当前的内置候选 + 本地回退标准模式。
 **原因**：兼顾便携版、企业部署和离线场景，同时不增加普通用户的默认包体积。
 
+### 插件版本与更新信息（协议 v1 兼容补充）
+
+`PackageSummary` 新增可选 `version` 字段，TypeScript Bridge、Rust DTO 和 Renderer IPC 同步维护。
+旧 Bridge 不返回该字段时继续兼容。Bridge 仅从官方 `listConfiguredPackages()` 返回的安装目录读取
+`package.json`，限制读取为 64 KiB，验证清单位于安装目录内，只返回长度受限的版本字符串。
+缺失、损坏或不可读的元数据降级为版本未知，不阻止插件列表加载。
+
+打开或刷新插件页，以及安装、移除、更新成功后，使用官方 `checkForAvailableUpdates()` 检查更新。
+更新标记按 `scope + source` 匹配；检查失败保留已加载的插件并提供重试。
+官方接口当前只提供可更新的来源、名称、类型与范围，不提供目标版本，因此不推测最新版本号。
+更新安装仍由用户主动触发并交给官方包管理器执行。
+
 ## 19. 参考资料
 
 - [Pi coding agent SDK](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/sdk.md)

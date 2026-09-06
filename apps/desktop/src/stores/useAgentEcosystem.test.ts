@@ -16,7 +16,10 @@ vi.mock("../ipc/agent", async (importOriginal) => ({
 }));
 
 describe("useAgentEcosystem", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(agentIpc.checkAgentPackageUpdates).mockResolvedValue([]);
+  });
 
   it("按进入的页面独立加载插件与资源目录", async () => {
     vi.mocked(agentIpc.listAgentPackages).mockResolvedValue([
@@ -38,6 +41,8 @@ describe("useAgentEcosystem", () => {
     expect(result.current.phase).toBe("ready");
     expect(result.current.packages).toHaveLength(1);
     expect(agentIpc.listAgentResources).not.toHaveBeenCalled();
+    expect(agentIpc.checkAgentPackageUpdates).toHaveBeenCalledWith("C:\\work");
+    expect(result.current.updateStatus).toBe("checked");
 
     await act(() => result.current.refresh("C:\\work", "resources"));
 
@@ -151,9 +156,6 @@ describe("useAgentEcosystem", () => {
     vi.mocked(agentIpc.updateAgentPackage).mockReturnValueOnce(
       new Promise((resolve) => (releaseUpdate = resolve)),
     );
-    vi.mocked(agentIpc.checkAgentPackageUpdates).mockReturnValueOnce(
-      new Promise((resolve) => (releaseCheck = resolve)),
-    );
     vi.mocked(agentIpc.listAgentPackages).mockResolvedValue([newPackage]);
     vi.mocked(agentIpc.listAgentResources).mockResolvedValue([]);
     const { result } = renderHook(() => useAgentEcosystem());
@@ -171,6 +173,9 @@ describe("useAgentEcosystem", () => {
     expect(result.current.packages[0]?.source).toBe("npm:new");
     expect(result.current.operation).toBeNull();
 
+    vi.mocked(agentIpc.checkAgentPackageUpdates).mockReturnValueOnce(
+      new Promise((resolve) => (releaseCheck = resolve)),
+    );
     act(() => {
       staleCheck = result.current.checkUpdates("C:\\old");
     });
@@ -182,6 +187,36 @@ describe("useAgentEcosystem", () => {
       await staleCheck;
     });
     expect(result.current.updates).toEqual([]);
+    expect(result.current.operation).toBeNull();
+  });
+
+  it("自动检查失败仍保留插件列表，后续成功检查恢复状态", async () => {
+    const item = { source: "npm:test", kind: "npm" as const, scope: "global" as const, enabled: true, filtered: false, version: "1.0.0" };
+    vi.mocked(agentIpc.listAgentPackages).mockResolvedValue([item]);
+    vi.mocked(agentIpc.checkAgentPackageUpdates).mockRejectedValueOnce(new Error("offline"));
+    const { result } = renderHook(() => useAgentEcosystem());
+    await act(() => result.current.refresh("C:\\work", "packages"));
+    expect(result.current.phase).toBe("ready");
+    expect(result.current.packages).toEqual([item]);
+    expect(result.current.updateStatus).toBe("error");
+    await act(() => result.current.checkUpdates("C:\\work"));
+    expect(result.current.updateStatus).toBe("checked");
+    expect(result.current.error).toBeNull();
+  });
+
+  it("更新完成后重新检查并清除过期标记", async () => {
+    const item = { source: "npm:test", kind: "npm" as const, scope: "global" as const, enabled: true, filtered: false, version: "2.0.0" };
+    vi.mocked(agentIpc.checkAgentPackageUpdates).mockResolvedValueOnce([
+      { source: item.source, scope: "global", type: "npm", displayName: "test" },
+    ]).mockResolvedValue([]);
+    vi.mocked(agentIpc.updateAgentPackage).mockResolvedValue([item]);
+    const { result } = renderHook(() => useAgentEcosystem());
+    await act(() => result.current.checkUpdates("C:\\work"));
+    expect(result.current.updates).toHaveLength(1);
+    await act(() => result.current.updatePackage("C:\\work", item.source));
+    expect(result.current.packages[0]?.version).toBe("2.0.0");
+    expect(result.current.updates).toEqual([]);
+    expect(result.current.updateStatus).toBe("checked");
     expect(result.current.operation).toBeNull();
   });
 });

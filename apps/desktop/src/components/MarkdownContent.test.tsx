@@ -65,4 +65,24 @@ describe("MarkdownContent", () => {
     expect(codeBlock).toHaveTextContent("const value = 1;");
     expect(screen.getByText("ts")).toBeInTheDocument();
   });
+
+  it("高亮多行代码且未知语言安全降级", () => {
+    const { container, rerender } = render(<MarkdownContent>{"```typescript\nconst value = '<script>danger</script>';\n```"}</MarkdownContent>);
+    expect(container.querySelector(".hljs-keyword")).toHaveTextContent("const");
+    expect(container.querySelector("pre code")).toHaveTextContent("<script>danger</script>");
+    expect(container.querySelector("script")).toBeNull();
+    rerender(<MarkdownContent>{"```unknown\n<img src=x onerror=alert(1)>\n```"}</MarkdownContent>);
+    expect(container.querySelector("pre code")).toHaveTextContent("<img src=x onerror=alert(1)>");
+    expect(container.querySelector("img")).toBeNull();
+  });
+
+  it("复制失败可重试并提供成功反馈", async () => {
+    const writeText = vi.fn().mockRejectedValueOnce(new Error("denied")).mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    render(<MarkdownContent>{"```json\n{\"ready\": true}\n```"}</MarkdownContent>);
+    fireEvent.click(screen.getByRole("button", { name: "复制代码" }));
+    fireEvent.click(await screen.findByRole("button", { name: "复制失败，点击重试" }));
+    expect(await screen.findByRole("button", { name: "代码已复制" })).toBeInTheDocument();
+    expect(writeText).toHaveBeenLastCalledWith('{"ready": true}');
+  });
 });

@@ -22,11 +22,38 @@ export function useAgentEcosystem() {
   const [packages, setPackages] = useState<AgentPackageSummary[]>([]);
   const [resources, setResources] = useState<AgentResourceSummary[]>([]);
   const [updates, setUpdates] = useState<AgentPackageUpdate[]>([]);
+  const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "checked" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
   const [operation, setOperation] = useState<string | null>(null);
   const requestSequence = useRef(0);
   const operationSequence = useRef(0);
   const activeWorkspace = useRef("");
+
+  const checkUpdates = useCallback(async (cwd: string) => {
+    const workspace = normalizeWorkspace(cwd);
+    const request = ++operationSequence.current;
+    activeWorkspace.current = workspace;
+    setOperation("check-updates");
+    setUpdateStatus("checking");
+    setUpdates([]);
+    setError(null);
+    try {
+      const nextUpdates = await checkAgentPackageUpdates(cwd);
+      if (request !== operationSequence.current || activeWorkspace.current !== workspace) return false;
+      setUpdates(nextUpdates);
+      setUpdateStatus("checked");
+      return true;
+    } catch (cause) {
+      if (request !== operationSequence.current || activeWorkspace.current !== workspace) return false;
+      setUpdateStatus("error");
+      setError(formatEcosystemError(cause, "PACKAGE_UPDATE_CHECK_FAILED: 无法检查插件更新"));
+      return false;
+    } finally {
+      if (request === operationSequence.current && activeWorkspace.current === workspace) {
+        setOperation(null);
+      }
+    }
+  }, []);
 
   const refresh = useCallback(async (cwd: string, catalog: EcosystemCatalog) => {
     const workspace = normalizeWorkspace(cwd);
@@ -34,6 +61,8 @@ export function useAgentEcosystem() {
     activeWorkspace.current = workspace;
     operationSequence.current += 1;
     setOperation(null);
+    setUpdates([]);
+    setUpdateStatus("idle");
     setPhase("loading");
     setError(null);
     try {
@@ -45,6 +74,7 @@ export function useAgentEcosystem() {
       if (nextPackages) setPackages(nextPackages);
       if (nextResources) setResources(nextResources);
       setPhase("ready");
+      if (nextPackages?.length) await checkUpdates(cwd);
       return true;
     } catch (cause) {
       if (request !== requestSequence.current || activeWorkspace.current !== workspace) return false;
@@ -59,7 +89,7 @@ export function useAgentEcosystem() {
       );
       return false;
     }
-  }, []);
+  }, [checkUpdates]);
 
   const runPackageOperation = useCallback(
     async (
@@ -70,6 +100,7 @@ export function useAgentEcosystem() {
     ) => {
       const workspace = normalizeWorkspace(cwd);
       const request = ++operationSequence.current;
+      requestSequence.current += 1;
       activeWorkspace.current = workspace;
       setOperation(operationName);
       setError(null);
@@ -78,6 +109,11 @@ export function useAgentEcosystem() {
         if (request !== operationSequence.current || activeWorkspace.current !== workspace) return false;
         setPackages(nextPackages);
         setPhase("ready");
+        if (operationName.startsWith("update:") || operationName.startsWith("install:") || operationName.startsWith("remove:")) {
+          setUpdates([]);
+          setUpdateStatus("idle");
+          if (nextPackages.length) await checkUpdates(cwd);
+        }
         return true;
       } catch (cause) {
         if (request !== operationSequence.current || activeWorkspace.current !== workspace) return false;
@@ -89,7 +125,7 @@ export function useAgentEcosystem() {
         }
       }
     },
-    [],
+    [checkUpdates],
   );
 
   const installPackage = useCallback(
@@ -136,33 +172,12 @@ export function useAgentEcosystem() {
     [runPackageOperation],
   );
 
-  const checkUpdates = useCallback(async (cwd: string) => {
-    const workspace = normalizeWorkspace(cwd);
-    const request = ++operationSequence.current;
-    activeWorkspace.current = workspace;
-    setOperation("check-updates");
-    setError(null);
-    try {
-      const nextUpdates = await checkAgentPackageUpdates(cwd);
-      if (request !== operationSequence.current || activeWorkspace.current !== workspace) return false;
-      setUpdates(nextUpdates);
-      return true;
-    } catch (cause) {
-      if (request !== operationSequence.current || activeWorkspace.current !== workspace) return false;
-      setError(formatEcosystemError(cause, "PACKAGE_UPDATE_CHECK_FAILED: 无法检查插件更新"));
-      return false;
-    } finally {
-      if (request === operationSequence.current && activeWorkspace.current === workspace) {
-        setOperation(null);
-      }
-    }
-  }, []);
-
   return {
     phase,
     packages,
     resources,
     updates,
+    updateStatus,
     error,
     operation,
     refresh,

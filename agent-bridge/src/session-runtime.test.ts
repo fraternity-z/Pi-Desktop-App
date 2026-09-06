@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 
 import { describe, expect, it, vi } from "vitest";
+import { readPackageVersion } from "./package-version.js";
+
+vi.mock("./package-version.js", () => ({ readPackageVersion: vi.fn(async () => undefined) }));
 
 import {
   clampThinkingLevel,
@@ -1103,10 +1106,12 @@ describe("PiSessionRuntime", () => {
     const runtime = new PiSessionRuntime(sdk, "C:\\agent");
     await runtime.createSession("C:\\work");
 
+    vi.mocked(readPackageVersion).mockResolvedValueOnce("1.2.3").mockResolvedValueOnce("0.4.0");
     await expect(runtime.listPackages("C:\\work")).resolves.toEqual([
-      expect.objectContaining({ source: "npm:pi-global", scope: "global", kind: "npm", enabled: true }),
-      expect.objectContaining({ source: "./local-plugin", scope: "project", kind: "local", enabled: true }),
+      expect.objectContaining({ source: "npm:pi-global", scope: "global", kind: "npm", enabled: true, version: "1.2.3" }),
+      expect.objectContaining({ source: "./local-plugin", scope: "project", kind: "local", enabled: true, version: "0.4.0" }),
     ]);
+    expect(readPackageVersion).toHaveBeenCalledWith("C:\\agent\\git\\pi-global");
     await runtime.setPackageEnabled("C:\\work", "npm:pi-global", "global", false);
     expect(settingsManager.setPackages).toHaveBeenCalledWith([
       expect.objectContaining({ source: "npm:pi-global", autoload: false }),

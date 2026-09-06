@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { readFile, realpath, stat, unlink } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative, win32 } from "node:path";
+import { readPackageVersion } from "./package-version.js";
 
 import {
   MAX_COMMANDS,
@@ -60,6 +61,7 @@ export interface PackageSummary {
   scope: PackageScope;
   kind: "npm" | "git" | "local" | "unknown";
   installedPath?: string;
+  version?: string;
   filtered: boolean;
   enabled: boolean;
 }
@@ -620,21 +622,25 @@ export function resolvePackageRemoveSource(
     : match.source;
 }
 
-function listPackagesFromManager(context: PackageContext): PackageSummary[] {
+async function listPackagesFromManager(context: PackageContext): Promise<PackageSummary[]> {
   const globalPackages = context.settingsManager.getGlobalSettings().packages ?? [];
   const projectPackages = context.settingsManager.getProjectSettings().packages ?? [];
-  return context.manager.listConfiguredPackages().map((entry) => {
+  const packages: PackageSummary[] = [];
+  for (const entry of context.manager.listConfiguredPackages()) {
     const scope = entry.scope === "project" ? "project" : "global";
     const match = findPackageEntry(scope === "project" ? projectPackages : globalPackages, entry.source);
-    return {
+    const version = await readPackageVersion(entry.installedPath);
+    packages.push({
       source: entry.source,
       scope,
       kind: packageKindFromSource(entry.source),
       filtered: entry.filtered,
       enabled: match ? packageEntryEnabled(match.entry) : true,
       ...(entry.installedPath ? { installedPath: entry.installedPath } : {}),
-    };
-  });
+      ...(version ? { version } : {}),
+    });
+  }
+  return packages;
 }
 
 function setPackageEnabledInSettings(
@@ -1203,7 +1209,7 @@ export class PiSessionRuntime implements SessionRuntime {
   async listPackages(cwd: string): Promise<PackageSummary[]> {
     this.ensureOpen();
     try {
-      return listPackagesFromManager(this.createPackageContext(cwd));
+      return await listPackagesFromManager(this.createPackageContext(cwd));
     } catch (error) {
       throw mapRuntimeError(error, "PACKAGE_LIST_FAILED", "无法读取已配置的 Pi 插件");
     }
@@ -1219,7 +1225,7 @@ export class PiSessionRuntime implements SessionRuntime {
       const context = this.createPackageContext(cwd);
       await context.manager.installAndPersist(source, { local: scope === "project" });
       await this.reloadManagedResources(scope === "global" ? undefined : cwd);
-      return listPackagesFromManager(context);
+      return await listPackagesFromManager(context);
     } catch (error) {
       throw mapRuntimeError(error, "PACKAGE_INSTALL_FAILED", "无法安装所选 Pi 插件");
     }
@@ -1236,7 +1242,7 @@ export class PiSessionRuntime implements SessionRuntime {
       const context = this.createPackageContext(cwd);
       setPackageEnabledInSettings(context.settingsManager, source, scope, enabled);
       await this.reloadManagedResources(scope === "global" ? undefined : cwd);
-      return listPackagesFromManager(context);
+      return await listPackagesFromManager(context);
     } catch (error) {
       throw mapRuntimeError(error, "PACKAGE_UPDATE_FAILED", "无法更新 Pi 插件启用状态");
     }
@@ -1259,7 +1265,7 @@ export class PiSessionRuntime implements SessionRuntime {
         throw new RuntimeError("PACKAGE_NOT_FOUND", "插件未出现在对应范围的 Pi 配置中");
       }
       await this.reloadManagedResources(scope === "global" ? undefined : cwd);
-      return listPackagesFromManager(context);
+      return await listPackagesFromManager(context);
     } catch (error) {
       throw mapRuntimeError(error, "PACKAGE_REMOVE_FAILED", "无法移除所选 Pi 插件");
     }
@@ -1271,7 +1277,7 @@ export class PiSessionRuntime implements SessionRuntime {
       const context = this.createPackageContext(cwd);
       await context.manager.update(source);
       await this.reloadManagedResources();
-      return listPackagesFromManager(context);
+      return await listPackagesFromManager(context);
     } catch (error) {
       throw mapRuntimeError(error, "PACKAGE_UPDATE_FAILED", "无法更新 Pi 插件");
     }

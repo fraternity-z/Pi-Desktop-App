@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -36,6 +36,7 @@ function controller(overrides: Partial<EcosystemController> = {}): EcosystemCont
     packages: [basePackage],
     resources,
     updates: [],
+    updateStatus: "idle",
     error: null,
     operation: null,
     refresh: vi.fn(async () => true),
@@ -146,6 +147,41 @@ describe("EcosystemViews", () => {
     await waitFor(() =>
       expect(screen.getByRole("tab", { name: "已安装" })).toHaveAttribute("aria-selected", "true"),
     );
+  });
+
+  it("显示安装版本且按范围匹配更新，保留 npm 命名空间", () => {
+    const ecosystem = controller({
+      packages: [
+        { ...basePackage, source: "npm:@team/plugin", version: "1.2.3" },
+        { ...basePackage, source: "npm:@team/plugin", scope: "project", version: "1.3.0" },
+        { ...basePackage, source: "npm:unknown" },
+        { ...basePackage, source: "npm:missing", installedPath: undefined },
+      ],
+      updateStatus: "checked",
+      updates: [{ source: "npm:@team/plugin", scope: "global", type: "npm", displayName: "@team/plugin" }],
+    });
+    render(<PackageManagerView {...packageProps(ecosystem)} />);
+    const rows = screen.getAllByRole("listitem");
+    expect(within(rows[0]).getByText("@team/plugin")).toBeInTheDocument();
+    expect(within(rows[0]).getByText("v1.2.3")).toBeInTheDocument();
+    expect(within(rows[0]).getByText("可更新")).toBeInTheDocument();
+    expect(within(rows[1]).queryByText("可更新")).not.toBeInTheDocument();
+    expect(screen.getByText("版本未知")).toBeInTheDocument();
+    expect(screen.getByText("未安装")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("1 个可用更新");
+  });
+
+  it("展示检查进度和失败重试，不将未知状态显示成已是最新", () => {
+    const ecosystem = controller({ updateStatus: "checking", operation: "check-updates" });
+    const { rerender } = render(<PackageManagerView {...packageProps(ecosystem)} />);
+    expect(screen.getByRole("status")).toHaveTextContent("正在检查更新");
+    expect(screen.getByRole("button", { name: "检查插件更新" })).toBeDisabled();
+    const failed = controller({ updateStatus: "error", error: "PACKAGE_UPDATE_CHECK_FAILED: 无法检查插件更新" });
+    rerender(<PackageManagerView {...packageProps(failed)} />);
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(failed.checkUpdates).toHaveBeenCalledWith("C:\\work");
+    expect(failed.refresh).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent("更新检查失败");
   });
 
   it("展示插件加载、空状态和可重试错误", () => {

@@ -138,6 +138,7 @@ export interface AgentPackageSummary {
   scope: PackageScope;
   kind: "npm" | "git" | "local" | "unknown";
   installedPath?: string;
+  version?: string;
   filtered: boolean;
   enabled: boolean;
 }

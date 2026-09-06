@@ -45,9 +45,9 @@ export function PackageManagerView({
   const [scope, setScope] = useState<PackageScope>("global");
   const [page, setPage] = useState(0);
   const [removeTarget, setRemoveTarget] = useState<AgentPackageSummary | null>(null);
-  const busy = ecosystem.operation !== null;
+  const busy = ecosystem.operation !== null || ecosystem.phase === "loading";
   const updateSources = useMemo(
-    () => new Set(ecosystem.updates.map((item) => item.source)),
+    () => new Set(ecosystem.updates.map((item) => `${item.scope}:${item.source}`)),
     [ecosystem.updates],
   );
   const filtered = useMemo(() => {
@@ -85,7 +85,7 @@ export function PackageManagerView({
     <main className="ecosystem-view">
       <EcosystemTopbar
         title="插件"
-        subtitle="管理 Pi 已配置的扩展包"
+        subtitle={`${ecosystem.packages.length} 个已配置插件`}
         sidebarOpen={sidebarOpen}
         onOpenSidebar={onOpenSidebar}
         onBack={onBack}
@@ -98,7 +98,7 @@ export function PackageManagerView({
           disabled={busy}
           onClick={() => void ecosystem.checkUpdates(cwd)}
         >
-          <Download size={16} />
+          {ecosystem.updateStatus === "checking" ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}
         </button>
         <button
           className="icon-button"
@@ -147,8 +147,19 @@ export function PackageManagerView({
 
         <EcosystemError
           error={ecosystem.error}
-          onRetry={() => void ecosystem.refresh(cwd, "packages")}
+          onRetry={() => void (ecosystem.updateStatus === "error" ? ecosystem.checkUpdates(cwd) : ecosystem.refresh(cwd, "packages"))}
         />
+
+        {tab === "installed" && ecosystem.phase === "ready" && (
+          <div className="package-catalog-status" role="status">
+            <span>{filtered.length} 个插件</span>
+            <span>
+              {ecosystem.updateStatus === "checking" ? "正在检查更新…" :
+                ecosystem.updateStatus === "checked" ? (ecosystem.updates.length ? `${ecosystem.updates.length} 个可用更新` : "未发现可用更新") :
+                  ecosystem.updateStatus === "error" ? "更新检查失败" : "尚未检查更新"}
+            </span>
+          </div>
+        )}
 
         {tab === "add" ? (
           <form className="package-install-form" onSubmit={install}>
@@ -226,11 +237,15 @@ export function PackageManagerView({
                         {item.scope === "project" ? "项目" : "全局"} · {item.kind}
                         {item.filtered ? " · 已过滤" : ""}
                       </span>
+                      <div className="package-version-info">
+                        <span className="package-version">{item.version ? `v${item.version}` : item.installedPath ? "版本未知" : "未安装"}</span>
+                        {updateSources.has(`${item.scope}:${item.source}`) && <span className="update-badge"><Download size={12} aria-hidden />可更新</span>}
+                      </div>
                     </div>
-                    {updateSources.has(item.source) && <span className="update-badge">可更新</span>}
                     <label className="compact-switch" title={item.enabled ? "停用" : "启用"}>
                       <input
                         type="checkbox"
+                        aria-label={`${item.enabled ? "停用" : "启用"}${packageDisplayName(item.source)}`}
                         checked={item.enabled}
                         disabled={busy}
                         onChange={(event) =>
@@ -500,6 +515,7 @@ function EcosystemEmpty({
 }
 
 function packageDisplayName(source: string): string {
+  if (source.startsWith("npm:")) return source.slice(4);
   const normalized = source.replace(/\\/g, "/").replace(/\/+$/, "");
   return normalized.replace(/^npm:/, "").split("/").at(-1) || source;
 }

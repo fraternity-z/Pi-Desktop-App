@@ -37,10 +37,11 @@ describe("RightPanel", () => {
     expect(screen.getByRole("tabpanel")).toHaveTextContent("审查内容");
   });
 
-  it("菜单、关闭、展开和快捷键均走受控回调", () => {
-    const props = panelProps({ activeTab: "file" });
+  it("菜单、关闭、展开走受控回调，快捷键由工作台统一分发", () => {
+    const props = panelProps({ activeTab: "file", fileShortcut: "Ctrl+O" });
     render(<RightPanel {...props} />);
     fireEvent.click(screen.getByRole("button", { name: "打开右侧面板标签页" }));
+    expect(screen.getByRole("menuitem", { name: /打开文件/ })).toHaveTextContent("Ctrl+O");
     fireEvent.click(screen.getByRole("menuitem", { name: /打开文件/ }));
     expect(props.onOpenFile).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: "关闭文件标签页" }));
@@ -52,8 +53,8 @@ describe("RightPanel", () => {
     expect(props.onClose).toHaveBeenCalledOnce();
     fireEvent.keyDown(window, { key: "p", ctrlKey: true });
     fireEvent.keyDown(window, { key: "t", ctrlKey: true });
-    expect(props.onOpenFile).toHaveBeenCalledTimes(2);
-    expect(props.onOpenBrowser).toHaveBeenCalledOnce();
+    expect(props.onOpenFile).toHaveBeenCalledOnce();
+    expect(props.onOpenBrowser).not.toHaveBeenCalled();
   });
 
   it("支持可访问的指针和键盘宽度调整", () => {

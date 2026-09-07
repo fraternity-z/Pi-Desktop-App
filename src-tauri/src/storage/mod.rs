@@ -1,4 +1,5 @@
 pub mod prompts;
+pub mod proxy;
 
 use std::{
     fs,

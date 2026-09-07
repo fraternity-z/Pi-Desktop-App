@@ -29,6 +29,7 @@ interface StartupOverlayProps {
   onRetry: () => void;
   onExit: () => void;
   onFinished: () => void;
+  onOpenProxySettings?: () => void;
   minimumDurationMs?: number;
   exitDurationMs?: number;
 }
@@ -40,6 +41,7 @@ export function StartupOverlay({
   onRetry,
   onExit,
   onFinished,
+  onOpenProxySettings,
   minimumDurationMs = STARTUP_MINIMUM_DURATION_MS,
   exitDurationMs = STARTUP_EXIT_DURATION_MS,
 }: StartupOverlayProps) {
@@ -150,6 +152,7 @@ export function StartupOverlay({
               <p>{error}</p>
             </div>
             <div className="startup-error-actions">
+              {onOpenProxySettings && <button className="secondary-button" type="button" onClick={onOpenProxySettings}>检查代理设置</button>}
               <button ref={retryButton} className="primary-button" type="button" onClick={onRetry}>
                 <RefreshCw size={16} aria-hidden="true" />
                 重试启动

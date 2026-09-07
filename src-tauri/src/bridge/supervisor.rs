@@ -42,6 +42,7 @@ pub type BridgeFaultSink = Arc<dyn Fn(AppError) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone)]
 pub struct BridgeLaunchConfig {
+    pub proxy: crate::storage::proxy::ProxyEndpoint,
     pub node_path: PathBuf,
     pub bridge_script: PathBuf,
     pub sdk_root: PathBuf,
@@ -60,6 +61,7 @@ impl BridgeLaunchConfig {
     ) -> Self {
         Self {
             node_path,
+            proxy: Default::default(),
             bridge_script,
             sdk_root,
             agent_dir,
@@ -69,8 +71,15 @@ impl BridgeLaunchConfig {
         }
     }
 
+    pub fn with_proxy(mut self, proxy: crate::storage::proxy::ProxyEndpoint) -> Self {
+        self.proxy = proxy;
+        self
+    }
+
     fn canonicalize(self) -> Result<Self, AppError> {
+        self.proxy.validate()?;
         Ok(Self {
+            proxy: self.proxy,
             node_path: canonical_file(
                 &self.node_path,
                 "NODE_PATH_INVALID",
@@ -1481,6 +1490,7 @@ impl Drop for ProcessTransport {
 
 fn bridge_command(config: &BridgeLaunchConfig) -> Command {
     let mut command = Command::new(&config.node_path);
+    config.proxy.apply_to_command(&mut command);
     command
         .arg(&config.bridge_script)
         .arg("--sdk-root")

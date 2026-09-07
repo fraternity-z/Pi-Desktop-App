@@ -8,6 +8,31 @@ use crate::{
 };
 
 #[tauri::command]
+pub fn get_proxy_settings(
+    store: State<'_, crate::storage::proxy::ProxySettingsStore>,
+) -> Result<crate::storage::proxy::ProxySettings, AppError> {
+    store.state()
+}
+
+#[tauri::command]
+pub async fn update_proxy_settings(
+    app: AppHandle,
+    settings: crate::storage::proxy::ProxySettings,
+) -> Result<crate::storage::proxy::ProxySettings, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app.state::<crate::storage::proxy::ProxySettingsStore>();
+        let proxy = settings.ai.clone();
+        let request = store.update(settings.clone(), |persist| {
+            app.state::<BridgeRuntime>().update_proxy(proxy, persist)
+        })?;
+        super::runtime::schedule_runtime_restart(&app, request);
+        Ok(settings)
+    })
+    .await
+    .map_err(|_| AppError::new("PROXY_SAVE_FAILED", "代理保存任务失败，请重试"))?
+}
+
+#[tauri::command]
 pub fn get_prompt_document(
     kind: crate::storage::prompts::PromptKind,
 ) -> Result<crate::storage::prompts::PromptDocument, AppError> {

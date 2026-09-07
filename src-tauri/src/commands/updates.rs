@@ -2,7 +2,7 @@ use reqwest::Url;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::error::AppError;
 
@@ -38,7 +38,7 @@ struct GitHubAsset {
 pub async fn check_for_updates(app: AppHandle) -> Result<UpdateCheckResult, AppError> {
     let current_version = app.package_info().version.to_string();
     let current = parse_version(&current_version, "当前应用")?;
-    let client = reqwest::Client::builder()
+    let client = app.state::<crate::storage::proxy::ProxySettingsStore>().state()?.app.client_builder()?
         .timeout(REQUEST_TIMEOUT)
         .user_agent(format!("Pi Desktop/{current_version}"))
         .build()

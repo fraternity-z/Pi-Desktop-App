@@ -15,6 +15,9 @@ import { useMemo, useState } from "react";
 import { AgentConfigurationSettings } from "../components/AgentConfigurationSettings";
 import { AppearanceSettings } from "../components/AppearanceSettings";
 import { PersonalizationSettings } from "../components/PersonalizationSettings";
+import { KeyboardShortcutSettings } from "../components/KeyboardShortcutSettings";
+import { ProxySettings } from "../components/ProxySettings";
+import type { KeyboardShortcutsController } from "../stores/useKeyboardShortcuts";
 import { ConfirmSidebarDialog } from "../components/SidebarDialog";
 import {
   SettingsRow,
@@ -38,6 +41,7 @@ import type { ToolPermissionState } from "../stores/useToolPermissions";
 interface SettingsViewProps {
   section: SettingsSectionId;
   toolPermissions?: ToolPermissionState;
+  shortcuts?: KeyboardShortcutsController;
   sidebarOpen: boolean;
   sidebarWidth: number;
   preferences: AppPreferences;
@@ -60,12 +64,15 @@ const SECTION_TITLES: Record<SettingsSectionId, string> = {
   runtime: "运行时",
   personalization: "个性化",
   configuration: "配置",
+  shortcuts: "快捷键",
+  proxy: "代理",
   archived: "已归档",
 };
 
 export function SettingsView({
   section,
   toolPermissions,
+  shortcuts,
   sidebarOpen,
   sidebarWidth,
   preferences,
@@ -114,6 +121,8 @@ export function SettingsView({
         <div className="settings-content" data-testid={`settings-${section}`}>
           <h1 className="settings-page-title">{SECTION_TITLES[section]}</h1>
           {section === "personalization" && <PersonalizationSettings />}
+          {section === "shortcuts" && shortcuts && <KeyboardShortcutSettings controller={shortcuts} />}
+          {section === "proxy" && <ProxySettings />}
           {section === "configuration" && <AgentConfigurationSettings tools={toolPermissions} />}
           {section === "general" && (
             <GeneralSettings preferences={preferences} onChange={onPreferencesChange} />

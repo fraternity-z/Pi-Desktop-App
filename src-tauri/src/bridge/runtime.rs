@@ -54,6 +54,7 @@ const STARTUP_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const STARTUP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub struct BridgeRuntime {
+    proxy: Mutex<crate::storage::proxy::ProxyEndpoint>,
     supervisor: Mutex<SupervisorSlot>,
     supervisor_ready: Condvar,
     runtime_paths: Mutex<Option<RuntimePaths>>,
@@ -159,6 +160,7 @@ impl BridgeRuntime {
         };
         Self {
             supervisor: Mutex::new(SupervisorSlot::default()),
+            proxy: Mutex::new(Default::default()),
             supervisor_ready: Condvar::new(),
             runtime_paths: Mutex::new(None),
             known_sessions: Mutex::new(HashSet::new()),
@@ -173,6 +175,7 @@ impl BridgeRuntime {
 
     pub fn unavailable(error: AppError, request_header_settings: RequestHeaderSettings) -> Self {
         Self {
+            proxy: Mutex::new(Default::default()),
             supervisor: Mutex::new(SupervisorSlot::default()),
             supervisor_ready: Condvar::new(),
             runtime_paths: Mutex::new(None),
@@ -188,6 +191,60 @@ impl BridgeRuntime {
 
     pub fn snapshot(&self) -> RuntimeSnapshot {
         self.snapshot_value()
+    }
+
+    pub(crate) fn initialize_proxy(
+        &self,
+        proxy: crate::storage::proxy::ProxyEndpoint,
+    ) -> Result<(), AppError> {
+        proxy.validate()?;
+        *self.proxy.lock().map_err(|_| {
+            AppError::new("PROXY_STATE_UNAVAILABLE", "代理设置锁不可用")
+        })? = proxy;
+        Ok(())
+    }
+
+    pub(crate) fn update_proxy(
+        &self,
+        proxy: crate::storage::proxy::ProxyEndpoint,
+        persist: impl FnOnce() -> Result<(), AppError>,
+    ) -> Result<Option<RestartRequest>, AppError> {
+        proxy.validate()?;
+        let mut slot = self.supervisor.lock().map_err(|_| {
+            AppError::new("BRIDGE_STATE_POISONED", "Bridge 状态锁不可用")
+        })?;
+        let mut current = self.proxy.lock().map_err(|_| {
+            AppError::new("PROXY_STATE_UNAVAILABLE", "代理设置锁不可用")
+        })?;
+        if *current == proxy {
+            persist()?;
+            return Ok(None);
+        }
+        if self.closed.load(Ordering::Acquire) {
+            return Err(AppError::new("BRIDGE_CLOSED", "Pi Bridge 已关闭"));
+        }
+        if slot.starting {
+            return Err(AppError::new("BRIDGE_STARTING", "运行时正在启动，请稍后保存代理设置"));
+        }
+        persist()?;
+        *current = proxy;
+        if self.launch.is_none() {
+            return Ok(None);
+        }
+        slot.starting = true;
+        slot.attempt = slot.attempt.wrapping_add(1);
+        slot.last_error = None;
+        let request = RestartRequest {
+            supervisor: slot.supervisor.take(),
+            attempt: slot.attempt,
+        };
+        drop(current);
+        drop(slot);
+        if let Ok(mut sessions) = self.known_sessions.lock() {
+            sessions.clear();
+        }
+        self.set_snapshot(starting_snapshot());
+        Ok(Some(request))
     }
 
     pub(crate) fn warm_up(&self) -> RuntimeSnapshot {
@@ -689,7 +746,12 @@ impl BridgeRuntime {
         start_with_runtime_candidates(
             &self.runtime_paths,
             || resolve_runtime_candidates(&selection),
-            |runtime_paths| start_bridge_with_paths(runtime_paths, launch, request_header_settings),
+            |runtime_paths| {
+                let proxy = self.proxy.lock().map_err(|_| {
+                    AppError::new("PROXY_STATE_UNAVAILABLE", "代理设置锁不可用")
+                })?.clone();
+                start_bridge_with_paths(runtime_paths, launch, request_header_settings, proxy)
+            },
         )
     }
 
@@ -844,6 +906,7 @@ fn start_bridge_with_paths(
     runtime_paths: RuntimePaths,
     launch: &RuntimeLaunchContext,
     request_header_settings: &RequestHeaderSettings,
+    proxy: crate::storage::proxy::ProxyEndpoint,
 ) -> Result<(BridgeSupervisor, RuntimeSource), AppError> {
     let source = runtime_paths.source.clone();
     eprintln!(
@@ -857,7 +920,8 @@ fn start_bridge_with_paths(
             launch.bridge_script.clone(),
             runtime_paths.sdk_root,
             agent_dir,
-        ),
+        )
+        .with_proxy(proxy),
         launch.event_sink.clone(),
         launch.fault_sink.clone(),
     )?;
@@ -1258,6 +1322,24 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     use super::*;
+
+    #[test]
+    fn proxy_save_reserves_restart_and_rejects_startup_races_without_persisting() {
+        use crate::storage::proxy::{ProxyEndpoint, ProxyMode};
+        let runtime = BridgeRuntime::initialize(PathBuf::from("fixture.mjs"), Arc::new(|_| {}), RequestHeaderSettings::default());
+        let direct = ProxyEndpoint { mode: ProxyMode::Direct, ..Default::default() };
+        runtime.supervisor.lock().unwrap().starting = true;
+        let result = runtime.update_proxy(direct.clone(), || panic!("must not persist while starting"));
+        assert_eq!(result.err().unwrap().code, "BRIDGE_STARTING");
+        runtime.supervisor.lock().unwrap().starting = false;
+        assert!(runtime.update_proxy(direct.clone(), || Err(AppError::new("FIXTURE_WRITE_FAILED", "fixture"))).is_err());
+        assert_eq!(*runtime.proxy.lock().unwrap(), ProxyEndpoint::default());
+        let request = runtime.update_proxy(direct.clone(), || Ok(())).unwrap();
+        assert!(request.is_some());
+        assert_eq!(*runtime.proxy.lock().unwrap(), direct);
+        assert!(runtime.update_proxy(direct, || Ok(())).unwrap().is_none());
+        runtime.shutdown();
+    }
 
     #[test]
     fn unavailable_runtime_exposes_stable_non_sensitive_snapshot() {

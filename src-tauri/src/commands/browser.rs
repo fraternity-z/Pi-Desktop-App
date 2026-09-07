@@ -87,6 +87,19 @@ fn open_browser_sidebar(app: AppHandle, input: BrowserSidebarOpenInput) -> Resul
             NewWindowResponse::Deny
         })
         .on_download(|_, event| !matches!(event, DownloadEvent::Requested { .. }));
+    let proxy = app.state::<crate::storage::proxy::ProxySettingsStore>().state()?.app;
+    let builder = match proxy.mode {
+        crate::storage::proxy::ProxyMode::System => builder,
+        crate::storage::proxy::ProxyMode::Custom => builder.proxy_url(
+            Url::parse(&proxy.url).map_err(|_| AppError::new("APP_PROXY_INVALID", "应用代理地址无效"))?,
+        ),
+        crate::storage::proxy::ProxyMode::Direct => {
+            #[cfg(windows)]
+            { builder.additional_browser_args("--no-proxy-server --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection") }
+            #[cfg(not(windows))]
+            { return Err(AppError::new("APP_PROXY_UNSUPPORTED", "当前平台不支持内置浏览器强制直连，请选择系统模式")); }
+        }
+    };
     let webview = main_window
         .add_child(
             builder,

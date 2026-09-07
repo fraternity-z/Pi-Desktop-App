@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Form
 import { AppSidebar, threadTitle } from "../components/AppSidebar";
 import { BrowserSidebarPanel } from "../components/BrowserSidebarPanel";
 import { ChatComposer } from "../components/ChatComposer";
+import { CommandPalette } from "../components/CommandPalette";
 import {
   MAX_COMPOSER_ATTACHMENTS,
   normalizeAttachedPaths,
@@ -52,6 +53,7 @@ import {
   searchWorkspacePaths,
 } from "../ipc/workspace";
 import { useAppPreferences } from "../stores/useAppPreferences";
+import { useKeyboardShortcuts, useShortcutListener, type ShortcutAction } from "../stores/useKeyboardShortcuts";
 import { useAgentEcosystem } from "../stores/useAgentEcosystem";
 import { useChatSession, type SessionListItem } from "../stores/useChatSession";
 import { useRequestHeaderSettings } from "../stores/useRequestHeaderSettings";
@@ -111,6 +113,9 @@ const EMPTY_RIGHT_PANEL_FILE_STATE: RightPanelFileLoadState = {
 const CATALOG_RETRY_DELAYS_MS = [1_500, 3_000, 5_000] as const;
 
 export function ChatWorkbenchView() {
+  const shortcuts = useKeyboardShortcuts();
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const closeCommandPalette = useCallback(() => setCommandPaletteOpen(false), []);
   const runtime = useRuntimeStatus();
   const session = useChatSession();
   const toolPermissions = useToolPermissions(session.configuration);
@@ -637,7 +642,7 @@ export function ChatWorkbenchView() {
         return true;
       case "hotkeys":
         session.cancelAutoRestore();
-        setSettingsSection("behavior");
+        setSettingsSection("shortcuts");
         setActiveView("settings");
         closeSidebarAfterNavigation();
         return true;
@@ -865,6 +870,33 @@ export function ChatWorkbenchView() {
     });
   }, []);
 
+  const shortcutDisabled: Partial<Record<ShortcutAction, boolean>> = {
+    newSession: !runtimeReady || !eventChannelReady || session.phase === "creating",
+    focus: !hasSession,
+    file: !rightPanelEnabled,
+    browser: !rightPanelEnabled,
+  };
+  function runShortcut(action: ShortcutAction) {
+    if (shortcutDisabled[action]) return;
+    switch (action) {
+      case "commands": setCommandPaletteOpen(true); break;
+      case "newSession": setActiveView("chat"); void (session.cwd ? createSession(session.cwd) : createConversation()); break;
+      case "packages": openEcosystem("packages"); break;
+      case "resources": openEcosystem("resources"); break;
+      case "settings": openSettings(); break;
+      case "chat": leaveSettings(); break;
+      case "focus":
+        setActiveView("chat");
+        window.setTimeout(() => document.querySelector<HTMLTextAreaElement>('textarea[aria-label="发送给 Pi 的消息"]')?.focus(), 0);
+        break;
+      case "theme": updatePreferences({ theme: document.documentElement.dataset.theme === "dark" ? "light" : "dark" }); break;
+      case "runtime": openSettings(); setSettingsSection("runtime"); break;
+      case "file": rightPanelVisibility.openPanel(); openRightPanelFileSearch(); break;
+      case "browser": openRightPanelBrowser(); break;
+    }
+  }
+  useShortcutListener(shortcuts.bindings, runShortcut);
+
   return (
     <>
       <div
@@ -947,6 +979,7 @@ export function ChatWorkbenchView() {
           notifications={notifications}
           requestHeaders={requestHeaders}
           toolPermissions={toolPermissions}
+          shortcuts={shortcuts}
           runtime={runtime}
           eventConnection={session.eventConnection}
           onOpenSidebar={() => setSidebarOpen(true)}
@@ -1202,6 +1235,8 @@ export function ChatWorkbenchView() {
             onActiveTabChange={setRightPanelTab}
             onOpenFile={openRightPanelFileSearch}
             onOpenBrowser={openRightPanelBrowser}
+            fileShortcut={shortcuts.bindings.file}
+            browserShortcut={shortcuts.bindings.browser}
             onCloseFileTab={closeRightPanelFile}
             onClosePreviewTab={closeRightPanelPreview}
             onCloseBrowserTab={closeRightPanelBrowser}
@@ -1237,7 +1272,7 @@ export function ChatWorkbenchView() {
                 onRetry={() => setFileReloadKey((current) => current + 1)}
               />
             ) : rightPanelTab === "browser" ? (
-              <BrowserSidebarPanel active={rightPanelVisibility.open} />
+              <BrowserSidebarPanel active={rightPanelVisibility.open && !commandPaletteOpen} />
             ) : (
               <GitReviewPanel
                 cwd={session.cwd}
@@ -1271,6 +1306,8 @@ export function ChatWorkbenchView() {
         />
       )}
       </div>
+      {commandPaletteOpen && <CommandPalette bindings={shortcuts.bindings} disabled={shortcutDisabled} onClose={closeCommandPalette}
+        onAction={(action) => { closeCommandPalette(); runShortcut(action); }} />}
       {startupOverlayVisible && (
         <StartupOverlay
           ready={startupReady}
@@ -1279,6 +1316,11 @@ export function ChatWorkbenchView() {
           onRetry={retryStartup}
           onExit={exitStartup}
           onFinished={finishStartup}
+          onOpenProxySettings={startupError?.includes("PROXY_") ? () => {
+            setStartupOverlayVisible(false);
+            openSettings();
+            setSettingsSection("proxy");
+          } : undefined}
         />
       )}
     </>

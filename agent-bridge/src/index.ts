@@ -11,9 +11,10 @@ import { createHello, serializeFrame, type BridgeStartupError } from "./protocol
 import { loadPiSdk, SdkLoadError } from "./sdk-loader.js";
 import { BridgeServer } from "./server.js";
 import { PiSessionRuntime } from "./session-runtime.js";
+import { configureProxy, ProxyConfigurationError } from "./proxy.js";
 
 function startupFailure(error: unknown): BridgeStartupError {
-  if (error instanceof CliError || error instanceof SdkLoadError) {
+  if (error instanceof CliError || error instanceof SdkLoadError || error instanceof ProxyConfigurationError) {
     return {
       type: "startup.error",
       error: { code: error.code, message: error.message },
@@ -29,6 +30,7 @@ async function run(): Promise<void> {
   const startupStartedAt = performanceNow();
   try {
     const options = parseBridgeOptions(process.argv.slice(2));
+    configureProxy();
     const loadedSdk = await measurePerformance(
       stderrPerformanceDiagnosticSink,
       "startup",

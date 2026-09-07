@@ -119,6 +119,7 @@ pub fn run() {
                 .app_config_dir()
                 .map_err(|error| error.to_string())?;
             let app_settings_store = AppSettingsStore::new(config_dir.clone());
+            let proxy_store = storage::proxy::ProxySettingsStore::new(config_dir.clone());
             let app_settings = app_settings_store.state();
             let request_header_store = RequestHeaderSettingsStore::new(config_dir.clone());
             let request_header_settings = request_header_store.state();
@@ -154,6 +155,16 @@ pub fn run() {
                         request_header_settings,
                     )
                 });
+            let runtime = match proxy_store.state() {
+                Ok(settings) => {
+                    runtime
+                        .initialize_proxy(settings.ai)
+                        .map_err(|error| error.message)?;
+                    runtime
+                }
+                Err(error) => BridgeRuntime::unavailable(error, request_header_store.state()),
+            };
+            app.manage(proxy_store);
             app.manage(runtime);
             app.manage(app_settings_store);
             let warmup_app = app.handle().clone();
@@ -197,6 +208,8 @@ pub fn run() {
             commands::runtime::agent_clear_queue,
             commands::runtime::agent_abort,
             commands::settings::get_runtime_settings,
+            commands::settings::get_proxy_settings,
+            commands::settings::update_proxy_settings,
             commands::settings::get_prompt_document,
             commands::settings::save_prompt_document,
             commands::settings::set_runtime_mode,

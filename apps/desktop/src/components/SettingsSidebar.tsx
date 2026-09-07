@@ -4,6 +4,8 @@ import {
   ArrowLeft,
   Bell,
   Gauge,
+  Keyboard,
+  Network,
   Palette,
   PanelLeftClose,
   Search,
@@ -24,6 +26,8 @@ export type SettingsSectionId =
   | "runtime"
   | "personalization"
   | "configuration"
+  | "shortcuts"
+  | "proxy"
   | "archived";
 
 interface SettingsSidebarProps {
@@ -61,6 +65,7 @@ const SETTINGS_GROUPS: Array<{ label: string; items: SettingsNavItem[] }> = [
         icon: Palette,
       },
       { id: "behavior", label: "行为", keywords: "确认 导航 移除", icon: ShieldCheck },
+      { id: "shortcuts", label: "快捷键", keywords: "键盘 热键 绑定 重置", icon: Keyboard },
     ],
   },
   {
@@ -75,6 +80,10 @@ const SETTINGS_GROUPS: Array<{ label: string; items: SettingsNavItem[] }> = [
         icon: Activity,
       },
     ],
+  },
+  {
+    label: "网络",
+    items: [{ id: "proxy", label: "代理", keywords: "网络 HTTP HTTPS 连接 环境变量", icon: Network }],
   },
   {
     label: "数据",

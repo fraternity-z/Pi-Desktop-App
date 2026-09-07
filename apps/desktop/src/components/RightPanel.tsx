@@ -48,6 +48,8 @@ export interface RightPanelProps {
   readonly onActiveTabChange: (tab: RightPanelTabId) => void;
   readonly onOpenFile?: () => void;
   readonly onOpenBrowser?: () => void;
+  readonly fileShortcut?: string | null;
+  readonly browserShortcut?: string | null;
   readonly onCloseFileTab?: () => void;
   readonly onClosePreviewTab?: () => void;
   readonly onCloseBrowserTab?: () => void;
@@ -122,22 +124,6 @@ export function RightPanel(props: RightPanelProps): ReactElement | null {
       window.removeEventListener("keydown", escape);
     };
   }, [menuOpen]);
-  useEffect(() => {
-    if (!props.open || !props.available) return;
-    const shortcut = (event: globalThis.KeyboardEvent) => {
-      if (!event.ctrlKey || event.altKey || event.metaKey) return;
-      if (event.key.toLowerCase() === "p" && props.onOpenFile) {
-        event.preventDefault();
-        props.onOpenFile();
-      }
-      if (event.key.toLowerCase() === "t" && props.onOpenBrowser) {
-        event.preventDefault();
-        props.onOpenBrowser();
-      }
-    };
-    window.addEventListener("keydown", shortcut);
-    return () => window.removeEventListener("keydown", shortcut);
-  }, [props.available, props.onOpenBrowser, props.onOpenFile, props.open]);
 
   useEffect(() => {
     if (!props.open || !props.available || props.expanded) {
@@ -215,8 +201,8 @@ export function RightPanel(props: RightPanelProps): ReactElement | null {
           <div className="right-panel-add-wrap" ref={menuRef}>
             <button type="button" className="right-panel-icon-button" aria-label="打开右侧面板标签页" title="打开标签页" aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen((value) => !value)}><Plus aria-hidden="true" /></button>
             {menuOpen ? <div className="right-panel-menu" role="menu">
-              {props.onOpenFile ? <button type="button" role="menuitem" onClick={() => openAction(props.onOpenFile)}><FileText aria-hidden="true" /><span>打开文件</span><kbd>Ctrl+P</kbd></button> : null}
-              {props.onOpenBrowser ? <button type="button" role="menuitem" onClick={() => openAction(props.onOpenBrowser)}><Globe2 aria-hidden="true" /><span>浏览器</span><kbd>Ctrl+T</kbd></button> : null}
+              {props.onOpenFile ? <button type="button" role="menuitem" onClick={() => openAction(props.onOpenFile)}><FileText aria-hidden="true" /><span>打开文件</span><kbd>{props.fileShortcut ?? ""}</kbd></button> : null}
+              {props.onOpenBrowser ? <button type="button" role="menuitem" onClick={() => openAction(props.onOpenBrowser)}><Globe2 aria-hidden="true" /><span>浏览器</span><kbd>{props.browserShortcut ?? ""}</kbd></button> : null}
             </div> : null}
           </div>
         </div>

@@ -45,6 +45,7 @@ import {
   gitUnstage,
 } from "../ipc/git";
 import { getRequestHeaderSettings, updateRequestHeaderSettings } from "../ipc/settings";
+import { DEFAULT_PROXY_SETTINGS, getProxySettings } from "../ipc/proxy";
 import {
   closeAppWindow,
   getRuntimeSettings,
@@ -116,6 +117,7 @@ vi.mock("../ipc/agent", () => ({
   updateAgentPackage: vi.fn(),
 }));
 vi.mock("../ipc/project", () => ({ selectProjectDirectory: vi.fn() }));
+vi.mock("../ipc/proxy", async (original) => ({ ...await original<typeof import("../ipc/proxy")>(), getProxySettings: vi.fn() }));
 vi.mock("../ipc/browser", () => ({
   hideBrowserSidebar: vi.fn(),
   openBrowserSidebar: vi.fn(),
@@ -209,6 +211,7 @@ describe("ChatWorkbenchView", () => {
 
   beforeEach(() => {
     window.localStorage.clear();
+    vi.mocked(getProxySettings).mockReset().mockResolvedValue(DEFAULT_PROXY_SETTINGS);
     emitAgentEvent = undefined;
     emitRuntimeStatus = undefined;
     runtimeUnlisten = vi.fn<() => void>();
@@ -344,6 +347,60 @@ describe("ChatWorkbenchView", () => {
         emitAgentEvent = handler;
         return unlisten;
       });
+  });
+
+  it("会话快捷键聚焦输入并打开文件和浏览器，弹窗期间不触发导航", async () => {
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    await addProject("C:\\work");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "PI Desktop 启动界面" })).not.toBeInTheDocument());
+    fireEvent.keyDown(window, { key: "j", ctrlKey: true });
+    await waitFor(() => expect(screen.getByLabelText("发送给 Pi 的消息")).toHaveFocus());
+    fireEvent.keyDown(window, { key: "o", ctrlKey: true });
+    expect(await screen.findByRole("searchbox", { name: "输入内容搜索文件" })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "p", ctrlKey: true });
+    expect(screen.queryByRole("heading", { name: "插件" })).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("searchbox", { name: "输入内容搜索文件" }), { key: "Escape" });
+    fireEvent.keyDown(window, { key: "t", ctrlKey: true });
+    expect(await screen.findByRole("tab", { name: "浏览器" })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "n", ctrlKey: true });
+    expect(await screen.findByLabelText("发送给 Pi 的消息")).toHaveValue("");
+  });
+
+  it("代理错误时可从启动页进入设置修复", async () => {
+    vi.mocked(getRuntimeStatus).mockResolvedValue({ status: "unavailable", runtimeSource: null, piVersion: null, nodeVersion: null, error: { code: "PROXY_READ_FAILED", message: "请检查配置" } });
+    render(<ChatWorkbenchView />);
+    fireEvent.click(await screen.findByRole("button", { name: "检查代理设置" }));
+    expect(await screen.findByTestId("settings-proxy")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "PI Desktop 启动界面" })).not.toBeInTheDocument();
+  });
+
+  it("自定义快捷键立即生效并与命令面板和现有动作联动", async () => {
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "PI Desktop 启动界面" })).not.toBeInTheDocument(), { timeout: 3000 });
+    fireEvent.keyDown(window, { key: ",", ctrlKey: true });
+    await screen.findByTestId("settings-general");
+    fireEvent.click(screen.getByRole("button", { name: "快捷键" }));
+    const binding = await screen.findByRole("button", { name: "修改打开设置快捷键" });
+    fireEvent.click(binding);
+    fireEvent.keyDown(binding, { key: "u", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "1", ctrlKey: true });
+    await waitFor(() => expect(screen.queryByTestId("settings-shortcuts")).not.toBeInTheDocument());
+    fireEvent.keyDown(window, { key: ",", ctrlKey: true });
+    expect(screen.queryByTestId("settings-general")).not.toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "u", ctrlKey: true });
+    await screen.findByTestId("settings-general");
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    expect(await screen.findByRole("dialog", { name: "命令面板" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /运行时面板/ }));
+    await screen.findByTestId("settings-runtime");
+    fireEvent.keyDown(window, { key: "p", ctrlKey: true });
+    expect(await screen.findByRole("heading", { name: "插件" })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "p", ctrlKey: true, shiftKey: true });
+    expect(await screen.findByRole("heading", { name: "资源" })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "t", ctrlKey: true, shiftKey: true });
+    expect(document.documentElement.dataset.themePreference).not.toBe("system");
   });
 
   it("Bridge 启动期间展示真实启动状态并在就绪后退出", async () => {

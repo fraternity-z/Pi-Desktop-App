@@ -3678,6 +3678,66 @@ body {
   letter-spacing: 0;
 }
 
+.shortcut-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 28px;
+}
+
+.shortcut-toolbar p { margin: 0; }
+.shortcut-search.settings-search-field { margin: 0 0 30px; height: 42px; border-radius: 24px; }
+.shortcut-row-actions { display: flex; align-items: center; gap: 12px; }
+.shortcut-binding {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 104px;
+  min-height: 36px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--input-bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.shortcut-binding kbd {
+  padding: 2px 6px;
+  min-width: 25px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--surface);
+  box-shadow: 0 1px 1px rgb(0 0 0 / 8%);
+  font: 600 12px/1.5 var(--app-ui-font);
+}
+.shortcut-binding[aria-pressed="true"] { border-color: var(--focus); }
+.shortcut-binding:focus-visible,
+.proxy-fields input:focus-visible,
+.command-palette input:focus-visible,
+.command-palette button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.settings-main-shortcuts .settings-card,
+.settings-main-proxy .settings-card { border: 1px solid var(--line); border-radius: 14px; padding: 0 20px; background: var(--surface); }
+.settings-main-shortcuts .settings-content,
+.settings-main-proxy .settings-content { max-width: 940px; }
+.settings-main-shortcuts .prompt-scope-note { margin-top: 20px; }
+.proxy-fields { padding: 0 0 20px; }
+.proxy-fields label { display: grid; gap: 8px; margin-top: 16px; font-size: 13px; color: var(--text); }
+.proxy-fields input,
+.command-palette-search { width: 100%; min-width: 0; border: 1px solid var(--input-border); border-radius: 8px; padding: 10px 12px; background: var(--input-bg); color: var(--text); font: inherit; }
+.command-palette-list { display: grid; max-height: min(420px, 55vh); overflow-y: auto; margin-top: 12px; }
+.command-palette-list button { display: flex; justify-content: space-between; align-items: center; gap: 16px; border: 0; border-radius: 6px; padding: 12px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.command-palette-list button:hover:not(:disabled) { background: var(--hover); }
+.command-palette-list button:disabled { opacity: 0.45; cursor: default; }
+.command-palette-list kbd { color: var(--subtle); font-size: 12px; }
+@media (max-width: 600px) {
+  .shortcut-toolbar { flex-wrap: wrap; }
+  .shortcut-row-actions { gap: 5px; }
+  .settings-main-shortcuts .settings-row { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .settings-main-shortcuts .settings-row-control { justify-self: start; }
+}
+
 .prompt-scope-note {
   margin: 0 0 24px;
   line-height: 1.7;

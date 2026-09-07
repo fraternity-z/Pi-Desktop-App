@@ -283,9 +283,15 @@ export interface CreatedAgentSession {
   modelFallbackMessage?: string;
   configuration: SessionConfiguration;
   messages: AgentMessageSummary[];
+  nextHistoryCursor?: string | null;
   queuedMessages: QueuedMessages;
   streaming: boolean;
   contextUsage?: ContextUsage | null;
+}
+
+export interface SessionHistoryPage {
+  messages: AgentMessageSummary[];
+  nextHistoryCursor: string | null;
 }
 
 export interface QueuedMessages {
@@ -341,6 +347,7 @@ export interface SessionRuntime {
   listSessions(): Promise<AgentSessionSummary[]>;
   deleteSessions(sessionIds: string[]): Promise<DeleteSessionsResult>;
   openSession(sessionPath: string): Promise<CreatedAgentSession>;
+  readHistory?(sessionId: string, cursor: string): SessionHistoryPage;
   listModels(): Promise<AgentModel[]>;
   listPackages(cwd: string): Promise<PackageSummary[]>;
   installPackage(cwd: string, source: string, scope: PackageScope): Promise<PackageSummary[]>;
@@ -394,6 +401,8 @@ interface ManagedSession {
   contextUsageKey: string;
   historyRevision: number;
   historySummaryMeta?: HistorySummaryMeta;
+  historySnapshot?: { id: number; messages: unknown[] };
+  historySnapshotId?: number;
 }
 
 interface HistorySummaryMeta {
@@ -404,6 +413,7 @@ interface HistorySummaryMeta {
 
 const MAX_HISTORY_MESSAGES = 200;
 const MAX_HISTORY_CHARS = 400_000;
+const MAX_HISTORY_BYTES = 600_000;
 const MAX_SUMMARY_CHARS = 240;
 const MAX_TOOL_CALL_ID_CHARS = 256;
 const MAX_TOOL_NAME_CHARS = 128;
@@ -1185,6 +1195,21 @@ export class PiSessionRuntime implements SessionRuntime {
     }
   }
 
+  readHistory(sessionId: string, cursor: string): SessionHistoryPage {
+    this.ensureOpen();
+    const managed = this.requireSession(sessionId);
+    const [id, index, part] = cursor.split(":").map(Number);
+    const snapshot = managed.historySnapshot;
+    if (!/^\d{1,16}:\d{1,16}:\d{1,16}$/.test(cursor) ||
+        ![id, index, part].every((value) => Number.isSafeInteger(value) && value! >= 0) ||
+        !snapshot || id !== snapshot.id || index! >= snapshot.messages.length) {
+      throw new RuntimeError("HISTORY_CURSOR_INVALID", "历史分页已失效，请重新打开会话");
+    }
+    const page = summarizeHistoryPage(snapshot.messages.slice(0, index! + 1), id!, part);
+    if (page.nextHistoryCursor === null) managed.historySnapshot = undefined;
+    return page;
+  }
+
   async listModels(): Promise<AgentModel[]> {
     this.ensureOpen();
     try {
@@ -1758,7 +1783,14 @@ function describeManagedSession(
   operation?: "session.create" | "session.open",
 ): CreatedAgentSession {
   const historyStartedAt = performanceNow();
-  const messages = summarizeMessages(managed.session.messages);
+  const snapshot = {
+    id: (managed.historySnapshotId ?? 0) + 1,
+    messages: managed.session.messages.slice(),
+  };
+  managed.historySnapshotId = snapshot.id;
+  const page = summarizeHistoryPage(snapshot.messages, snapshot.id);
+  managed.historySnapshot = page.nextHistoryCursor ? snapshot : undefined;
+  const messages = page.messages;
   // The open/create response already paid for this projection. Reuse its small
   // metadata object when the next catalog refresh asks for the live summary.
   managed.historySummaryMeta = {
@@ -1778,6 +1810,7 @@ function describeManagedSession(
     sessionPath: managed.session.sessionFile ?? null,
     configuration: describeConfiguration(managed.session, managed.defaultToolNames),
     messages,
+    nextHistoryCursor: page.nextHistoryCursor,
     queuedMessages: describeQueue(managed.session),
     streaming: managed.session.isStreaming,
     contextUsage: readContextUsage(managed.session),
@@ -2163,23 +2196,37 @@ interface PendingToolCall {
 }
 
 function summarizeMessages(messages: unknown[]): AgentMessageSummary[] {
-  const start = findHistoryStart(messages);
+  return summarizeHistoryPage(messages, 0).messages;
+}
+
+function summarizeHistoryPage(messages: unknown[], snapshotId: number, lastPart?: number): SessionHistoryPage {
+  const start = findHistoryStart(messages, lastPart);
   const pendingTools = new Map<string, PendingToolCall>();
   seedPendingToolCalls(messages, start, pendingTools);
   const selected: AgentMessageSummary[] = [];
   let characters = 0;
-  history: for (let index = messages.length - 1; index >= start; index -= 1) {
+  let bytes = 0;
+  for (let index = messages.length - 1; index >= start; index -= 1) {
     const projected = projectHistoryMessage(messages[index], pendingTools);
-    for (let partIndex = projected.length - 1; partIndex >= 0; partIndex -= 1) {
-      if (selected.length >= MAX_HISTORY_MESSAGES) break history;
+    const end = index === messages.length - 1 && lastPart !== undefined ? lastPart : projected.length;
+    if (end > projected.length) throw new RuntimeError("HISTORY_CURSOR_INVALID", "历史分页位置无效，请重新打开会话");
+    for (let partIndex = end - 1; partIndex >= 0; partIndex -= 1) {
       const message = projected[partIndex]!;
       const messageCharacters = historyMessageCharacters(message);
-      if (characters + messageCharacters > MAX_HISTORY_CHARS) break history;
+      const messageBytes = Buffer.byteLength(JSON.stringify(message), "utf8") + 1;
+      if (selected.length >= MAX_HISTORY_MESSAGES || characters + messageCharacters > MAX_HISTORY_CHARS || bytes + messageBytes > MAX_HISTORY_BYTES) {
+        if (selected.length === 0) throw new RuntimeError("HISTORY_MESSAGE_TOO_LARGE", "单条历史消息超过传输上限，无法完整恢复会话");
+        return { messages: selected.reverse(), nextHistoryCursor: `${snapshotId}:${index}:${partIndex + 1}` };
+      }
       characters += messageCharacters;
+      bytes += messageBytes;
       selected.push(message);
     }
   }
-  return selected.reverse();
+  return {
+    messages: selected.reverse(),
+    nextHistoryCursor: start > 0 ? `${snapshotId}:${start}:0` : null,
+  };
 }
 
 function historyMessageCharacters(message: AgentMessageSummary): number {
@@ -2190,10 +2237,11 @@ function historyMessageCharacters(message: AgentMessageSummary): number {
   );
 }
 
-function findHistoryStart(messages: unknown[]): number {
+function findHistoryStart(messages: unknown[], lastPart?: number): number {
   let projected = 0;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    projected += projectedMessageCount(messages[index]);
+    projected += index === messages.length - 1 && lastPart !== undefined
+      ? lastPart : projectedMessageCount(messages[index]);
     if (projected >= MAX_HISTORY_MESSAGES) return index;
   }
   return 0;

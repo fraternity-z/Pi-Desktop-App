@@ -19,8 +19,8 @@ use crate::{
         AgentModel, AgentSessionSummary, BridgeEvent, BridgeHello, BridgeResponse, CreatedSession,
         DeleteSessionsResult, PROTOCOL_VERSION, PackageScope, PackageSummary, PackageUpdateInfo,
         PromptStreamingBehavior, RequestHeaderSettings, ResourceSummary, SessionConfiguration,
-        SlashCommandSummary, parse_hello_frame, valid_session_configuration, valid_slash_commands,
-        validate_event, validate_frame_size,
+        SessionHistoryPage, SlashCommandSummary, parse_hello_frame, valid_session_configuration,
+        valid_slash_commands, validate_event, validate_frame_size,
     },
     error::AppError,
 };
@@ -237,7 +237,7 @@ impl BridgeSupervisor {
                 "Bridge session.create 返回了无效的思考强度配置",
             ));
         }
-        Ok(session)
+        self.complete_session_history(session)
     }
 
     pub fn list_sessions(&self) -> Result<Vec<AgentSessionSummary>, AppError> {
@@ -320,6 +320,53 @@ impl BridgeSupervisor {
                 "Bridge session.open 返回了无效的思考强度配置",
             ));
         }
+        self.complete_session_history(session)
+    }
+
+    fn complete_session_history(
+        &self,
+        mut session: CreatedSession,
+    ) -> Result<CreatedSession, AppError> {
+        let mut pages = vec![std::mem::take(&mut session.messages)];
+        let mut previous: Option<[u64; 3]> = None;
+        while let Some(cursor) = session.next_history_cursor.take() {
+            let position: Option<[u64; 3]> = cursor
+                .split(':')
+                .map(|part| part.parse::<u64>().ok())
+                .collect::<Option<Vec<_>>>()
+                .and_then(|parts| parts.try_into().ok());
+            let valid = position.is_some_and(|position| {
+                position.iter().all(|value| *value <= 9_007_199_254_740_991)
+                    && previous.is_none_or(|previous| {
+                        position[0] == previous[0] && position[1..] < previous[1..]
+                    })
+            });
+            if cursor.len() > 64 || !valid {
+                return Err(AppError::new(
+                    "BRIDGE_HISTORY_INVALID",
+                    "Bridge 历史分页游标未向前推进或无效",
+                ));
+            }
+            previous = position;
+            let data = self
+                .request(
+                    "session.history",
+                    json!({"sessionId": session.session_id, "cursor": cursor}),
+                    self.response_timeout,
+                )?
+                .ok_or_else(|| {
+                    AppError::new("BRIDGE_HISTORY_INVALID", "Bridge 历史分页响应缺少数据")
+                })?;
+            if data.get("nextHistoryCursor").is_none() {
+                return Err(AppError::new("BRIDGE_HISTORY_INVALID", "Bridge 历史分页缺少结束标记"));
+            }
+            let page: SessionHistoryPage = serde_json::from_value(data).map_err(|_| {
+                AppError::new("BRIDGE_HISTORY_INVALID", "Bridge 历史分页响应字段无效")
+            })?;
+            session.next_history_cursor = page.next_history_cursor;
+            pages.push(page.messages);
+        }
+        session.messages = pages.into_iter().rev().flatten().collect();
         Ok(session)
     }
 
@@ -1183,6 +1230,9 @@ fn public_remote_error_code(code: &str) -> Option<&'static str> {
         "SESSION_IDS_INVALID" => "SESSION_IDS_INVALID",
         "SESSION_PATH_INVALID" => "SESSION_PATH_INVALID",
         "SESSION_OPEN_FAILED" => "SESSION_OPEN_FAILED",
+        "HISTORY_CURSOR_INVALID" => "HISTORY_CURSOR_INVALID",
+        "HISTORY_MESSAGE_TOO_LARGE" => "HISTORY_MESSAGE_TOO_LARGE",
+        "HISTORY_UNAVAILABLE" => "HISTORY_UNAVAILABLE",
         "SESSION_BUSY" => "SESSION_BUSY",
         "SESSION_NOT_FOUND" => "SESSION_NOT_FOUND",
         "INVALID_SESSION" => "INVALID_SESSION",
@@ -1593,6 +1643,67 @@ mod tests {
     use super::*;
 
     const HELLO: &str = r#"{"type":"hello","protocolVersion":1,"piVersion":"0.84.2","nodeVersion":"22.23.2","capabilities":["sessions","streaming","abort","extensions","models","session-history","session-configuration","tool-status","tool-permissions","background-sessions","thinking-stream","queue","request-header-profiles","packages","resources","context-usage","images"]}"#;
+
+    fn paged_session() -> CreatedSession {
+        serde_json::from_value(json!({
+            "sessionId": "saved", "cwd": "C:\\work", "sessionPath": null,
+            "configuration": {"model": null, "thinkingLevel": "off", "availableThinkingLevels": ["off"]},
+            "messages": [{"role": "assistant", "content": "latest"}],
+            "nextHistoryCursor": "1:200:0"
+        })).unwrap()
+    }
+
+    #[test]
+    fn restores_history_pages_in_chronological_order() {
+        let transport = MockTransport::new([
+            Ok(HELLO),
+            Ok(
+                r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":{"messages":[{"role":"user","content":"middle"}],"nextHistoryCursor":"1:100:0"}}"#,
+            ),
+            Ok(
+                r#"{"v":1,"kind":"response","id":"rust-2","ok":true,"data":{"messages":[{"role":"user","content":"first"}],"nextHistoryCursor":null}}"#,
+            ),
+        ]);
+        let writes = transport.writes.clone();
+        let restored = connect(transport)
+            .complete_session_history(paged_session())
+            .unwrap();
+        assert_eq!(
+            restored
+                .messages
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "middle", "latest"]
+        );
+        assert!(restored.next_history_cursor.is_none());
+        let request: Value = serde_json::from_str(&writes.lock().unwrap()[0]).unwrap();
+        assert_eq!(request["op"], "session.history");
+        assert_eq!(request["sessionId"], "saved");
+        assert_eq!(request["cursor"], "1:200:0");
+    }
+
+    #[test]
+    fn rejects_repeated_or_malformed_history_pages() {
+        for response in [
+            r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":{"messages":[],"nextHistoryCursor":"1:200:0"}}"#,
+            r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":{"messages":"invalid"}}"#,
+            r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":{"messages":[]}}"#,
+            r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":{"messages":[],"nextHistoryCursor":"1:201:0"}}"#,
+            r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":{"messages":[],"nextHistoryCursor":"2:100:0"}}"#,
+            r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":{"messages":[],"nextHistoryCursor":"bad"}}"#,
+            r#"{"v":1,"kind":"response","id":"rust-1","ok":true}"#,
+        ] {
+            let supervisor = connect(MockTransport::new([Ok(HELLO), Ok(response)]));
+            assert_eq!(
+                supervisor
+                    .complete_session_history(paged_session())
+                    .unwrap_err()
+                    .code,
+                "BRIDGE_HISTORY_INVALID"
+            );
+        }
+    }
 
     struct MockTransport {
         reads: Arc<Mutex<VecDeque<Result<String, AppError>>>>,

@@ -28,6 +28,7 @@ import {
   type ReactElement,
   type ReactNode,
   type Ref,
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -157,7 +158,7 @@ export function formatGitError(
   return typeof cause === "string" && cause ? cause : fallback;
 }
 
-export function GitReviewPanel({
+export const GitReviewPanel = memo(function GitReviewPanel({
   cwd,
   active = true,
   api = defaultApi,
@@ -832,7 +833,7 @@ export function GitReviewPanel({
       ) : null}
     </section>
   );
-}
+});
 
 interface DiffCardProps {
   readonly cwd: string;

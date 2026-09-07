@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { RightPanel, type RightPanelProps } from "./RightPanel";
@@ -62,11 +62,41 @@ describe("RightPanel", () => {
     const resizer = screen.getByRole("separator", { name: "调整右侧面板宽度" });
     fireEvent.pointerDown(resizer, { clientX: 600, pointerId: 1 });
     fireEvent.pointerMove(resizer, { clientX: 500, pointerId: 1 });
+    fireEvent.pointerUp(resizer, { pointerId: 1 });
     expect(props.onWidthChange).toHaveBeenCalledWith(512);
     fireEvent.keyDown(resizer, { key: "ArrowRight" });
     expect(props.onWidthChange).toHaveBeenCalledWith(512);
     fireEvent.keyDown(resizer, { key: "Home" });
     expect(props.onWidthChange).toHaveBeenCalledWith(320);
+  });
+
+  it("每帧只提交最新宽度，结束和卸载时清理待执行帧", () => {
+    const frames = new Map<number, FrameRequestCallback>();
+    let sequence = 0;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.set(++sequence, callback);
+      return sequence;
+    });
+    const cancel = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { frames.delete(id); });
+    const props = panelProps({ width: 400 });
+    const { unmount } = render(<RightPanel {...props} />);
+    const resizer = screen.getByRole("separator");
+    fireEvent.pointerDown(resizer, { clientX: 600, pointerId: 1 });
+    for (let x = 590; x >= 550; x -= 10) fireEvent.pointerMove(resizer, { clientX: x, pointerId: 1 });
+    expect(props.onWidthChange).not.toHaveBeenCalled();
+    expect(frames.size).toBe(1);
+    act(() => { frames.get(sequence)!(0); frames.delete(sequence); });
+    expect(props.onWidthChange).toHaveBeenCalledExactlyOnceWith(450);
+    fireEvent.pointerMove(resizer, { clientX: 540, pointerId: 1 });
+    fireEvent.pointerUp(resizer, { pointerId: 1 });
+    expect(props.onWidthChange).toHaveBeenLastCalledWith(460);
+    expect(frames.size).toBe(0);
+    fireEvent.pointerDown(resizer, { clientX: 600, pointerId: 2 });
+    fireEvent.pointerMove(resizer, { clientX: 560, pointerId: 2 });
+    unmount();
+    expect(cancel).toHaveBeenCalled();
+    expect(frames.size).toBe(0);
+    vi.restoreAllMocks();
   });
 
   it("不可用时不渲染，收起时保留关闭过渡状态", () => {

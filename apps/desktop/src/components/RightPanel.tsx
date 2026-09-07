@@ -67,6 +67,10 @@ export function RightPanel(props: RightPanelProps): ReactElement | null {
   const panelId = `right-panel-${generatedId.replace(/[^a-zA-Z0-9_-]/g, "")}`;
   const tabPanelId = `${panelId}-content`;
   const resizeStart = useRef<{ x: number; width: number } | null>(null);
+  const resizeFrame = useRef<number | null>(null);
+  const pendingWidth = useRef<number | null>(null);
+  const widthChange = useRef(props.onWidthChange);
+  widthChange.current = props.onWidthChange;
   const menuRef = useRef<HTMLDivElement>(null);
   const maxWidth = resolveRightPanelMaxWidth(typeof window === "undefined" ? null : window.innerWidth);
   const tabs: TabDefinition[] = [
@@ -135,6 +139,18 @@ export function RightPanel(props: RightPanelProps): ReactElement | null {
     return () => window.removeEventListener("keydown", shortcut);
   }, [props.available, props.onOpenBrowser, props.onOpenFile, props.open]);
 
+  useEffect(() => {
+    if (!props.open || !props.available || props.expanded) {
+      if (resizeFrame.current !== null) window.cancelAnimationFrame(resizeFrame.current);
+      resizeFrame.current = null;
+      pendingWidth.current = null;
+      resizeStart.current = null;
+    }
+  }, [props.open, props.available, props.expanded]);
+  useEffect(() => () => {
+    if (resizeFrame.current !== null) window.cancelAnimationFrame(resizeFrame.current);
+  }, []);
+
   if (!props.available) return null;
   const panelClassName = [
     "right-panel",
@@ -152,9 +168,20 @@ export function RightPanel(props: RightPanelProps): ReactElement | null {
   function moveResize(event: PointerEvent<HTMLDivElement>) {
     const start = resizeStart.current;
     if (!start) return;
-    props.onWidthChange(clampRightPanelWidth(start.width + start.x - event.clientX, maxWidth));
+    pendingWidth.current = clampRightPanelWidth(start.width + start.x - event.clientX, maxWidth);
+    if (resizeFrame.current === null) {
+      resizeFrame.current = window.requestAnimationFrame(() => {
+        resizeFrame.current = null;
+        if (pendingWidth.current !== null) widthChange.current(pendingWidth.current);
+        pendingWidth.current = null;
+      });
+    }
   }
   function endResize(event: PointerEvent<HTMLDivElement>) {
+    if (resizeFrame.current !== null) window.cancelAnimationFrame(resizeFrame.current);
+    resizeFrame.current = null;
+    if (pendingWidth.current !== null) widthChange.current(pendingWidth.current);
+    pendingWidth.current = null;
     resizeStart.current = null;
     event.currentTarget.releasePointerCapture?.(event.pointerId);
   }

@@ -42,6 +42,7 @@ describe("右侧面板布局", () => {
   });
 
   it("更新并持久化布局与审查选项", () => {
+    vi.useFakeTimers();
     const { result } = renderHook(() => useRightPanelLayout());
     act(() => result.current.setWidth(340));
     act(() => result.current.setExpanded(true));
@@ -51,9 +52,26 @@ describe("右侧面板布局", () => {
     expect(result.current.expanded).toBe(true);
     expect(result.current.diffStyle).toBe("split");
     expect(result.current.displayOptions.wordWrap).toBe(true);
+    act(() => vi.advanceTimersByTime(150));
     expect(window.localStorage.getItem(RIGHT_PANEL_STORAGE_KEYS.width)).toBe("340");
     expect(window.localStorage.getItem(RIGHT_PANEL_STORAGE_KEYS.expanded)).toBe("1");
     expect(window.localStorage.getItem(RIGHT_PANEL_STORAGE_KEYS.diffStyle)).toBe("split");
+    vi.useRealTimers();
+  });
+
+  it("连续拖动延迟写入宽度，卸载时保存最终值", () => {
+    vi.useFakeTimers();
+    const { result, unmount } = renderHook(() => useRightPanelLayout());
+    act(() => result.current.setWidth(350));
+    act(() => vi.advanceTimersByTime(100));
+    act(() => result.current.setWidth(370));
+    expect(window.localStorage.getItem(RIGHT_PANEL_STORAGE_KEYS.width)).toBeNull();
+    act(() => vi.advanceTimersByTime(150));
+    expect(window.localStorage.getItem(RIGHT_PANEL_STORAGE_KEYS.width)).toBe("370");
+    act(() => result.current.setWidth(390));
+    unmount();
+    expect(window.localStorage.getItem(RIGHT_PANEL_STORAGE_KEYS.width)).toBe("390");
+    vi.useRealTimers();
   });
 
   it("补齐部分展示选项并支持显式设置与重置", () => {

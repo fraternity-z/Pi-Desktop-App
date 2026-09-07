@@ -118,7 +118,13 @@ export function useRightPanelLayout(): RightPanelLayoutState {
     return () => window.removeEventListener("resize", updateViewport);
   }, []);
   useEffect(() => setWidthState((current) => clampRightPanelWidth(current, maxWidth)), [maxWidth]);
-  useEffect(() => saveStorage(RIGHT_PANEL_STORAGE_KEYS.width, String(width)), [width]);
+  const latestWidth = useRef(width);
+  latestWidth.current = width;
+  useEffect(() => {
+    const timer = window.setTimeout(() => saveStorage(RIGHT_PANEL_STORAGE_KEYS.width, String(width)), 150);
+    return () => window.clearTimeout(timer);
+  }, [width]);
+  useEffect(() => () => saveStorage(RIGHT_PANEL_STORAGE_KEYS.width, String(latestWidth.current)), []);
   useEffect(() => saveStorage(RIGHT_PANEL_STORAGE_KEYS.expanded, expanded ? "1" : "0"), [expanded]);
   useEffect(() => saveStorage(RIGHT_PANEL_STORAGE_KEYS.diffStyle, diffStyle), [diffStyle]);
   useEffect(() => saveStorage(RIGHT_PANEL_STORAGE_KEYS.displayOptions, JSON.stringify(displayOptions)), [displayOptions]);

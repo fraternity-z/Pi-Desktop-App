@@ -45,6 +45,7 @@ export const BRIDGE_OPERATIONS = [
   "session.list",
   "session.delete",
   "session.open",
+  "session.history",
   "session.configure",
   "prompt",
   "queue.clear",
@@ -119,6 +120,7 @@ export type BridgeRequest =
   | (RequestBase & { op: "session.create"; cwd: string })
   | (RequestBase & { op: "session.delete"; sessionIds: string[] })
   | (RequestBase & { op: "session.open"; sessionPath: string })
+  | (RequestBase & { op: "session.history"; sessionId: string; cursor: string })
   | (RequestBase & {
       op: "session.configure";
       sessionId: string;
@@ -474,6 +476,14 @@ export function parseRequest(line: string): BridgeRequest {
     case "session.open": {
       const sessionPath = requireAbsolutePath(value, "sessionPath");
       return { v: PROTOCOL_VERSION, id, op: "session.open", sessionPath };
+    }
+    case "session.history": {
+      const cursor = requireString(value, "cursor", 64);
+      if (!/^\d{1,16}:\d{1,16}:\d{1,16}$/.test(cursor) ||
+          !cursor.split(":").every((part) => Number.isSafeInteger(Number(part)))) {
+        throw new ProtocolError("INVALID_REQUEST", "历史分页游标无效");
+      }
+      return { v: PROTOCOL_VERSION, id, op: "session.history", sessionId: requireSessionId(value), cursor };
     }
     case "session.configure": {
       const model = readModelSelection(value);

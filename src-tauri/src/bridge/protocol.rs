@@ -229,12 +229,21 @@ pub struct CreatedSession {
     pub model_fallback_message: Option<String>,
     pub configuration: SessionConfiguration,
     pub messages: Vec<AgentMessageSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_history_cursor: Option<String>,
     #[serde(default)]
     pub queued_messages: QueuedMessages,
     #[serde(default)]
     pub streaming: bool,
     #[serde(default)]
     pub context_usage: Option<ContextUsage>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionHistoryPage {
+    pub messages: Vec<AgentMessageSummary>,
+    pub next_history_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]

@@ -12,6 +12,13 @@ import {
 } from "./protocol.js";
 
 describe("parseRequest", () => {
+  it("校验历史分页请求和游标", () => {
+    const request = { v: 1, id: "history", op: "session.history", sessionId: "s-1", cursor: "1:200:0" };
+    expect(parseRequest(JSON.stringify(request))).toEqual(request);
+    for (const cursor of [null, "", "-1:0:0", "1:2.5:0", "1:2", "1:9007199254740992:0"]) {
+      expect(() => parseRequest(JSON.stringify({ ...request, cursor }))).toThrow(ProtocolError);
+    }
+  });
   it.each([
     ['{"v":1,"id":"r-1","op":"ping"}', { v: 1, id: "r-1", op: "ping" }],
     [

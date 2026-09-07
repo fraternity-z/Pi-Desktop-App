@@ -250,6 +250,78 @@ function sdkReturning(...sessions: SessionMock[]): PiSdkLike & {
 }
 
 describe("PiSessionRuntime", () => {
+  it("分页恢复超过 200 条历史，保持多文本块顺序且不遗漏工具输入", async () => {
+    const messages = [
+      { role: "user", content: "first" },
+      { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "read", arguments: { path: "README.md" } }] },
+      { role: "toolResult", toolCallId: "t1", toolName: "read", content: "result" },
+      { role: "assistant", content: Array.from({ length: 405 }, (_, index) => ({ type: "text", text: `part-${index}` })) },
+      { role: "user", content: "last" },
+    ];
+    const opened = createSessionMock("paged", { sessionFile: "C:\\agent\\sessions\\paged.jsonl", messages });
+    const runtime = new PiSessionRuntime(sdkReturning(opened), "C:\\agent");
+    const initial = await runtime.openSession("C:\\agent\\sessions\\paged.jsonl");
+    let cursor = initial.nextHistoryCursor;
+    const pages = [initial.messages];
+    while (cursor) {
+      const page = runtime.readHistory("paged", cursor);
+      expect(page.nextHistoryCursor).not.toBe(cursor);
+      pages.unshift(page.messages);
+      cursor = page.nextHistoryCursor;
+    }
+    const restored = pages.flat();
+    expect(restored.map((message) => message.content)).toEqual([
+      "first", "", ...Array.from({ length: 405 }, (_, index) => `part-${index}`), "last",
+    ]);
+    expect(restored[1]?.toolInput?.text).toContain("README.md");
+    expect(() => runtime.readHistory("paged", initial.nextHistoryCursor!)).toThrow("历史分页已失效");
+    expect(() => runtime.readHistory("missing", "1:0:0")).toThrow(RuntimeError);
+  });
+
+  it("中文和转义文本按实际字节分页，保留原文并拒绝超大单条消息", async () => {
+    const messages = Array.from({ length: 8 }, (_, index) => ({ role: "user", content: `${index}:${"中文\n\"".repeat(30_000)}` }));
+    const opened = createSessionMock("bytes", { sessionFile: "C:\\agent\\sessions\\bytes.jsonl", messages });
+    const runtime = new PiSessionRuntime(sdkReturning(opened), "C:\\agent");
+    const initial = await runtime.openSession("C:\\agent\\sessions\\bytes.jsonl");
+    const pages = [initial.messages];
+    let cursor = initial.nextHistoryCursor;
+    while (cursor) {
+      const page = runtime.readHistory("bytes", cursor);
+      expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(1_048_576);
+      pages.unshift(page.messages);
+      cursor = page.nextHistoryCursor;
+    }
+    expect(pages.flat().map((message) => message.content)).toEqual(messages.map((message) => message.content));
+    messages.push({ role: "user", content: "x".repeat(600_001) });
+    await expect(runtime.openSession("C:\\agent\\sessions\\bytes.jsonl")).rejects.toMatchObject({ code: "HISTORY_MESSAGE_TOO_LARGE" });
+  });
+
+  it.runIf(Boolean(process.env.PI_HISTORY_FIXTURE))("本地 JSONL 历史完整性回归（仅输出统计）", async () => {
+    const source = await readFile(process.env.PI_HISTORY_FIXTURE!, "utf8");
+    const records = source.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+    const messages = records.filter((record) => record.type === "message").map((record) => record.message);
+    const opened = createSessionMock("local", { sessionFile: "C:\\agent\\sessions\\local.jsonl", messages });
+    const runtime = new PiSessionRuntime(sdkReturning(opened), "C:\\agent");
+    const initial = await runtime.openSession("C:\\agent\\sessions\\local.jsonl");
+    let cursor = initial.nextHistoryCursor;
+    const pages = [initial.messages];
+    while (cursor) {
+      const page = runtime.readHistory("local", cursor);
+      pages.unshift(page.messages);
+      cursor = page.nextHistoryCursor;
+    }
+    const restored = pages.flat();
+    const expectedText = messages.flatMap((message) => {
+      if (message.role !== "user" && message.role !== "assistant") return [];
+      if (typeof message.content === "string") return [message.content];
+      const blocks = message.content.filter((block: { type: string; text?: string }) => block.type === "text" && block.text);
+      return message.role === "user" ? [blocks.map((block: { text: string }) => block.text).join("")].filter(Boolean) : blocks.map((block: { text: string }) => block.text);
+    });
+    const actualText = restored.filter((message) => message.role === "user" || message.role === "assistant").map((message) => message.content);
+    expect(actualText.length).toBe(expectedText.length);
+    expect(actualText.every((content, index) => content === expectedText[index])).toBe(true);
+    process.stderr.write(JSON.stringify({ rawMessages: messages.length, initialMessages: initial.messages.length, restoredMessages: restored.length, pages: pages.length, textMessages: actualText.length }) + "\n");
+  });
   it("列出会话可执行的扩展与提示词命令并按名称去重", async () => {
     const sessionMock = createSessionMock("commands", {
       extensionCommands: [

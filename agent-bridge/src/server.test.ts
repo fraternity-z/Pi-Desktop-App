@@ -149,6 +149,17 @@ function setup(runtimeMock = createRuntimeMock()) {
 }
 
 describe("BridgeServer", () => {
+  it("路由历史分页，并为不支持分页的运行时返回明确错误", async () => {
+    const { server, frames, runtimeMock } = setup();
+    const request = JSON.stringify({ v: 1, id: "history", op: "session.history", sessionId: "s-1", cursor: "1:200:0" });
+    await server.handleLine(request);
+    expect(frames.at(-1)).toMatchObject({ ok: false, error: { code: "HISTORY_UNAVAILABLE" } });
+    const page = { messages: [{ role: "user" as const, content: "older" }], nextHistoryCursor: null };
+    runtimeMock.runtime.readHistory = vi.fn(() => page);
+    await server.handleLine(request);
+    expect(runtimeMock.runtime.readHistory).toHaveBeenCalledWith("s-1", "1:200:0");
+    expect(frames.at(-1)).toMatchObject({ ok: true, data: page });
+  });
   it("发送握手并路由基础请求", async () => {
     const { server, frames, runtimeMock } = setup();
     server.start();

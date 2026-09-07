@@ -101,6 +101,10 @@ export class BridgeServer {
         case "session.open":
           data = await this.runtime.openSession(request.sessionPath);
           break;
+        case "session.history":
+          if (!this.runtime.readHistory) throw new RuntimeError("HISTORY_UNAVAILABLE", "当前运行时不支持历史分页");
+          data = this.runtime.readHistory(request.sessionId, request.cursor);
+          break;
         case "session.configure":
           data = await this.runtime.configureSession(request.sessionId, {
             ...(request.model === undefined ? {} : { model: request.model }),

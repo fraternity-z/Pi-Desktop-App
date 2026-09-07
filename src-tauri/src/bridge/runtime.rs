@@ -1146,7 +1146,7 @@ fn validate_package_source(source: &str) -> Result<&str, AppError> {
     Ok(source)
 }
 
-fn system_agent_dir() -> Result<PathBuf, AppError> {
+pub(crate) fn system_agent_dir() -> Result<PathBuf, AppError> {
     let home = env::var_os("USERPROFILE")
         .or_else(|| env::var_os("HOME"))
         .map(PathBuf::from)

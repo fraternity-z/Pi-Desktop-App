@@ -1,3 +1,5 @@
+pub mod prompts;
+
 use std::{
     fs,
     path::{Path, PathBuf},

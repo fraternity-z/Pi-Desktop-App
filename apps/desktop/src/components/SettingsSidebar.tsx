@@ -8,6 +8,8 @@ import {
   PanelLeftClose,
   Search,
   ShieldCheck,
+  SlidersHorizontal,
+  UserRound,
   type LucideIcon,
 } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -20,6 +22,8 @@ export type SettingsSectionId =
   | "appearance"
   | "behavior"
   | "runtime"
+  | "personalization"
+  | "configuration"
   | "archived";
 
 interface SettingsSidebarProps {
@@ -62,6 +66,8 @@ const SETTINGS_GROUPS: Array<{ label: string; items: SettingsNavItem[] }> = [
   {
     label: "Pi",
     items: [
+      { id: "personalization", label: "个性化", keywords: "系统 提示词 追加 SYSTEM APPEND", icon: UserRound },
+      { id: "configuration", label: "配置", keywords: "工具 允许 禁止 权限 审批 沙箱 网络", icon: SlidersHorizontal },
       {
         id: "runtime",
         label: "运行时",

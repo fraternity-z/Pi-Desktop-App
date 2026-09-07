@@ -1,13 +1,22 @@
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getRequestHeaderSettings, updateRequestHeaderSettings } from "./settings";
+import { getRequestHeaderSettings, updateRequestHeaderSettings, getPromptDocument, savePromptDocument } from "./settings";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
 describe("request header settings IPC", () => {
+  it("uses fixed prompt kinds and preserves null for file removal and conflict checks", async () => {
+    vi.mocked(invoke).mockResolvedValue({ path: "fixture/SYSTEM.md", content: null });
+    await getPromptDocument("system");
+    expect(invoke).toHaveBeenCalledWith("get_prompt_document", { kind: "system" });
+    await savePromptDocument("append", null, "previous");
+    expect(invoke).toHaveBeenCalledWith("save_prompt_document", { kind: "append", content: null, expectedContent: "previous" });
+    vi.mocked(invoke).mockRejectedValueOnce({ code: "PROMPT_CONFLICT", message: "reload" });
+    await expect(savePromptDocument("system", "new", null)).rejects.toMatchObject({ code: "PROMPT_CONFLICT" });
+  });
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
   });

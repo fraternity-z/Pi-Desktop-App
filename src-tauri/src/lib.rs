@@ -197,6 +197,8 @@ pub fn run() {
             commands::runtime::agent_clear_queue,
             commands::runtime::agent_abort,
             commands::settings::get_runtime_settings,
+            commands::settings::get_prompt_document,
+            commands::settings::save_prompt_document,
             commands::settings::set_runtime_mode,
             commands::settings::get_request_header_settings,
             commands::settings::update_request_header_settings,

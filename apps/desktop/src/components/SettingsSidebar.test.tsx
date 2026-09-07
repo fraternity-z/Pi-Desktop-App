@@ -28,6 +28,10 @@ describe("SettingsSidebar", () => {
     expect(onSectionChange).toHaveBeenCalledWith("notifications");
     fireEvent.click(screen.getByRole("button", { name: "已归档" }));
     expect(onSectionChange).toHaveBeenCalledWith("archived");
+    fireEvent.click(screen.getByRole("button", { name: "个性化" }));
+    expect(onSectionChange).toHaveBeenCalledWith("personalization");
+    fireEvent.click(screen.getByRole("button", { name: "配置" }));
+    expect(onSectionChange).toHaveBeenCalledWith("configuration");
 
     fireEvent.change(screen.getByRole("searchbox", { name: "搜索设置" }), {
       target: { value: "版本" },

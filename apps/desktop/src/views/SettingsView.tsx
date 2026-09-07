@@ -12,7 +12,9 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 
+import { AgentConfigurationSettings } from "../components/AgentConfigurationSettings";
 import { AppearanceSettings } from "../components/AppearanceSettings";
+import { PersonalizationSettings } from "../components/PersonalizationSettings";
 import { ConfirmSidebarDialog } from "../components/SidebarDialog";
 import {
   SettingsRow,
@@ -31,9 +33,11 @@ import type { RequestHeaderSettingsController } from "../stores/useRequestHeader
 import type { DesktopNotificationController } from "../stores/useDesktopNotifications";
 import type { RuntimeStatusController } from "../stores/useRuntimeStatus";
 import { useSidebarPreferences } from "../stores/useSidebarPreferences";
+import type { ToolPermissionState } from "../stores/useToolPermissions";
 
 interface SettingsViewProps {
   section: SettingsSectionId;
+  toolPermissions?: ToolPermissionState;
   sidebarOpen: boolean;
   sidebarWidth: number;
   preferences: AppPreferences;
@@ -54,11 +58,14 @@ const SECTION_TITLES: Record<SettingsSectionId, string> = {
   appearance: "外观",
   behavior: "行为",
   runtime: "运行时",
+  personalization: "个性化",
+  configuration: "配置",
   archived: "已归档",
 };
 
 export function SettingsView({
   section,
+  toolPermissions,
   sidebarOpen,
   sidebarWidth,
   preferences,
@@ -106,6 +113,8 @@ export function SettingsView({
       <div className="settings-content-scroll">
         <div className="settings-content" data-testid={`settings-${section}`}>
           <h1 className="settings-page-title">{SECTION_TITLES[section]}</h1>
+          {section === "personalization" && <PersonalizationSettings />}
+          {section === "configuration" && <AgentConfigurationSettings tools={toolPermissions} />}
           {section === "general" && (
             <GeneralSettings preferences={preferences} onChange={onPreferencesChange} />
           )}

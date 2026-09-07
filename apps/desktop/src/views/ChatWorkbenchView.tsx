@@ -946,6 +946,7 @@ export function ChatWorkbenchView() {
           preferences={preferences}
           notifications={notifications}
           requestHeaders={requestHeaders}
+          toolPermissions={toolPermissions}
           runtime={runtime}
           eventConnection={session.eventConnection}
           onOpenSidebar={() => setSidebarOpen(true)}

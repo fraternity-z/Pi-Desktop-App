@@ -8,6 +8,27 @@ use crate::{
 };
 
 #[tauri::command]
+pub fn get_prompt_document(
+    kind: crate::storage::prompts::PromptKind,
+) -> Result<crate::storage::prompts::PromptDocument, AppError> {
+    crate::storage::prompts::read_prompt(&crate::bridge::runtime::system_agent_dir()?, kind)
+}
+
+#[tauri::command]
+pub fn save_prompt_document(
+    kind: crate::storage::prompts::PromptKind,
+    content: Option<String>,
+    expected_content: Option<String>,
+) -> Result<crate::storage::prompts::PromptDocument, AppError> {
+    crate::storage::prompts::save_prompt(
+        &crate::bridge::runtime::system_agent_dir()?,
+        kind,
+        content,
+        expected_content,
+    )
+}
+
+#[tauri::command]
 pub fn get_runtime_settings(store: State<'_, AppSettingsStore>) -> AppSettings {
     store.state()
 }

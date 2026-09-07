@@ -3678,6 +3678,51 @@ body {
   letter-spacing: 0;
 }
 
+.prompt-scope-note {
+  margin: 0 0 24px;
+  line-height: 1.7;
+}
+
+.prompt-editor + .prompt-editor {
+  margin-top: 32px;
+}
+
+.prompt-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.prompt-editor textarea {
+  display: block;
+  width: 100%;
+  min-height: 200px;
+  margin-top: 12px;
+  padding: 14px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: 13px/1.7 var(--font-mono, monospace);
+  overflow-wrap: anywhere;
+}
+
+.prompt-editor-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 600px) {
+  .prompt-editor .settings-section-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
 .settings-section-block + .settings-section-block {
   margin-top: 28px;
 }

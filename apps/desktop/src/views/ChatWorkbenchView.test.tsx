@@ -481,7 +481,7 @@ describe("ChatWorkbenchView", () => {
         "running",
       ),
     );
-    expect(container.querySelector(".timeline-tool-group-icon .spin")).not.toBeNull();
+    expect(container.querySelector(".timeline-tool-icon .spin")).not.toBeNull();
     act(() => {
       emitAgentEvent?.(agentEvent("thinking.delta", { delta: "分析项目" }, 2));
       emitAgentEvent?.(agentEvent("message.delta", { delta: "完成" }, 3));
@@ -496,14 +496,9 @@ describe("ChatWorkbenchView", () => {
     });
 
     expect(await screen.findByText("完成检查")).toBeInTheDocument();
-    expect(screen.queryByText("分析项目")).not.toBeInTheDocument();
-    const readGroup = screen.getByText("已使用 read_file").closest("details");
-    const bashGroup = screen.getByText("已使用 bash").closest("details");
-    expect(readGroup).not.toBeNull();
-    expect(bashGroup).not.toBeNull();
-    fireEvent.click(readGroup!.querySelector("summary")!);
-    fireEvent.click(bashGroup!.querySelector("summary")!);
-    expect(screen.getByText("调用 read_file")).toBeInTheDocument();
+    expect(screen.getByText("分析项目")).toBeVisible();
+    expect(screen.getByText("read_file")).toBeVisible();
+    expect(screen.getByText("bash")).toBeVisible();
     expect(screen.getAllByText("已完成").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("失败").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();

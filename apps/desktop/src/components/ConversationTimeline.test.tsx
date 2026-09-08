@@ -5,7 +5,46 @@ import type { ChatMessage } from "../stores/useChatSession";
 import { ConversationTimeline, formatSessionDuration } from "./ConversationTimeline";
 
 describe("ConversationTimeline", () => {
-  it("展示用户、回复、合并后的工具组与系统状态，并隐藏已结束思考", () => {
+  it("按原始顺序保留思考与工具，展开思考可查看完整 Markdown", () => {
+    const { container } = render(<ConversationTimeline messages={[
+      { id: "thinking-1", role: "thinking", content: "**检查依赖**\n\n需要查看配置文件。" },
+      { id: "tool", role: "tool", toolName: "read", content: "", status: "completed" },
+      { id: "thinking-2", role: "thinking", content: "确认配置" },
+    ]} streaming={false} />);
+    const records = container.querySelectorAll(".timeline-reasoning");
+    const tool = container.querySelector(".timeline-tool-group")!;
+    expect(records[0]!.compareDocumentPosition(tool)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(tool.compareDocumentPosition(records[1]!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(screen.queryByText("需要查看配置文件。")).not.toBeInTheDocument();
+    fireEvent.click(records[0]!.querySelector("summary")!);
+    expect(screen.getByText("需要查看配置文件。")).toBeVisible();
+    expect(records[0]!.querySelector("strong")).toHaveTextContent("检查依赖");
+  });
+
+  it.each([
+    ["pending", "等待执行"], ["running", "正在运行"],
+    ["completed", "已运行"], ["failed", "执行失败"], ["cancelled", "已停止"],
+  ] as const)("工具组准确呈现 %s 状态", (status, label) => {
+    render(<ConversationTimeline messages={[
+      { id: "one", role: "tool", toolName: "read", content: "", status },
+      { id: "two", role: "tool", toolName: "read", content: "", status },
+    ]} streaming={false} />);
+    expect(screen.getByText(label + " 2 个工具 · read")).toBeVisible();
+  });
+
+  it("工具之后没有最终回复时，不把此前的进度说明移到时间线末尾", () => {
+    const { container } = render(<ConversationTimeline messages={[
+      { id: "user", role: "user", content: "开始", timer: { startedAt: 1, endedAt: null, durationMs: null } },
+      { id: "progress", role: "assistant", content: "先读取文件" },
+      { id: "tool", role: "tool", toolName: "read", content: "", status: "running" },
+    ]} streaming />);
+    const process = container.querySelector(".conversation-process-body")!;
+    expect(process).toContainElement(screen.getByText("先读取文件"));
+    expect(process.querySelector(".timeline-assistant")!.compareDocumentPosition(process.querySelector(".timeline-tool-group")!))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it("展示用户、回复、合并后的工具组与系统状态，并保留已结束思考摘要", () => {
     const messages: ChatMessage[] = [
       { id: "user", role: "user", content: "检查项目" },
       { id: "assistant", role: "assistant", content: "检查完成" },
@@ -26,8 +65,8 @@ describe("ConversationTimeline", () => {
     expect(screen.getByText("检查完成")).toBeInTheDocument();
     expect(screen.getByText("本次任务没有返回文本。")).toBeInTheDocument();
     expect(screen.queryByText("思考过程")).not.toBeInTheDocument();
-    expect(screen.queryByText("正在分析依赖")).not.toBeInTheDocument();
-    const toolGroup = screen.getByText("已运行5个工具").closest("details");
+    expect(screen.getByText("正在分析依赖")).toBeVisible();
+    const toolGroup = screen.getByText("正在运行 5 个工具 · list、read、search、build、test").closest("details");
     expect(toolGroup).not.toBeNull();
     expect(toolGroup).not.toHaveAttribute("open");
     fireEvent.click(toolGroup!.querySelector("summary")!);
@@ -40,7 +79,7 @@ describe("ConversationTimeline", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("请求失败");
   });
 
-  it("流式思考直接显示为扫光文本，并在结束后移除", () => {
+  it("流式思考显示为扫光文本，结束后保留为可展开记录", () => {
     const { rerender } = render(
       <ConversationTimeline
         messages={[
@@ -78,7 +117,8 @@ describe("ConversationTimeline", () => {
         streaming={false}
       />,
     );
-    expect(screen.queryByText("逐步推理")).not.toBeInTheDocument();
+    expect(screen.getByText("逐步推理").closest(".timeline-reasoning")).not.toBeNull();
+    expect(screen.getByText("逐步推理").closest("details")).not.toHaveAttribute("open");
     expect(screen.queryByText("思考过程")).not.toBeInTheDocument();
   });
 
@@ -175,8 +215,8 @@ describe("ConversationTimeline", () => {
     );
     const group = container.querySelector(".timeline-tool-group details") as HTMLDetailsElement;
     expect(group).toHaveAttribute("aria-busy", "true");
-    expect(screen.getByText("已使用 read")).toHaveAttribute("title", "已使用 read");
-    fireEvent.click(group.querySelector("summary")!);
+    expect(group.querySelector("summary")).not.toBeVisible();
+    expect(screen.getByText("read")).toBeVisible();
     expect(group).toHaveAttribute("open");
     const tool = container.querySelector(".timeline-tool") as HTMLDetailsElement;
     fireEvent.click(tool.querySelector("summary")!);
@@ -441,7 +481,7 @@ describe("ConversationTimeline", () => {
     expect(summary).toHaveAccessibleName("已处理 2s，展开处理过程");
     expect(screen.getByText("最终结论")).toBeVisible();
     expect(screen.queryByText("正在检查相关模块")).not.toBeInTheDocument();
-    expect(screen.queryByText("已使用 read")).not.toBeInTheDocument();
+    expect(screen.queryByText("read")).not.toBeInTheDocument();
     expect(screen.queryByText("中间系统状态")).not.toBeInTheDocument();
     expect(process.querySelector(".markdown-content")).not.toBeInTheDocument();
 
@@ -450,11 +490,9 @@ describe("ConversationTimeline", () => {
     expect(summary).toHaveAttribute("aria-expanded", "true");
     expect(summary).toHaveAccessibleName("已处理 2s，折叠处理过程");
     expect(screen.getByText("正在检查相关模块")).toBeVisible();
-    expect(screen.getByText("已使用 read")).toBeVisible();
+    expect(screen.getByText("read")).toBeVisible();
     expect(screen.getByText("中间系统状态")).toBeVisible();
 
-    const tools = screen.getByText("已使用 read").closest("details")!;
-    fireEvent.click(tools.querySelector("summary")!);
     const tool = container.querySelector("details.timeline-tool")!;
     fireEvent.click(tool.querySelector("summary")!);
     expect(screen.getByText("中间工具结果")).toBeVisible();

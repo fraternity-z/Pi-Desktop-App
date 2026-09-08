@@ -325,9 +325,30 @@ const TimelineItem = memo(function TimelineItem({
   if (message.role === "assistant") {
     return <AssistantMessage message={message} streaming={streaming} />;
   }
-  // Thinking is rendered once as the live inline indicator below the transcript.
+  if (message.role === "thinking" && !streaming && message.content.trim()) {
+    return <ThinkingRecord message={message} />;
+  }
+  // Active thinking keeps the existing live indicator; completed turns retain a transcript.
   return null;
 });
+
+function ThinkingRecord({ message }: { message: ChatMessage }) {
+  const [open, setOpen] = useState(false);
+  const title = truncateToolSummary(message.content.split(/\r?\n/, 1)[0]!.replace(/^[#*\s]+|[*\s]+$/g, ""));
+  return (
+    <details className="timeline-reasoning" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary onClick={(event) => {
+        event.preventDefault();
+        setOpen((current) => !current);
+      }}>
+        <span className="timeline-reasoning-label">思考</span>
+        <span className="timeline-reasoning-title">{title || "思考过程"}</span>
+        <ChevronRight size={14} aria-hidden="true" />
+      </summary>
+      {open && <MarkdownContent className="timeline-reasoning-body">{message.content}</MarkdownContent>}
+    </details>
+  );
+}
 
 const AssistantMessage = memo(function AssistantMessage({
   message,
@@ -421,23 +442,27 @@ const TurnCopyAction = memo(function TurnCopyAction({ text }: { text: string }) 
 });
 
 const ToolGroup = memo(function ToolGroup({ messages }: { messages: ChatMessage[] }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(messages.length === 1);
+  const single = messages.length === 1;
   const running = messages.some((message) => message.status === "running");
+  const pending = messages.some((message) => !message.status || message.status === "pending");
   const failed = messages.some((message) => message.status === "failed");
   const cancelled = messages.some((message) => message.status === "cancelled");
   const names = [...new Set(messages.map((message) => message.toolName?.trim()).filter(Boolean))] as string[];
-  const summary = toolGroupLabel(names, messages.length);
+  const status = running ? "running" : failed ? "failed" : pending ? "pending" : cancelled ? "cancelled" : "completed";
+  const summary = toolGroupLabel(names, messages.length, status);
 
   return (
-    <section className="timeline-tool-group" data-tool-count={messages.length}>
+    <section className="timeline-tool-group" data-tool-count={messages.length} data-single={single || undefined}>
       <details
-        open={open}
+        open={single || open}
         onToggle={(event) => setOpen(event.currentTarget.open)}
-        data-status={running ? "running" : failed ? "failed" : cancelled ? "cancelled" : "completed"}
+        data-status={status}
         aria-busy={running}
       >
         <summary
           className="timeline-tool-group-summary"
+          hidden={single}
           onClick={(event) => {
             event.preventDefault();
             setOpen((current) => !current);
@@ -451,7 +476,7 @@ const ToolGroup = memo(function ToolGroup({ messages }: { messages: ChatMessage[
           </span>
           <span className="timeline-tool-group-chevron" aria-hidden="true" />
         </summary>
-        {open && (
+        {(single || open) && (
           <div className="timeline-tool-group-body">
             {messages.map((message) => (
               <ToolDetailRow key={message.id} message={message} />
@@ -480,7 +505,7 @@ function ToolDetailRow({ message }: { message: ChatMessage }) {
       <span className="timeline-tool-copy">
         <span className="timeline-tool-heading">
           <strong className="timeline-tool-name" title={message.toolName ?? "tool"}>
-            调用 {message.toolName ?? "tool"}
+            {message.toolName ?? "tool"}
           </strong>
           {inputSummary && (
             <span className="timeline-tool-summary" title={inputSummary}>
@@ -662,9 +687,9 @@ function toolStatusLabel(status: TimelineStatus): string {
   }[status];
 }
 
-function toolGroupLabel(names: string[], count: number): string {
-  if (count === 1) return "已使用 " + (names[0] ?? "工具");
-  return "已运行" + count + "个工具";
+function toolGroupLabel(names: string[], count: number, status: TimelineStatus): string {
+  const prefix = { pending: "等待执行", running: "正在运行", completed: "已运行", failed: "执行失败", cancelled: "已停止" }[status];
+  return prefix + " " + count + " 个工具 · " + names.join("、");
 }
 
 function groupTimelineMessages(messages: ChatMessage[]): TimelineGroup[] {
@@ -672,7 +697,7 @@ function groupTimelineMessages(messages: ChatMessage[]): TimelineGroup[] {
   let previousWasTool = false;
   for (const message of messages) {
     if (message.role === "thinking") {
-      // A hidden thinking segment still separates non-consecutive tool calls.
+      groups.push({ kind: "message", id: message.id, message });
       previousWasTool = false;
       continue;
     }
@@ -696,6 +721,8 @@ function findFinalAssistantIndex(messages: ChatMessage[]): number {
   let lastAssistantIndex = -1;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
+    // A commentary before a later tool call is part of the process, not the final answer.
+    if (message?.role === "tool") return -1;
     if (message?.role !== "assistant") continue;
     if (lastAssistantIndex < 0) lastAssistantIndex = index;
     if (message.content.trim()) return index;

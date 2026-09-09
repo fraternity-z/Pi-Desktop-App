@@ -3,6 +3,7 @@ import { isAbsolute, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type { PiSdkLike } from "./session-runtime.js";
+import { enableSdkCompileCache } from "./compile-cache.js";
 
 const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
 
@@ -16,6 +17,7 @@ export interface SdkLoaderDependencies {
   readFile(path: string, encoding: BufferEncoding): Promise<string>;
   realpath(path: string): Promise<string>;
   importModule(specifier: string): Promise<unknown>;
+  enableCompileCache?(): void;
 }
 
 export class SdkLoadError extends Error {
@@ -32,6 +34,7 @@ const defaultDependencies: SdkLoaderDependencies = {
   readFile,
   realpath,
   importModule: (specifier) => import(specifier),
+  enableCompileCache: enableSdkCompileCache,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -76,6 +79,9 @@ export async function loadPiSdk(
     throw new SdkLoadError("SDK_METADATA_INVALID", "Pi SDK 缺少有效版本号");
   }
 
+  dependencies.enableCompileCache?.();
+  // Readiness means the complete public SDK is available. Session, package and
+  // resource operations must not inherit a deferred SDK import from startup.
   let imported: unknown;
   try {
     imported = await dependencies.importModule(pathToFileURL(entryPath).href);
@@ -98,9 +104,5 @@ export async function loadPiSdk(
     );
   }
 
-  return {
-    root,
-    version: metadata.version,
-    sdk: imported as unknown as PiSdkLike,
-  };
+  return { root, version: metadata.version, sdk: imported as unknown as PiSdkLike };
 }

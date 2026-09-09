@@ -6,6 +6,7 @@ coverage/
 .DS_Store
 
 src-tauri/resources/pi-bridge/pi-bridge.mjs
+src-tauri/resources/pi-bridge/pi-runtime/
 
 .ccw/
 .workflow/

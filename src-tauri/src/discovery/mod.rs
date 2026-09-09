@@ -197,10 +197,17 @@ pub fn resolve_runtime_with(
     options: &RuntimeSelectionOptions,
     environment: &dyn DiscoveryEnvironment,
 ) -> Result<RuntimePaths, AppError> {
-    resolve_runtime_candidates_with(options, environment)?
-        .into_iter()
-        .next()
-        .ok_or_else(|| AppError::new("RUNTIME_NOT_FOUND", "未找到可用的官方 Pi 运行时"))
+    let mut first_error = None;
+    for candidate in runtime_candidates_with(options, environment) {
+        match candidate {
+            Ok(paths) => return Ok(paths),
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    Err(first_error
+        .unwrap_or_else(|| AppError::new("RUNTIME_NOT_FOUND", "未找到可用的官方 Pi 运行时")))
 }
 
 /// Resolve both sources in preference order so the caller can fall back when
@@ -215,59 +222,13 @@ pub fn resolve_runtime_candidates_with(
     options: &RuntimeSelectionOptions,
     environment: &dyn DiscoveryEnvironment,
 ) -> Result<Vec<RuntimePaths>, AppError> {
-    let mut preferred_error: Option<AppError> = None;
-    let mut fallback_error: Option<AppError> = None;
+    let mut first_error = None;
     let mut candidates = Vec::with_capacity(2);
-
-    let try_builtin = |error: &mut Option<AppError>| -> Option<RuntimePaths> {
-        let (Some(node_path), Some(sdk_root)) = (
-            options.builtin_node_path.as_ref(),
-            options.builtin_sdk_root.as_ref(),
-        ) else {
-            return None;
-        };
-        let explicit = RuntimeDiscoveryOptions {
-            node_path: Some(node_path.clone()),
-            sdk_root: Some(sdk_root.clone()),
-            pi_command: None,
-        };
-        match discover_runtime_with(&explicit, environment) {
-            Ok(mut paths) => {
-                paths.source = RuntimeSource::Builtin;
-                Some(paths)
-            }
-            Err(cause) => {
-                *error = Some(cause);
-                None
-            }
-        }
-    };
-
-    let try_local = |error: &mut Option<AppError>| -> Option<RuntimePaths> {
-        match discover_runtime_with(&options.local, environment) {
-            Ok(paths) => Some(paths),
-            Err(cause) => {
-                *error = Some(cause);
-                None
-            }
-        }
-    };
-
-    match options.mode {
-        RuntimeMode::Builtin => {
-            if let Some(paths) = try_builtin(&mut preferred_error) {
-                candidates.push(paths);
-            }
-            if let Some(paths) = try_local(&mut fallback_error) {
-                candidates.push(paths);
-            }
-        }
-        RuntimeMode::Local => {
-            if let Some(paths) = try_local(&mut preferred_error) {
-                candidates.push(paths);
-            }
-            if let Some(paths) = try_builtin(&mut fallback_error) {
-                candidates.push(paths);
+    for candidate in runtime_candidates_with(options, environment) {
+        match candidate {
+            Ok(paths) => candidates.push(paths),
+            Err(error) => {
+                first_error.get_or_insert(error);
             }
         }
     }
@@ -278,9 +239,33 @@ pub fn resolve_runtime_candidates_with(
     // Keep the preferred error code/message stable for existing callers. When
     // the preferred source was not configured, expose the local discovery
     // result instead of manufacturing a misleading built-in error.
-    Err(preferred_error
-        .or(fallback_error)
+    Err(first_error
         .unwrap_or_else(|| AppError::new("RUNTIME_NOT_FOUND", "未找到可用的官方 Pi 运行时")))
+}
+
+/// Each source is discovered only when consumed. A healthy bundled runtime must
+/// not wait for local PATH entries (which may include disconnected network drives).
+pub fn runtime_candidates_with<'a>(
+    options: &'a RuntimeSelectionOptions,
+    environment: &'a dyn DiscoveryEnvironment,
+) -> impl Iterator<Item = Result<RuntimePaths, AppError>> + 'a {
+    let builtin_first = options.mode == RuntimeMode::Builtin;
+    [builtin_first, !builtin_first]
+        .into_iter()
+        .filter_map(move |builtin| {
+            if !builtin {
+                return Some(discover_runtime_with(&options.local, environment));
+            }
+            let node_path = options.builtin_node_path.as_ref()?;
+            let sdk_root = options.builtin_sdk_root.as_ref()?;
+            Some(validate_runtime_paths(
+                node_path,
+                sdk_root,
+                None,
+                RuntimeSource::Builtin,
+                environment,
+            ))
+        })
 }
 
 fn discover_from_pi_command(
@@ -467,7 +452,12 @@ fn pi_command_names() -> [&'static str; 3] {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, io};
+    use std::{
+        cell::Cell,
+        collections::HashMap,
+        io,
+        time::{Duration, Instant},
+    };
 
     use super::*;
 
@@ -478,6 +468,8 @@ mod tests {
         contents: HashMap<PathBuf, String>,
         canonical_paths: HashMap<PathBuf, PathBuf>,
         path_entries: Vec<PathBuf>,
+        path_calls: Cell<usize>,
+        path_delay: Duration,
     }
 
     impl DiscoveryEnvironment for MockEnvironment {
@@ -508,6 +500,10 @@ mod tests {
         }
 
         fn path_entries(&self) -> Vec<PathBuf> {
+            self.path_calls.set(self.path_calls.get() + 1);
+            if !self.path_delay.is_zero() {
+                std::thread::sleep(self.path_delay);
+            }
             self.path_entries.clone()
         }
     }
@@ -802,5 +798,68 @@ mod tests {
                 .code,
             "RUNTIME_MODE_INVALID"
         );
+    }
+
+    #[test]
+    fn valid_builtin_does_not_touch_local_path() {
+        let root = absolute(&["builtin"]);
+        let environment = valid_environment(&root);
+        let options = builtin_options(&root);
+        assert_eq!(environment.path_calls.get(), 0);
+        let mut candidates = runtime_candidates_with(&options, &environment);
+        assert_eq!(environment.path_calls.get(), 0);
+        assert_eq!(
+            candidates.next().unwrap().unwrap().source,
+            RuntimeSource::Builtin
+        );
+        assert_eq!(environment.path_calls.get(), 0);
+        assert!(candidates.next().unwrap().is_err());
+        assert_eq!(environment.path_calls.get(), 1);
+    }
+
+    #[test]
+    fn preserves_preferred_discovery_error_when_both_sources_fail() {
+        let root = absolute(&["broken"]);
+        let error =
+            resolve_runtime_with(&builtin_options(&root), &MockEnvironment::default()).unwrap_err();
+        assert_eq!(error.code, "NODE_PATH_INVALID");
+    }
+
+    fn builtin_options(root: &Path) -> RuntimeSelectionOptions {
+        RuntimeSelectionOptions {
+            builtin_node_path: Some(root.join(&executable_names("node")[0])),
+            builtin_sdk_root: Some(
+                root.join("node_modules")
+                    .join("@earendil-works")
+                    .join("pi-coding-agent"),
+            ),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    #[ignore = "explicit startup benchmark; includes simulated slow PATH access"]
+    fn benchmark_builtin_discovery() {
+        for delay_ms in [0, 50] {
+            let root = absolute(&["builtin"]);
+            let mut environment = valid_environment(&root);
+            environment.path_delay = Duration::from_millis(delay_ms);
+            let options = builtin_options(&root);
+            let start = Instant::now();
+            for _ in 0..10 {
+                resolve_runtime_candidates_with(&options, &environment).unwrap();
+            }
+            let eager_us = start.elapsed().as_micros() / 10;
+            let eager_calls = environment.path_calls.replace(0);
+            let start = Instant::now();
+            for _ in 0..10 {
+                resolve_runtime_with(&options, &environment).unwrap();
+            }
+            let lazy_us = start.elapsed().as_micros() / 10;
+            assert_eq!(environment.path_calls.get(), 0);
+            eprintln!(
+                "startup.discovery path_delay_ms={delay_ms} eager_mean_us={eager_us} lazy_mean_us={lazy_us} eager_path_calls={eager_calls} lazy_path_calls=0"
+            );
+        }
     }
 }

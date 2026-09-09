@@ -1,6 +1,6 @@
 import { createInterface } from "node:readline";
 
-import { CliError, parseBridgeOptions } from "./cli.js";
+import { assertSupportedNode, CliError, parseBridgeOptions } from "./cli.js";
 import {
   emitPerformanceDiagnostic,
   measurePerformance,
@@ -12,6 +12,7 @@ import { loadPiSdk, SdkLoadError } from "./sdk-loader.js";
 import { BridgeServer } from "./server.js";
 import { PiSessionRuntime } from "./session-runtime.js";
 import { configureProxy, ProxyConfigurationError } from "./proxy.js";
+import { configureRuntimeTools } from "./runtime-tools.js";
 
 function startupFailure(error: unknown): BridgeStartupError {
   if (error instanceof CliError || error instanceof SdkLoadError || error instanceof ProxyConfigurationError) {
@@ -30,6 +31,8 @@ async function run(): Promise<void> {
   const startupStartedAt = performanceNow();
   try {
     const options = parseBridgeOptions(process.argv.slice(2));
+    assertSupportedNode(process.versions.node);
+    configureRuntimeTools();
     configureProxy();
     const loadedSdk = await measurePerformance(
       stderrPerformanceDiagnosticSink,

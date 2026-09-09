@@ -346,6 +346,14 @@ pub fn parse_hello_frame(line: &str) -> Result<BridgeHello, AppError> {
             })?;
             let code = sanitize_remote_field(&failure.error.code, "UNKNOWN");
             let message = sanitize_remote_field(&failure.error.message, "Bridge 启动失败");
+            // Keep the existing hello-version error code when Bridge rejects
+            // an old Node before importing the SDK.
+            if code == "NODE_VERSION_UNSUPPORTED" {
+                return Err(AppError::new(
+                    "NODE_VERSION_UNSUPPORTED",
+                    "Node.js 版本不受支持，需要 22.19 或更高版本",
+                ));
+            }
             Err(AppError::new(
                 "BRIDGE_STARTUP_FAILED",
                 format!("Bridge 启动失败（{code}）：{message}"),
@@ -858,6 +866,16 @@ mod tests {
 
         assert_eq!(error.code, "BRIDGE_STARTUP_FAILED");
         assert!(error.message.contains("SDK_IMPORT_FAILED"));
+    }
+
+    #[test]
+    fn preserves_node_version_error_from_startup_preflight() {
+        let error = parse_hello_frame(
+            r#"{"type":"startup.error","error":{"code":"NODE_VERSION_UNSUPPORTED","message":"old Node"}}"#,
+        )
+        .expect_err("启动预检应保留原有 Node 版本错误码");
+        assert_eq!(error.code, "NODE_VERSION_UNSUPPORTED");
+        assert!(error.message.contains("22.19"));
     }
 
     #[test]

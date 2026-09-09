@@ -1,0 +1,9 @@
+{
+  "name": "pi-desktop-builtin-runtime",
+  "version": "0.2.2",
+  "private": true,
+  "description": "Pinned production Pi SDK packaged with Pi Desktop",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.2"
+  }
+}

@@ -37,7 +37,7 @@
 
 1. Pi npm 包只作为 Bridge 的运行时依赖，不作为 Tauri Renderer 依赖。
 2. 默认优先使用应用提供的独立 Node/Pi 包；包不可用时回退到用户已安装的 Node.js 和官方 Pi 包。
-3. 应用内置一个很薄的 pi-bridge.mjs，不默认打包完整 Node/Pi runtime。
+3. 应用内置薄适配层 pi-bridge.mjs，以及固定版本的独立 Node/官方 Pi SDK；资源准备在构建阶段完成，见 [ADR-005](startup-runtime-bundling.md)。
 4. Rust 是桌面应用的控制平面和安全边界；Pi Bridge 是领域运行时。
 5. 默认复用 ~/.pi/agent，保持与官方 CLI 的会话、配置、模型登录和扩展兼容。
 6. 通过版本兼容矩阵处理 Pi 独立升级，而不是在应用启动时自动安装或升级 npm 包。

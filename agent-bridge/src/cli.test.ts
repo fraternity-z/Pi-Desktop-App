@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { CliError, parseBridgeOptions } from "./cli.js";
+import { assertSupportedNode, CliError, parseBridgeOptions } from "./cli.js";
 
 const validArguments = [
   "--sdk-root",
@@ -35,5 +35,14 @@ describe("parseBridgeOptions", () => {
     expect(() => parseBridgeOptions(arguments_)).toThrowError(
       expect.objectContaining<Partial<CliError>>({ code }),
     );
+  });
+});
+
+describe("Node 启动版本预检", () => {
+  it.each(["22.19.0", "22.22.0", "24.0.0"])("允许 %s", (version) => {
+    expect(() => assertSupportedNode(version)).not.toThrow();
+  });
+  it.each(["20.20.0", "22.18.0", "unknown"])("在导入 SDK 前拒绝 %s", (version) => {
+    expect(() => assertSupportedNode(version)).toThrowError(expect.objectContaining({ code: "NODE_VERSION_UNSUPPORTED" }));
   });
 });

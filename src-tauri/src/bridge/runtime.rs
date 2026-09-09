@@ -27,7 +27,7 @@ use crate::{
     },
     discovery::{
         RuntimeMode, RuntimePaths, RuntimeSelectionOptions, RuntimeSource,
-        resolve_runtime_candidates,
+        SystemDiscoveryEnvironment, runtime_candidates_with,
     },
     error::AppError,
     image::{
@@ -745,7 +745,12 @@ impl BridgeRuntime {
         }
         start_with_runtime_candidates(
             &self.runtime_paths,
-            || resolve_runtime_candidates(&selection),
+            || {
+                Ok(runtime_candidates_with(
+                    &selection,
+                    &SystemDiscoveryEnvironment,
+                ))
+            },
             |runtime_paths| {
                 let proxy = self.proxy.lock().map_err(|_| {
                     AppError::new("PROXY_STATE_UNAVAILABLE", "代理设置锁不可用")
@@ -848,17 +853,23 @@ impl Drop for BridgeRuntime {
     }
 }
 
-fn start_with_runtime_candidates<T>(
+fn start_with_runtime_candidates<T, I>(
     cache: &Mutex<Option<RuntimePaths>>,
-    discover: impl FnOnce() -> Result<Vec<RuntimePaths>, AppError>,
+    discover: impl FnOnce() -> Result<I, AppError>,
     mut start: impl FnMut(RuntimePaths) -> Result<T, AppError>,
-) -> Result<T, AppError> {
+) -> Result<T, AppError>
+where
+    I: IntoIterator<Item = Result<RuntimePaths, AppError>>,
+{
     let mut last_error = None;
+    let mut discovery_error = None;
+    let mut attempted = Vec::with_capacity(2);
     let cached = cache
         .lock()
         .map_err(|_| AppError::new("BRIDGE_STATE_POISONED", "运行时路径缓存锁不可用"))?
         .clone();
     if let Some(runtime_paths) = cached {
+        attempted.push(runtime_paths.clone());
         let source = source_label(&runtime_paths.source);
         match start(runtime_paths) {
             Ok(started) => return Ok(started),
@@ -879,7 +890,20 @@ fn start_with_runtime_candidates<T>(
         Ok(candidates) => candidates,
         Err(error) => return Err(last_error.unwrap_or(error)),
     };
-    for runtime_paths in candidates {
+    for candidate in candidates {
+        let runtime_paths = match candidate {
+            Ok(paths) => paths,
+            Err(error) => {
+                discovery_error.get_or_insert(error);
+                continue;
+            }
+        };
+        // A failed cached candidate may appear again during discovery. Do not
+        // pay its process/handshake timeout twice within the same attempt.
+        if attempted.contains(&runtime_paths) {
+            continue;
+        }
+        attempted.push(runtime_paths.clone());
         let source = source_label(&runtime_paths.source);
         let cache_candidate = runtime_paths.clone();
         match start(runtime_paths) {
@@ -899,6 +923,7 @@ fn start_with_runtime_candidates<T>(
         }
     }
     Err(last_error
+        .or(discovery_error)
         .unwrap_or_else(|| AppError::new("RUNTIME_NOT_FOUND", "未找到可用的官方 Pi 运行时")))
 }
 
@@ -1502,7 +1527,7 @@ mod tests {
             &cache,
             || {
                 discoveries.fetch_add(1, Ordering::Relaxed);
-                Ok(vec![test_runtime_paths("unexpected")])
+                Ok(vec![Ok(test_runtime_paths("unexpected"))])
             },
             Ok,
         )
@@ -1524,7 +1549,7 @@ mod tests {
             &cache,
             || {
                 discoveries.fetch_add(1, Ordering::Relaxed);
-                Ok(vec![fresh.clone()])
+                Ok(vec![Ok(fresh.clone())])
             },
             |paths| {
                 starts.fetch_add(1, Ordering::Relaxed);
@@ -1553,7 +1578,7 @@ mod tests {
 
         let started = start_with_runtime_candidates(
             &cache,
-            || Ok(vec![builtin.clone(), local.clone()]),
+            || Ok(vec![Ok(builtin.clone()), Ok(local.clone())]),
             |paths| {
                 starts.fetch_add(1, Ordering::Relaxed);
                 if paths == builtin {
@@ -1577,6 +1602,65 @@ mod tests {
             pi_command: None,
             source: RuntimeSource::ExplicitPaths,
         }
+    }
+
+    #[test]
+    fn successful_preferred_start_does_not_discover_fallback() {
+        let builtin = test_runtime_paths("builtin");
+        let cache = Mutex::new(None);
+        let result = start_with_runtime_candidates(
+            &cache,
+            || {
+                Ok(
+                    std::iter::once(Ok(builtin.clone())).chain(std::iter::once_with(|| {
+                        panic!("成功启动后不能继续扫描备用来源")
+                    })),
+                )
+            },
+            Ok,
+        )
+        .unwrap();
+        assert_eq!(result, builtin);
+    }
+
+    #[test]
+    fn skips_failed_cached_candidate_when_rediscovery_returns_it_again() {
+        let stale = test_runtime_paths("stale");
+        let fresh = test_runtime_paths("fresh");
+        let cache = Mutex::new(Some(stale.clone()));
+        let starts = AtomicUsize::new(0);
+        let result = start_with_runtime_candidates(
+            &cache,
+            || Ok(vec![Ok(stale.clone()), Ok(fresh.clone())]),
+            |paths| {
+                starts.fetch_add(1, Ordering::Relaxed);
+                if paths == stale {
+                    Err(AppError::new("BRIDGE_TIMEOUT", "fixture timeout"))
+                } else {
+                    Ok(paths)
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(result, fresh);
+        assert_eq!(starts.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn preserves_spawn_error_when_fallback_discovery_fails() {
+        let cache = Mutex::new(None);
+        let result = start_with_runtime_candidates(
+            &cache,
+            || {
+                Ok(vec![
+                    Ok(test_runtime_paths("builtin")),
+                    Err(AppError::new("RUNTIME_NOT_FOUND", "fixture missing")),
+                ])
+            },
+            |_| Err::<(), _>(AppError::new("BRIDGE_SPAWN_FAILED", "fixture spawn failed")),
+        )
+        .unwrap_err();
+        assert_eq!(result.code, "BRIDGE_SPAWN_FAILED");
     }
 
     #[test]

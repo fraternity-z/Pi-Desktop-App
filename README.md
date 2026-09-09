@@ -1,8 +1,8 @@
 # Pi Desktop App
 
 Pi Desktop App 是一个基于 Tauri 2 和 React 的 Pi 桌面客户端。它为官方 Pi
-Agent Runtime 提供原生桌面界面，同时复用用户本机已经安装的 Node.js、官方 Pi SDK
-以及 `~/.pi/agent` 数据目录。
+Agent Runtime 提供原生桌面界面，默认使用随应用提供的 Node.js、官方 Pi SDK，
+保留用户本地运行时回退，并继续复用 `~/.pi/agent` 数据目录。
 
 当前版本：`0.2.2`
 
@@ -32,8 +32,9 @@ Agent Runtime 提供原生桌面界面，同时复用用户本机已经安装的
 | Rust | stable 工具链 |
 | Tauri | Tauri 2 对应平台的系统构建依赖 |
 
-Pi Desktop App 不会静默安装或升级 Node.js 和 Pi。请先按官方方式安装 Pi，并确保
-Node.js 与 Pi 命令能够从当前用户环境中被发现。
+安装包内置 Node.js 24.14.0 LTS 和官方 Pi SDK 0.84.2。应用启动时不会下载、解压、
+安装或升级运行时；内置不可用时，按原有配置回退到本机 Node/Pi。
+选择本地运行时时，请确保本地安装满足上述兼容范围。
 
 ## 快速开始
 
@@ -44,8 +45,9 @@ pnpm install
 pnpm dev
 ```
 
-`pnpm dev` 会启动完整的原生 Tauri 应用。首次启动时，Rust Core 会发现并验证本机
-Node.js 与 Pi SDK，然后启动应用内置的 Pi Bridge。
+`pnpm dev` 会启动完整的原生 Tauri 应用。首次开发构建会准备固定版本的内置运行时，
+后续命中本地准备缓存时无需联网。Rust Core 优先验证内置运行时并启动 Pi Bridge，
+仅在首选候选失败时探测备用来源。
 
 仅调试 Renderer 样式时可以使用：
 
@@ -69,6 +71,18 @@ pnpm build
 ```powershell
 pnpm tauri build
 ```
+
+运行时准备包含在现有构建命令中，也可执行 `pnpm runtime:prepare` 单独准备。
+Node 归档从官方站点下载并校验 SHA-256，Pi 生产依赖由 `runtime/package-lock.json`
+锁定；资源准备使用临时目录和构建锁，通过健康检查后才替换旧资源。
+生成资源和下载缓存均不提交。需要重新准备时运行
+`node scripts/prepare-runtime.mjs --force`。当前只支持在目标平台/架构的主机上准备资源。
+
+完整 SDK 在宣布运行时就绪之前加载，创建会话、使用插件和资源时不再补载 SDK。
+SDK 导入使用 Node 内置编译缓存；设置 `NODE_DISABLE_COMPILE_CACHE=1` 可禁用。
+基准命令：`node scripts/benchmark-startup.mjs`（先完成构建）。
+基准同时记录启动、首次创建会话及后续创建会话的等待时间。
+完整设计与性能结论见 [启动优化说明](docs/startup-runtime-bundling.md)。
 
 Windows x64 构建产物位于：
 
@@ -102,7 +116,7 @@ Rust Core
 Pi Bridge
     │  absolute sdkRoot + dynamic import
     ▼
-用户安装的官方 Pi SDK
+选定的官方 Pi SDK（内置优先／本地回退）
     │
     ▼
 ~/.pi/agent

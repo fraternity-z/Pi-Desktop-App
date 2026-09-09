@@ -17,6 +17,14 @@ export class CliError extends Error {
   }
 }
 
+/** Reject unsupported Node before paying the cost of importing the Pi SDK. */
+export function assertSupportedNode(version: string): void {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+][\w.-]+)?$/.exec(version);
+  if (!match || Number(match[1]) < 22 || (Number(match[1]) === 22 && Number(match[2]) < 19)) {
+    throw new CliError("NODE_VERSION_UNSUPPORTED", "Node.js 版本不受支持，需要 22.19 或更高版本");
+  }
+}
+
 export function parseBridgeOptions(argv: readonly string[]): BridgeOptions {
   const values = new Map<string, string | true>();
 

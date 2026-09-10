@@ -105,9 +105,12 @@ describe("启动遮罩动画", () => {
       /\.startup-handwriting-stroke\s*\{[^}]*stroke-dashoffset:\s*0;/s,
     );
     expect(startupStyles).toMatch(
-      /\.startup-overlay\[data-ready="true"\] \.startup-handwriting-stroke\s*\{\s*animation:\s*none;/s,
+      /\.startup-handwriting\[data-complete="true"\] \.startup-handwriting-mask-finish\s*\{\s*animation:\s*none;/s,
     );
-    expect(startupStyles).toContain('.startup-overlay[data-state="error"] .startup-handwriting-stroke');
+    expect(startupStyles).toMatch(/\.startup-handwriting\[data-complete="true"\] \.startup-handwriting-letter\s*\{\s*mask:\s*none;/s);
+    expect(startupStyles).not.toContain('.startup-overlay[data-ready="true"] .startup-handwriting');
+    expect(startupStyles).toMatch(/\.startup-handwriting-stroke\s*\{[^}]*animation-play-state:\s*paused;/s);
+    expect(startupStyles).toMatch(/\.startup-handwriting\[data-playing="true"\] \.startup-handwriting-mask-finish\s*\{\s*animation-play-state:\s*running;/s);
     expect(startupStyles).toMatch(
       /@media \(prefers-reduced-motion: reduce\)[^{]*\{[^}]*\.startup-overlay \*::after,[^}]*animation:\s*none !important;/s,
     );

@@ -47,13 +47,66 @@ export function StartupOverlay({
 }: StartupOverlayProps) {
   const [leaving, setLeaving] = useState(false);
   const [waitingTooLong, setWaitingTooLong] = useState(false);
-  const mountedAt = useRef(Date.now());
+  const [presented, setPresented] = useState(false);
+  const [animationFinished, setAnimationFinished] = useState(false);
+  const [reduceMotion, setReduceMotion] = useState(reduceMotionEnabled);
+  const presentedAt = useRef<number | null>(null);
+  const finished = useRef(false);
+  const finishCallback = useRef(onFinished);
   const overlay = useRef<HTMLElement>(null);
   const retryButton = useRef<HTMLButtonElement>(null);
   const failed = error !== null;
   const complete = ready && !failed;
   const activeStep = STARTUP_STEPS.findIndex((step) => step.stage === stage);
   const statusLabel = complete ? "准备就绪" : STAGE_LABELS[stage];
+
+  useEffect(() => { finishCallback.current = onFinished; }, [onFinished]);
+
+  useEffect(() => {
+    let frame: number | null = null;
+    const cancelFrame = () => {
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      frame = null;
+    };
+    const updateVisibility = () => {
+      cancelFrame();
+      setPresented(false);
+      if (document.visibilityState !== "visible") return;
+      // Keep the SVG paused through a paint opportunity, including restored windows.
+      frame = window.requestAnimationFrame(() => {
+        frame = window.requestAnimationFrame(() => {
+          frame = null;
+          if (document.visibilityState !== "visible") return;
+          presentedAt.current ??= Date.now();
+          setPresented(true);
+        });
+      });
+    };
+    document.addEventListener("visibilitychange", updateVisibility);
+    updateVisibility();
+    return () => {
+      cancelFrame();
+      document.removeEventListener("visibilitychange", updateVisibility);
+    };
+  }, []);
+
+  useEffect(() => {
+    const media = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    const updateMotion = () => setReduceMotion(reduceMotionEnabled());
+    const observer = new MutationObserver(updateMotion);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-reduce-motion"] });
+    media?.addEventListener?.("change", updateMotion);
+    updateMotion();
+    return () => {
+      observer.disconnect();
+      media?.removeEventListener?.("change", updateMotion);
+    };
+  }, []);
+
+  useEffect(() => {
+    // Errors and reduced motion reveal the final logo; retry must not restart it.
+    if (failed || reduceMotion) setAnimationFinished(true);
+  }, [failed, reduceMotion]);
 
   useEffect(() => {
     setWaitingTooLong(false);
@@ -72,24 +125,29 @@ export function StartupOverlay({
   }, [error]);
 
   useEffect(() => {
-    if (!ready || error !== null) {
+    if (!ready || error !== null || !presented || !animationFinished) {
       setLeaving(false);
       return;
     }
 
     let finishTimer: number | null = null;
-    const remainingDuration = Math.max(0, minimumDurationMs - (Date.now() - mountedAt.current));
+    const remainingDuration = Math.max(0, minimumDurationMs - (Date.now() - (presentedAt.current ?? Date.now())));
     const leaveTimer = window.setTimeout(() => {
+      if (document.visibilityState !== "visible" || finished.current) return;
       setLeaving(true);
-      const transitionDuration = reduceMotionEnabled() ? 0 : exitDurationMs;
-      finishTimer = window.setTimeout(onFinished, transitionDuration);
+      const transitionDuration = reduceMotion ? 0 : exitDurationMs;
+      finishTimer = window.setTimeout(() => {
+        if (document.visibilityState !== "visible" || finished.current) return;
+        finished.current = true;
+        finishCallback.current();
+      }, transitionDuration);
     }, remainingDuration);
 
     return () => {
       window.clearTimeout(leaveTimer);
       if (finishTimer !== null) window.clearTimeout(finishTimer);
     };
-  }, [error, exitDurationMs, minimumDurationMs, onFinished, ready]);
+  }, [animationFinished, error, exitDurationMs, minimumDurationMs, presented, ready, reduceMotion]);
 
   return (
     <section
@@ -112,7 +170,8 @@ export function StartupOverlay({
           </div>
           <h1 className="startup-brand-wordmark">
             <span className="sr-only">PI Desktop</span>
-            <StartupWordmark />
+            <StartupWordmark playing={presented} complete={animationFinished || failed || reduceMotion}
+              onFinished={() => setAnimationFinished(true)} />
           </h1>
         </div>
 

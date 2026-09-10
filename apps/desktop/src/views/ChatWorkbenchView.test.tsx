@@ -71,6 +71,16 @@ import {
 } from "../ipc/workspace";
 import { ChatWorkbenchView } from "./ChatWorkbenchView";
 
+function finishStartupWriting() {
+  const target = document.querySelector('[data-final="true"]')!;
+  // jsdom does not run CSS animations and React may use its WebKit event fallback.
+  for (const type of ["animationend", "webkitAnimationEnd"]) {
+    const event = new Event(type, { bubbles: true });
+    Object.defineProperty(event, "animationName", { value: "startup-mask-finish" });
+    fireEvent(target, event);
+  }
+}
+
 vi.mock("../ipc/agent", () => ({
   abortAgent: vi.fn(),
   clampThinkingLevel: (requested: unknown, available: string[]) => {
@@ -353,6 +363,7 @@ describe("ChatWorkbenchView", () => {
     render(<ChatWorkbenchView />);
     await screen.findByRole("status", { name: "状态正常" });
     await addProject("C:\\work");
+    finishStartupWriting();
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "PI Desktop 启动界面" })).not.toBeInTheDocument());
     fireEvent.keyDown(window, { key: "j", ctrlKey: true });
     await waitFor(() => expect(screen.getByLabelText("发送给 Pi 的消息")).toHaveFocus());
@@ -378,6 +389,7 @@ describe("ChatWorkbenchView", () => {
   it("自定义快捷键立即生效并与命令面板和现有动作联动", async () => {
     render(<ChatWorkbenchView />);
     await screen.findByRole("status", { name: "状态正常" });
+    finishStartupWriting();
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "PI Desktop 启动界面" })).not.toBeInTheDocument(), { timeout: 3000 });
     fireEvent.keyDown(window, { key: ",", ctrlKey: true });
     await screen.findByTestId("settings-general");
@@ -438,6 +450,9 @@ describe("ChatWorkbenchView", () => {
       await vi.waitFor(() => expect(listAgentSessions).toHaveBeenCalledOnce());
       expect(screen.getByRole("dialog", { name: "PI Desktop 启动界面" })).toBeInTheDocument();
 
+      await act(async () => vi.advanceTimersToNextFrame());
+      await act(async () => vi.advanceTimersToNextFrame());
+      finishStartupWriting();
       await act(async () =>
         vi.advanceTimersByTimeAsync(
           STARTUP_MINIMUM_DURATION_MS + STARTUP_EXIT_DURATION_MS,

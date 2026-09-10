@@ -3,12 +3,22 @@ import { useId, type CSSProperties } from "react";
 import { STARTUP_WORDMARK } from "../assets/startup-wordmark";
 import wordmarkLicense from "../assets/startup-wordmark-LICENSE.txt?raw";
 
-export function StartupWordmark() {
+const FINAL_LETTER_FINISH = Math.max(...STARTUP_WORDMARK.letters.map((letter) => letter.finish));
+
+interface StartupWordmarkProps {
+  playing?: boolean;
+  complete?: boolean;
+  onFinished?: () => void;
+}
+
+export function StartupWordmark({ playing = false, complete = false, onFinished }: StartupWordmarkProps) {
   const instanceId = useId();
 
   return (
     <svg
       className="startup-handwriting"
+      data-playing={playing}
+      data-complete={complete}
       viewBox="0 0 560 196"
       aria-hidden="true"
       focusable="false"
@@ -49,6 +59,12 @@ export function StartupWordmark() {
                 ))}
                 <rect
                   className="startup-handwriting-mask-finish"
+                  data-final={letter.finish === FINAL_LETTER_FINISH ? true : undefined}
+                  onAnimationEnd={letter.finish === FINAL_LETTER_FINISH ? (event) => {
+                    if (event.target === event.currentTarget && event.animationName === "startup-mask-finish") {
+                      onFinished?.();
+                    }
+                  } : undefined}
                   x={left - 2}
                   y={bottom - 2}
                   width={right - left + 4}

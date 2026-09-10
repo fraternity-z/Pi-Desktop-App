@@ -1684,25 +1684,26 @@ body {
   stroke-dasharray: 1;
   stroke-dashoffset: 0;
   animation: startup-write var(--stroke-duration) var(--stroke-delay) linear both;
+  animation-play-state: paused;
 }
 
 .startup-handwriting-mask-finish {
   opacity: 1;
   animation: startup-mask-finish var(--stroke-duration) var(--stroke-delay) steps(1, end) both;
+  animation-play-state: paused;
 }
 
-.startup-overlay[data-state="error"] .startup-handwriting-stroke,
-.startup-overlay[data-ready="true"] .startup-handwriting-stroke {
-  animation: none;
+.startup-handwriting[data-playing="true"] .startup-handwriting-stroke,
+.startup-handwriting[data-playing="true"] .startup-handwriting-mask-finish {
+  animation-play-state: running;
 }
 
-.startup-overlay[data-state="error"] .startup-handwriting-letter,
-.startup-overlay[data-ready="true"] .startup-handwriting-letter {
+.startup-handwriting[data-complete="true"] .startup-handwriting-letter {
   mask: none;
 }
 
-.startup-overlay[data-state="error"] .startup-handwriting-mask-finish,
-.startup-overlay[data-ready="true"] .startup-handwriting-mask-finish {
+.startup-handwriting[data-complete="true"] .startup-handwriting-stroke,
+.startup-handwriting[data-complete="true"] .startup-handwriting-mask-finish {
   animation: none;
 }
 

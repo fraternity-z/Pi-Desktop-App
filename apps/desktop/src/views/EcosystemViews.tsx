@@ -22,7 +22,7 @@ import type {
 } from "../ipc/agent";
 import type { useAgentEcosystem } from "../stores/useAgentEcosystem";
 
-type EcosystemController = Omit<ReturnType<typeof useAgentEcosystem>, "updatePackages"> & { updatePackages?: ReturnType<typeof useAgentEcosystem>["updatePackages"] };
+type EcosystemController = Omit<ReturnType<typeof useAgentEcosystem>, "updatePackages" | "batchStatus" | "cancelBatchUpdate"> & { updatePackages?: ReturnType<typeof useAgentEcosystem>["updatePackages"]; batchStatus?: ReturnType<typeof useAgentEcosystem>["batchStatus"]; cancelBatchUpdate?: ReturnType<typeof useAgentEcosystem>["cancelBatchUpdate"] };
 
 interface EcosystemViewProps {
   cwd: string;

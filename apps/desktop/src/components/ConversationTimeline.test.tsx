@@ -5,6 +5,57 @@ import type { ChatMessage } from "../stores/useChatSession";
 import { ConversationTimeline, formatSessionDuration } from "./ConversationTimeline";
 
 describe("ConversationTimeline", () => {
+  it("真实助手增量没有工具状态字段时也逐步显示，结束立即补齐", () => {
+    vi.useFakeTimers();
+    const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+    try {
+      const content = "逐字呈现真实助手增量，完成时不遗漏任何内容。";
+      const messages: ChatMessage[] = [{ id: "live", role: "assistant", content }];
+      const { container, rerender, unmount } = render(<ConversationTimeline messages={messages} streaming />);
+      expect(container.querySelector(".assistant-message-content")?.textContent).toBe("");
+      act(() => vi.advanceTimersByTime(56));
+      const partial = container.querySelector(".assistant-message-content")?.textContent ?? "";
+      expect(partial.length).toBeGreaterThan(0);
+      expect(partial.length).toBeLessThan(content.length);
+      expect(content.startsWith(partial)).toBe(true);
+      rerender(<ConversationTimeline messages={messages} streaming={false} />);
+      expect(screen.getByText(content)).toBeVisible();
+      unmount();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      hidden.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    [-1, "0秒"], [999, "0秒"], [60_000, "1分钟"],
+    [1_470_000, "24分钟 30秒"], [3_660_000, "1小时 1分钟"],
+    [86_400_000, "1天"], [90_000_000, "1天 1小时"],
+  ])("将 %s 毫秒显示为中文时长 %s", (duration, expected) => {
+    expect(formatSessionDuration(duration as number)).toBe(expected);
+  });
+
+  it("生成期正文先于思考提示，追加工具时保留正文节点与原始顺序", () => {
+    const messages: ChatMessage[] = [
+      { id: "user", role: "user", content: "检查", timer: { startedAt: 1, endedAt: null, durationMs: null } },
+      { id: "assistant", role: "assistant", content: "先检查模块" },
+    ];
+    const { container, rerender } = render(<ConversationTimeline messages={messages} streaming />);
+    const assistant = container.querySelector<HTMLElement>(".timeline-assistant")!;
+    const thinking = container.querySelector(".timeline-thinking-inline")!;
+    expect(assistant.compareDocumentPosition(thinking)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(container.querySelector(".conversation-process-body")).toContainElement(assistant);
+    rerender(<ConversationTimeline messages={[
+      ...messages,
+      { id: "tool", role: "tool", toolName: "read", content: "", status: "running" },
+    ]} streaming />);
+    expect(container.querySelector(".timeline-assistant")).toBe(assistant);
+    expect(assistant.compareDocumentPosition(container.querySelector(".timeline-tool-group")!))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(container.querySelector(".timeline-thinking-inline")).not.toBeInTheDocument();
+  });
+
   it("按原始顺序保留思考与工具，展开思考可查看完整 Markdown", () => {
     const { container } = render(<ConversationTimeline messages={[
       { id: "thinking-1", role: "thinking", content: "**检查依赖**\n\n需要查看配置文件。" },
@@ -32,14 +83,14 @@ describe("ConversationTimeline", () => {
     expect(screen.getByText(label + " 2 个工具 · read")).toBeVisible();
   });
 
-  it("工具之后没有最终回复时，不把此前的进度说明移到时间线末尾", () => {
+  it("工具之后没有最终回复时，不把此前的进度说明移到时间线末尾", async () => {
     const { container } = render(<ConversationTimeline messages={[
       { id: "user", role: "user", content: "开始", timer: { startedAt: 1, endedAt: null, durationMs: null } },
       { id: "progress", role: "assistant", content: "先读取文件" },
       { id: "tool", role: "tool", toolName: "read", content: "", status: "running" },
     ]} streaming />);
     const process = container.querySelector(".conversation-process-body")!;
-    expect(process).toContainElement(screen.getByText("先读取文件"));
+    expect(process).toContainElement(await screen.findByText("先读取文件"));
     expect(process.querySelector(".timeline-assistant")!.compareDocumentPosition(process.querySelector(".timeline-tool-group")!))
       .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
@@ -97,7 +148,7 @@ describe("ConversationTimeline", () => {
       />,
     );
 
-    expect(screen.getByText("逐步推理").closest(".timeline-thinking-text")).not.toBeNull();
+    expect(screen.queryByText("逐步推理")).not.toBeInTheDocument();
     expect(screen.queryByText("思考中")).not.toBeInTheDocument();
     expect(screen.queryByText("Pi 正在处理")).not.toBeInTheDocument();
 
@@ -166,7 +217,7 @@ describe("ConversationTimeline", () => {
     }
   });
 
-  it("没有思考增量时展示单一流式思考状态", () => {
+  it("没有思考增量时展示单一流式思考状态", async () => {
     render(
       <ConversationTimeline
         messages={[{ id: "assistant", role: "assistant", content: "正在生成回复" }]}
@@ -181,7 +232,7 @@ describe("ConversationTimeline", () => {
       "polite",
     );
     expect(screen.queryByRole("button", { name: "复制本轮回复" })).not.toBeInTheDocument();
-    expect(screen.getByText("正在生成回复").closest(".message-stream")).toHaveAttribute(
+    expect((await screen.findByText("正在生成回复")).closest(".message-stream")).toHaveAttribute(
       "aria-busy",
       "true",
     );
@@ -342,7 +393,7 @@ describe("ConversationTimeline", () => {
     expect(screen.getAllByRole("button", { name: "复制本轮回复" })).toHaveLength(1);
   });
 
-  it("流式增量不重新读取未变化历史回合的正文", () => {
+  it("流式增量不重新读取未变化历史回合的正文", async () => {
     const readHistory = vi.fn(() => "已经完成的历史回复");
     const historyAssistant: ChatMessage = {
       id: "assistant-1",
@@ -371,7 +422,7 @@ describe("ConversationTimeline", () => {
       />,
     );
 
-    expect(screen.getByText("正在输出新的内容")).toBeVisible();
+    expect(await screen.findByText("正在输出新的内容")).toBeVisible();
     expect(screen.getByText("已经完成的历史回复")).toBeVisible();
     expect(readHistory).not.toHaveBeenCalled();
     expect(screen.getAllByRole("button", { name: "复制本轮回复" })).toHaveLength(1);
@@ -419,8 +470,8 @@ describe("ConversationTimeline", () => {
         />,
       );
 
-      expect(formatSessionDuration(0)).toBe("0s");
-      expect(screen.getByText("已处理 0s")).toBeInTheDocument();
+      expect(formatSessionDuration(0)).toBe("0秒");
+      expect(screen.getByText("已处理 0秒")).toBeInTheDocument();
       expect(
         container.querySelector(".conversation-run-timer")?.closest("details"),
       ).toHaveAttribute(
@@ -429,7 +480,7 @@ describe("ConversationTimeline", () => {
       );
 
       act(() => vi.advanceTimersByTime(2_100));
-      expect(screen.getByText("已处理 2s")).toBeInTheDocument();
+      expect(screen.getByText("已处理 2秒")).toBeInTheDocument();
 
       rerender(
         <ConversationTimeline
@@ -438,7 +489,7 @@ describe("ConversationTimeline", () => {
           timer={{ startedAt, endedAt: startedAt + 3_500, durationMs: 3_500 }}
         />,
       );
-      expect(screen.getByText("已处理 3s")).toBeInTheDocument();
+      expect(screen.getByText("用时 3秒")).toBeInTheDocument();
       expect(container.querySelector(".conversation-run-timer")).not.toHaveAttribute(
         "data-active",
       );
@@ -476,9 +527,9 @@ describe("ConversationTimeline", () => {
     expect(process).toBeInTheDocument();
     expect(process).not.toHaveAttribute("open");
     const summary = process.querySelector("summary")!;
-    expect(summary).toHaveTextContent("已处理 2s");
+    expect(summary).toHaveTextContent("用时 2秒");
     expect(summary).toHaveAttribute("aria-expanded", "false");
-    expect(summary).toHaveAccessibleName("已处理 2s，展开处理过程");
+    expect(summary).toHaveAccessibleName("用时 2秒，展开处理过程");
     expect(screen.getByText("最终结论")).toBeVisible();
     expect(screen.queryByText("正在检查相关模块")).not.toBeInTheDocument();
     expect(screen.queryByText("read")).not.toBeInTheDocument();
@@ -488,7 +539,7 @@ describe("ConversationTimeline", () => {
     fireEvent.click(summary);
     expect(process).toHaveAttribute("open");
     expect(summary).toHaveAttribute("aria-expanded", "true");
-    expect(summary).toHaveAccessibleName("已处理 2s，折叠处理过程");
+    expect(summary).toHaveAccessibleName("用时 2秒，折叠处理过程");
     expect(screen.getByText("正在检查相关模块")).toBeVisible();
     expect(screen.getByText("read")).toBeVisible();
     expect(screen.getByText("中间系统状态")).toBeVisible();
@@ -541,7 +592,7 @@ describe("ConversationTimeline", () => {
     expect(screen.queryByText("第二轮过程")).not.toBeInTheDocument();
   });
 
-  it("活动回合默认展开，并在结束后自动折叠过程", () => {
+  it("活动回合默认展开，并在结束后自动折叠过程", async () => {
     const activeTimer = { startedAt: 1_000, endedAt: null, durationMs: null };
     const { container, rerender } = render(
       <ConversationTimeline
@@ -556,7 +607,7 @@ describe("ConversationTimeline", () => {
 
     const process = container.querySelector("details.conversation-process") as HTMLDetailsElement;
     expect(process).toHaveAttribute("open");
-    expect(screen.getByText("进行中的过程")).toBeVisible();
+    expect(await screen.findByText("进行中的过程")).toBeVisible();
 
     rerender(
       <ConversationTimeline
@@ -596,7 +647,7 @@ describe("ConversationTimeline", () => {
     );
 
     expect(container.querySelector("details.conversation-process")).not.toBeInTheDocument();
-    expect(container.querySelector(".conversation-run-timer")).toHaveTextContent("已处理 2s");
+    expect(container.querySelector(".conversation-run-timer")).toHaveTextContent("用时 2秒");
     expect(screen.getByRole("alert")).toHaveTextContent("请求失败");
   });
 
@@ -618,7 +669,7 @@ describe("ConversationTimeline", () => {
     );
 
     expect(container.querySelector("details.conversation-process")).not.toBeInTheDocument();
-    expect(container.querySelector(".conversation-run-timer")).toHaveTextContent("已处理 2s");
+    expect(container.querySelector(".conversation-run-timer")).toHaveTextContent("用时 2秒");
     expect(screen.getByText("尚未完成的回复")).toBeVisible();
     expect(screen.getByRole("alert")).toHaveTextContent("连接意外中断");
   });
@@ -644,10 +695,10 @@ describe("ConversationTimeline", () => {
       const turns = container.querySelectorAll(".timeline-turn");
       expect(turns).toHaveLength(2);
       expect(turns[0]?.querySelector(".conversation-run-timer")).toHaveTextContent(
-        "已处理 2s",
+        "用时 2秒",
       );
       expect(turns[0]?.querySelector(".conversation-run-timer")).not.toHaveAttribute("data-active");
-      expect(turns[1]?.querySelector(".conversation-run-timer")).toHaveTextContent("已处理 0s");
+      expect(turns[1]?.querySelector(".conversation-run-timer")).toHaveTextContent("已处理 0秒");
       expect(
         turns[1]?.querySelector(".conversation-run-timer")?.closest("details"),
       ).toHaveAttribute(
@@ -683,7 +734,7 @@ describe("ConversationTimeline", () => {
       );
 
       const timer = container.querySelector(".conversation-run-timer");
-      expect(timer).toHaveTextContent("已处理 0s");
+      expect(timer).toHaveTextContent("已处理 0秒");
       expect(timer?.closest("details")).toHaveAttribute("data-active", "true");
     } finally {
       vi.useRealTimers();

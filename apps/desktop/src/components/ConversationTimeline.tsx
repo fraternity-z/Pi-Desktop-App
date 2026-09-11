@@ -24,6 +24,7 @@ import type {
   SessionTimerState,
   TimelineStatus,
 } from "../stores/useChatSession";
+import { useStreamingText } from "../stores/useStreamingText";
 import { MarkdownContent } from "./MarkdownContent";
 
 interface ConversationTimelineProps {
@@ -96,10 +97,16 @@ const ConversationTurn = memo(function ConversationTurn({
   // The store attaches a timer to each user message. Keep the prop as a
   // compatibility fallback for projections created before per-turn timers.
   const turnTimer = resolveTurnTimer(turn.user?.timer, fallbackTimer);
-  const finalAssistantIndex = findFinalAssistantIndex(turn.messages);
+  // Only completed turns have a final answer. Keep live message nodes in place
+  // when a later tool event arrives instead of moving them between containers.
+  const finalAssistantIndex = isCurrentTurn ? -1 : findFinalAssistantIndex(turn.messages);
   const finalAssistant =
     finalAssistantIndex >= 0 ? turn.messages[finalAssistantIndex] ?? null : null;
   const thinkingSegments = findLiveThinkingSegments(turn.messages, isCurrentTurn);
+  const showThinking = isCurrentTurn && !turn.messages.some(
+    (message) => message.role === "tool" &&
+      (message.status === "running" || message.status === "pending" || !message.status),
+  );
   const processMessages = finalAssistant
     ? turn.messages.filter((_, index) => index !== finalAssistantIndex)
     : turn.messages;
@@ -133,7 +140,7 @@ const ConversationTurn = memo(function ConversationTurn({
   const processContent = (
     <>
       {renderGroups(processGroups)}
-      {isCurrentTurn && (
+      {showThinking && (
         <ThinkingInline
           segments={
             thinkingSegments.length > 0 ? thinkingSegments : PENDING_THINKING_SEGMENTS
@@ -162,7 +169,7 @@ const ConversationTurn = memo(function ConversationTurn({
         <>
           {turnTimer && <ConversationTimer timer={turnTimer} />}
           {renderGroups(groupTimelineMessages(turn.messages))}
-          {isCurrentTurn && (
+          {showThinking && (
             <ThinkingInline
               segments={
                 thinkingSegments.length > 0 ? thinkingSegments : PENDING_THINKING_SEGMENTS
@@ -220,7 +227,7 @@ const ConversationTimer = memo(function ConversationTimer({
   if (startedAt === null || startedAt === undefined) return null;
   const elapsed = timer?.durationMs ?? Math.max(0, (timer?.endedAt ?? now) - startedAt);
   const label = formatSessionDuration(elapsed);
-  const timerText = "已处理 " + label;
+  const timerText = (active ? "已处理 " : "用时 ") + label;
 
   if (children) {
     return (
@@ -273,10 +280,10 @@ export function formatSessionDuration(milliseconds: number): string {
   const hours = Math.floor((totalSeconds % 86_400) / 3_600);
   const minutes = Math.floor((totalSeconds % 3_600) / 60);
   const seconds = totalSeconds % 60;
-  if (days > 0) return hours > 0 ? days + "d " + hours + "h" : days + "d";
-  if (hours > 0) return minutes > 0 ? hours + "h " + minutes + "m" : hours + "h";
-  if (minutes > 0) return seconds > 0 ? minutes + "m " + seconds + "s" : minutes + "m";
-  return seconds + "s";
+  if (days > 0) return hours > 0 ? days + "天 " + hours + "小时" : days + "天";
+  if (hours > 0) return minutes > 0 ? hours + "小时 " + minutes + "分钟" : hours + "小时";
+  if (minutes > 0) return seconds > 0 ? minutes + "分钟 " + seconds + "秒" : minutes + "分钟";
+  return seconds + "秒";
 }
 
 function resolveTurnTimer(
@@ -357,12 +364,17 @@ const AssistantMessage = memo(function AssistantMessage({
   message: ChatMessage;
   streaming: boolean;
 }) {
+  // Assistant deltas have no status field; tool status must not gate text animation.
+  const visibleContent = useStreamingText(
+    message.content,
+    streaming && (!message.status || message.status === "running"),
+  );
   if (!message.content && streaming) return null;
   return (
     <article className="timeline-row timeline-assistant" data-status={message.status}>
       <div className="assistant-message-content">
         {message.content ? (
-          <MarkdownContent>{message.content}</MarkdownContent>
+          <MarkdownContent>{visibleContent}</MarkdownContent>
         ) : (
           <span className="message-empty">本次任务没有返回文本。</span>
         )}

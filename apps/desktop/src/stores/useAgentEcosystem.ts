@@ -25,6 +25,8 @@ export function useAgentEcosystem() {
   const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "checked" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
   const [operation, setOperation] = useState<string | null>(null);
+  const [batchStatus, setBatchStatus] = useState<Record<string, "waiting" | "downloading" | "success" | "failed" | "cancelled">>({});
+  const batchCancelled = useRef(false);
   const requestSequence = useRef(0);
   const operationSequence = useRef(0);
   const activeWorkspace = useRef("");
@@ -161,6 +163,40 @@ export function useAgentEcosystem() {
     [runPackageOperation],
   );
 
+  const updatePackages = useCallback(async (cwd: string, sources: string[], concurrency = 2) => {
+    const queue = [...new Set(sources)];
+    if (!queue.length) return { succeeded: [], failed: [] as string[] };
+    batchCancelled.current = false;
+    setBatchStatus(Object.fromEntries(queue.map((source) => [source, "waiting"])));
+    const succeeded: string[] = [];
+    const failed: string[] = [];
+    let cursor = 0;
+    async function worker() {
+      while (cursor < queue.length) {
+        if (batchCancelled.current) return;
+        const source = queue[cursor++];
+        setBatchStatus((current) => ({ ...current, [source]: "downloading" }));
+        try {
+          let lastError: unknown;
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            try { await Promise.race([updateAgentPackage(cwd, source), new Promise<never>((_, reject) => setTimeout(() => reject(new Error("更新超时")), 120000))]); break; }
+            catch (error) { lastError = error; if (attempt === 1) throw lastError; }
+          }
+          succeeded.push(source);
+          setBatchStatus((current) => ({ ...current, [source]: "success" }));
+        } catch {
+          failed.push(source);
+          setBatchStatus((current) => ({ ...current, [source]: "failed" }));
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrency), queue.length) }, worker));
+    await refresh(cwd, "packages");
+    return { succeeded, failed };
+  }, [refresh]);
+
+  const cancelBatchUpdate = useCallback(() => { batchCancelled.current = true; }, []);
+
   const updatePackage = useCallback(
     (cwd: string, source?: string) =>
       runPackageOperation(
@@ -185,6 +221,9 @@ export function useAgentEcosystem() {
     setPackageEnabled,
     removePackage,
     updatePackage,
+    updatePackages,
+    batchStatus,
+    cancelBatchUpdate,
     checkUpdates,
   };
 }

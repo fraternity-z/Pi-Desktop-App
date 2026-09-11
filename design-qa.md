@@ -385,3 +385,53 @@ the source image. This does not affect hierarchy, control size, focus behavior, 
 - [x] Run full tests, TypeScript/Rust checks, production build, diff check, and sensitive-value scan.
 
 final result: passed
+
+# 主界面流式对话与工具悬浮复刻（2026-09-11）
+
+本节仅评价本次对话流改动，不替代上方其他任务的记录。
+
+## 素材与证据
+
+- 视频：`C:/Users/Administrator/Downloads/QQ20260911-002036.mp4`，1920×1062，48.77秒；解码核对0、10、20、44秒及增量出现时段。
+- 对话图片：`C:/Users/Administrator/AppData/Local/Temp/codex-clipboard-70509508-cad3-4130-9b73-cf5bfa1421ac.png`。
+- 悬浮前后图片：`C:/Users/Administrator/AppData/Local/Temp/codex-clipboard-d16fcc98-2e2e-42de-b7dc-21e9bad952af.png`、`C:/Users/Administrator/AppData/Local/Temp/codex-clipboard-2bdae3e7-7ea4-4faf-b374-3f324a93024c.png`。
+- 实现截图：`output/playwright/streaming-desktop.png`、`streaming-mobile.png`、`streaming-empty.png`、`streaming-tool-expanded.png`、`streaming-failed.png`、`streaming-completed.png`（均在同一目录）。
+- 全图并排比较：`output/playwright/streaming-comparison.png`。左右为参考10秒帧及相同正文、生成中状态；均为1920×1062后等比例缩小。
+- 正文及悬浮局部并排比较：`output/playwright/streaming-focused-comparison.png`，使用实际截图裁切，已亲自打开检查。
+- 窄屏：390×844，真实主页面、真实React组件和store，以浏览器内Mock替代Tauri和Pi外部依赖，不执行用户项目命令。
+
+## 五项视觉核对
+
+| 范围 | 本次实现及核对结果 |
+| --- | --- |
+| 字体与排版 | 沿用用户字体偏好；默认正文16px、行高25.6px，工具行同字号并降为灰色。参考视频经过缩放，附图字号约18px，因此不声称两种素材在同一缩放比例下像素完全一致。 |
+| 布局与节奏 | 正文与输入框共用700px上限，窄屏14px侧留白；连续正文/活动约22px间隔。输入区最小高度54px，外框18px圆角，底部固定；长内容不横向撑开。 |
+| 颜色与状态 | 默认白底、深色正文、灰色活动行。真实测得工具文字从rgb(112,112,112)变为rgb(31,31,31)，箭头透明度从0变为1；140ms过渡，无悬浮背景卡片。键盘聚焦也变深并显示箭头。停止按钮使用中性主按钮色。 |
+| 图标与素材 | 复用现有Lucide语义图标及Pi标识。参考里的其他代理任务徽标没有对应业务数据，未伪造为真实任务。工具图标和状态文案因Pi工具语义保留现有表达。 |
+| 文案与内容 | 活动显示“已处理”，结束显示“用时”，中文分钟/秒。生成期助手正文按原序显示在思考提示之前，工具运行时隐藏重复思考提示；结束后的过程仍可独立展开。 |
+
+## 交互验证与修复
+
+- 初次截图对照发现工具名在空间充足时仍被45%限制截断，已改为有界28ch并允许收缩。
+- 实测发现真实助手增量没有工具的running字段，已修正动画启用条件并新增真实DTO形状回归测试。
+- 同一真实事件链路80ms时显示16字，随后显示完整65字，证实不是仅有状态动画；28ms一批呈现，积压上限240字素。
+- 完成、停止、替换内容、后台、减少动态效果会补齐完整内容；Unicode字素与卸载清理有测试。
+- ResizeObserver观察正文变化，执行滚动前再次检查是否跟随，避免用户上滑与已排队滚动竞争。
+- 390px窄屏实测页面/滚动容器均为390px；长路径、连续消息及长文本没有横向溢出。
+- 长流跟随到底部间隙0px；上滑后继续输出时scrollTop保持0；点击“跳到最新消息”后间隙恢复0px。
+- 鼠标和Enter均能展开/收起工具详情；失败信息通过alert显示且不会折叠隐藏。
+
+## 验证结果与限制
+
+- Renderer：60个文件、450项测试全部通过。覆盖率语句87.78%、分支82.09%、函数88.90%、行90.59%。
+- 新增流式hook：语句/函数/行100%，分支92.30%；时间线行92.16%、分支85.27%。
+- ChatWorkbenchView整体行81.63%、分支79.81%、函数73.80%；该大页面的其他操作未全部覆盖，本次新增滚动路径已有Mock回归和实际浏览器验证，未扩展修改无关功能以提高覆盖数字。
+- Bridge：167项通过、1项既有跳过；运行时准备脚本8项通过；Rust：156项通过、1项既有忽略。
+- 首次全量测试有2项并发超时，降低到2个worker后全量通过。首次Rust检查遇到运行中程序占用资源，使用独立CARGO_TARGET_DIR完成测试、检查和完整pnpm build。
+- pnpm check与最终pnpm build成功；生产包仍有既有的大chunk体积提示。
+- 素材未展示失败、移动端、长流自动滚动；这些状态按既有产品语义补齐并验证。浏览器Mock验证不等同于重新运行外部Pi模型请求。
+- 保留Pi侧边栏、项目选择与输入框工具控件；参考应用的侧栏内容、系统标题栏、第三方任务徽标及字体抗锯齿存在产品/平台差异。其余P3为素材缩放造成的字号视觉差别，可随应用字号偏好调整。
+
+本次对话流范围无未解决的P0/P1/P2交互或布局问题；不将素材未提供的状态称为一比一复刻。
+
+final result: passed

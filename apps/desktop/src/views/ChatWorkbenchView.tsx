@@ -148,6 +148,7 @@ export function ChatWorkbenchView() {
   const [startupActionError, setStartupActionError] = useState<string | null>(null);
   const messagesEnd = useRef<HTMLDivElement>(null);
   const conversationScroll = useRef<HTMLDivElement>(null);
+  const conversationBody = useRef<HTMLDivElement>(null);
   const shouldStickToBottom = useRef(true);
   const pendingConversationScroll = useRef<(() => void) | null>(null);
   const projectDialogTrigger = useRef<HTMLElement | null>(null);
@@ -221,6 +222,7 @@ export function ChatWorkbenchView() {
       if (pendingConversationScroll.current) return;
       pendingConversationScroll.current = scheduleAfterLayout(() => {
         pendingConversationScroll.current = null;
+        if (!shouldStickToBottom.current) return;
         scrollConversationToBottom(conversationScroll.current, messagesEnd.current, behavior);
       });
     },
@@ -238,6 +240,22 @@ export function ChatWorkbenchView() {
     setAtConversationBottom(true);
     scheduleConversationScroll("auto", true);
   }, [scheduleConversationScroll, session.sessionId]);
+
+  useEffect(() => {
+    const body = conversationBody.current;
+    if (activeView !== "chat" || !body || typeof ResizeObserver === "undefined") return;
+    let observing = true;
+    const observer = new ResizeObserver(() => {
+      if (observing && shouldStickToBottom.current) scheduleConversationScroll();
+    });
+    observer.observe(body);
+    return () => {
+      observing = false;
+      observer.disconnect();
+      pendingConversationScroll.current?.();
+      pendingConversationScroll.current = null;
+    };
+  }, [activeView, scheduleConversationScroll, session.sessionId]);
 
   useEffect(
     () => () => {
@@ -1098,7 +1116,7 @@ export function ChatWorkbenchView() {
             }}
           >
             <div className="thread-content-column-stack">
-              <div className={`thread-body${hasSession && session.messages.length > 0 ? "" : " thread-body-empty"}`}>
+              <div ref={conversationBody} className={`thread-body${hasSession && session.messages.length > 0 ? "" : " thread-body-empty"}`}>
                 {session.phase === "creating" ? (
                   <SessionLoading />
                 ) : !hasSession ? (

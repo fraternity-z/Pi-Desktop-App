@@ -654,6 +654,69 @@ describe("ChatWorkbenchView", () => {
     );
   });
 
+  it("内容高度变化时跟随底部，待执行滚动不能抢回用户上滑位置", async () => {
+    const observers: { callback: ResizeObserverCallback; observe: Mock; disconnect: Mock }[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      observe = vi.fn();
+      disconnect = vi.fn();
+      unobserve = vi.fn();
+      constructor(callback: ResizeObserverCallback) {
+        observers.push({ callback, observe: this.observe, disconnect: this.disconnect });
+      }
+    });
+    const view = render(<ChatWorkbenchView />);
+    try {
+      await screen.findByRole("status", { name: "状态正常" });
+      await addProject("C:\\work");
+      await screen.findByLabelText("发送给 Pi 的消息");
+      await act(async () => new Promise((resolve) => window.setTimeout(resolve, 32)));
+      const body = view.container.querySelector(".thread-body")!;
+      const observer = observers.filter((item) => item.observe.mock.calls.some(([target]) => target === body)).at(-1)!;
+      expect(observer).toBeDefined();
+      const scroll = view.container.querySelector(".conversation-scroll") as HTMLDivElement;
+      const scrollTo = vi.fn();
+      Object.defineProperties(scroll, {
+        scrollHeight: { configurable: true, value: 1_200 },
+        clientHeight: { configurable: true, value: 400 },
+        scrollTop: { configurable: true, writable: true, value: 800 },
+        scrollTo: { configurable: true, value: scrollTo },
+      });
+      const frames: FrameRequestCallback[] = [];
+      const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => frames.push(callback));
+      const cancelFrame = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+      try {
+        fireEvent.scroll(scroll);
+        act(() => observer.callback([], {} as ResizeObserver));
+        expect(frames).toHaveLength(1);
+        scroll.scrollTop = 200;
+        fireEvent.scroll(scroll);
+        act(() => frames.shift()!(0));
+        expect(scrollTo).not.toHaveBeenCalled();
+        act(() => observer.callback([], {} as ResizeObserver));
+        expect(frames).toHaveLength(0);
+
+        scroll.scrollTop = 800;
+        fireEvent.scroll(scroll);
+        act(() => observer.callback([], {} as ResizeObserver));
+        act(() => frames.shift()!(0));
+        expect(scrollTo).toHaveBeenCalledWith({ top: 1_200, behavior: "auto" });
+
+        act(() => observer.callback([], {} as ResizeObserver));
+        view.unmount();
+        expect(observer.disconnect).toHaveBeenCalledOnce();
+        expect(cancelFrame).toHaveBeenCalled();
+        act(() => observer.callback([], {} as ResizeObserver));
+        expect(scrollTo).toHaveBeenCalledOnce();
+      } finally {
+        requestFrame.mockRestore();
+        cancelFrame.mockRestore();
+      }
+    } finally {
+      view.unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("流式响应期间可停止任务", async () => {
     const { container } = render(<ChatWorkbenchView />);
     await screen.findByRole("status", { name: "状态正常" });

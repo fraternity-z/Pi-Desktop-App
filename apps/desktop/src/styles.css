@@ -7740,7 +7740,7 @@ body,
 
 .message-stream,
 .composer-dock {
-  width: min(800px, calc(100% - 64px));
+  width: min(700px, calc(100% - 64px));
 }
 
 .message-stream {
@@ -7756,13 +7756,13 @@ body,
 }
 
 .user-message-bubble {
-  padding: 12px 16px;
+  padding: 10px 16px;
   border-color: transparent;
   line-height: 1.7;
 }
 
 .assistant-message-content {
-  line-height: 1.8;
+  line-height: 1.6;
 }
 
 .markdown-content {
@@ -7865,8 +7865,8 @@ body,
 }
 
 .conversation-run-timer {
-  font-size: 12px;
-  border-bottom-color: color-mix(in srgb, var(--line) 65%, transparent);
+  font-size: var(--app-ui-font-size);
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 65%, transparent);
 }
 
 .conversation-process-body {
@@ -7881,8 +7881,23 @@ body,
 
 .composer-frame {
   border-color: var(--line-strong);
+  border-radius: 18px;
   box-shadow: 0 2px 5px rgb(0 0 0 / 3%), 0 8px 24px rgb(0 0 0 / 6%);
   backdrop-filter: none;
+}
+
+.conversation-shell .composer-frame textarea {
+  min-height: 54px;
+}
+
+.conversation-shell .composer-stop {
+  border-color: var(--button-primary-bg);
+  background: var(--button-primary-bg);
+  color: var(--button-primary-text);
+}
+
+.conversation-shell .composer-stop:hover {
+  background: var(--button-primary-hover);
 }
 
 .composer-frame:focus-within {
@@ -8072,6 +8087,133 @@ samp,
 
 .settings-row-description {
   font-size: max(11px, calc(var(--app-ui-font-size) - 2px));
+}
+
+/* Conversation typography and activity spacing follow the streaming transcript. */
+.message-stream .assistant-message-content,
+.message-stream .user-message-bubble {
+  font-size: calc(var(--app-ui-font-size) + 2px);
+}
+
+.message-stream .timeline-assistant {
+  margin-bottom: 22px;
+}
+
+.message-stream .assistant-message-content .markdown-content > p {
+  margin-bottom: 22px;
+}
+
+.message-stream .assistant-message-content .markdown-content > :last-child {
+  margin-bottom: 0;
+}
+
+.message-stream .timeline-tool-group,
+.message-stream .timeline-reasoning {
+  margin-bottom: 22px;
+}
+
+.message-stream .timeline-tool-group + .timeline-assistant {
+  margin-top: 0;
+}
+
+.message-stream .timeline-tool-group-summary,
+.message-stream .timeline-tool-copy,
+.message-stream .timeline-reasoning,
+.message-stream .timeline-thinking-inline {
+  font-size: calc(var(--app-ui-font-size) + 2px);
+  line-height: 1.6;
+  color: var(--subtle);
+}
+
+.message-stream .timeline-tool-copy,
+.message-stream .timeline-tool-heading {
+  flex: 0 1 auto;
+}
+
+.message-stream .timeline-tool-name,
+.message-stream .timeline-tool-summary,
+.message-stream .timeline-tool-status {
+  font: inherit;
+  color: inherit;
+}
+
+.message-stream .timeline-tool-name {
+  max-width: 28ch;
+  flex: 0 1 auto;
+  font-weight: 400;
+}
+
+.message-stream .timeline-tool-group-summary,
+.message-stream .timeline-tool > summary,
+.message-stream .timeline-tool-copy,
+.message-stream .timeline-tool-group-icon {
+  transition: color 140ms ease;
+}
+
+.message-stream .timeline-tool-group-chevron,
+.message-stream .timeline-tool-chevron {
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+.message-stream .timeline-tool-group-summary:is(:hover, :focus-visible),
+.message-stream .timeline-tool-group-summary:is(:hover, :focus-visible) .timeline-tool-group-icon,
+.message-stream .timeline-tool > summary:is(:hover, :focus-visible),
+.message-stream .timeline-tool > summary:is(:hover, :focus-visible) .timeline-tool-copy {
+  color: var(--text);
+  background: transparent;
+}
+
+.message-stream summary:is(:hover, :focus-visible) > .timeline-tool-group-chevron,
+.message-stream summary:is(:hover, :focus-visible) > .timeline-tool-chevron,
+.message-stream details[open] > summary > .timeline-tool-group-chevron,
+.message-stream details[open] > summary > .timeline-tool-chevron {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .message-stream .timeline-tool-group-chevron,
+  .message-stream .timeline-tool-chevron {
+    opacity: 1;
+  }
+}
+
+.message-stream .timeline-tool-summary {
+  max-width: 34ch;
+}
+
+.message-stream .timeline-tool-group-summary,
+.message-stream .timeline-tool:not(details),
+.message-stream .timeline-tool > summary {
+  gap: 9px;
+  min-height: 26px;
+}
+
+.message-stream .timeline-tool-failed .timeline-tool-status {
+  color: var(--danger);
+}
+
+.message-stream .timeline-tool-panel {
+  border: 0;
+  border-left: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+}
+
+.message-stream .timeline-tool-panel-header {
+  border-bottom: 0;
+}
+
+.message-stream .timeline-thinking-inline {
+  margin: 0 0 22px;
+}
+
+:root[data-reduce-motion="true"] .timeline-thinking-text,
+:root[data-reduce-motion="true"] .timeline-thinking-text * {
+  animation: none;
+  background-image: none;
+  color: var(--muted);
+  -webkit-text-fill-color: currentColor;
 }
 
 :root[data-background-active="true"],

@@ -22,7 +22,7 @@ import type {
 } from "../ipc/agent";
 import type { useAgentEcosystem } from "../stores/useAgentEcosystem";
 
-type EcosystemController = ReturnType<typeof useAgentEcosystem>;
+type EcosystemController = Omit<ReturnType<typeof useAgentEcosystem>, "updatePackages"> & { updatePackages?: ReturnType<typeof useAgentEcosystem>["updatePackages"] };
 
 interface EcosystemViewProps {
   cwd: string;
@@ -45,6 +45,7 @@ export function PackageManagerView({
   const [scope, setScope] = useState<PackageScope>("global");
   const [page, setPage] = useState(0);
   const [removeTarget, setRemoveTarget] = useState<AgentPackageSummary | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
   const busy = ecosystem.operation !== null || ecosystem.phase === "loading";
   const updateSources = useMemo(
     () => new Set(ecosystem.updates.map((item) => `${item.scope}:${item.source}`)),
@@ -133,7 +134,11 @@ export function PackageManagerView({
             </button>
           </div>
           {tab === "installed" && (
-            <label className="ecosystem-search">
+            <>
+              <button className="secondary-button" type="button" disabled={busy || !selected.length || !ecosystem.updatePackages} onClick={() => void ecosystem.updatePackages?.(cwd, selected)}>
+                批量更新 ({selected.length})
+              </button>
+              <label className="ecosystem-search">
               <Search size={15} aria-hidden="true" />
               <input
                 value={query}
@@ -142,6 +147,7 @@ export function PackageManagerView({
                 aria-label="搜索插件"
               />
             </label>
+            </>
           )}
         </div>
 
@@ -231,6 +237,7 @@ export function PackageManagerView({
                     <div className="package-row-icon" aria-hidden="true">
                       <Package size={17} />
                     </div>
+                    <input type="checkbox" aria-label={`选择${packageDisplayName(item.source)}更新`} checked={selected.includes(item.source)} disabled={busy || item.kind === "local"} onChange={(event) => setSelected((current) => event.target.checked ? [...current, item.source] : current.filter((source) => source !== item.source))} />
                     <div className="package-row-main">
                       <strong title={item.source}>{packageDisplayName(item.source)}</strong>
                       <span title={item.installedPath ?? item.source}>

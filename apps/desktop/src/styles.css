@@ -5536,6 +5536,15 @@ body {
   align-items: flex-start;
 }
 
+.package-toolbar {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.package-toolbar .ecosystem-search {
+  margin-left: auto;
+}
+
 .segmented-control {
   display: inline-flex;
   min-width: 0;
@@ -5677,7 +5686,20 @@ body {
 }
 
 .package-row {
-  grid-template-columns: 30px minmax(0, 1fr) 38px auto;
+  grid-template-columns: 18px 30px minmax(0, 1fr) auto;
+}
+
+.package-row-select {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--text);
+  cursor: pointer;
+}
+
+.package-row-select:disabled {
+  cursor: default;
 }
 
 .resource-row {
@@ -5748,7 +5770,12 @@ body {
 .package-row-actions {
   display: flex;
   align-items: center;
-  gap: 1px;
+  gap: 6px;
+  justify-self: end;
+}
+
+.package-row-actions .compact-switch {
+  margin-right: 8px;
 }
 
 .package-row .icon-button,
@@ -5945,10 +5972,6 @@ body {
 
   .ecosystem-search {
     width: 100%;
-  }
-
-  .package-row {
-    grid-template-columns: 30px minmax(0, 1fr) 38px auto;
   }
 
   .resource-row {
@@ -7936,10 +7959,14 @@ body,
   font-size: 12px;
 }
 
-.package-row,
 .resource-row {
   min-height: 86px;
   padding: 16px 4px;
+}
+
+.package-row {
+  min-height: 76px;
+  padding: 14px 10px;
 }
 
 .package-row:hover,
@@ -7967,8 +7994,7 @@ body,
 .package-version-info .package-version {
   font-family: var(--app-code-font);
   font-size: 11px;
-  overflow-wrap: anywhere;
-  white-space: normal;
+  white-space: nowrap;
 }
 
 .package-version-info .update-badge {
@@ -8001,12 +8027,19 @@ body,
   }
 
   .package-row {
-    grid-template-columns: 30px minmax(0, 1fr) 34px auto;
-    gap: 7px;
+    grid-template-columns: 18px 30px minmax(0, 1fr);
+    column-gap: 10px;
+    row-gap: 8px;
   }
 
   .package-row-actions {
-    flex-direction: column;
+    grid-column: 3;
+    justify-self: start;
+  }
+
+  .package-row-main strong {
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 }
 

@@ -114,7 +114,7 @@ export function PackageManagerView({
       </EcosystemTopbar>
 
       <div className="ecosystem-content">
-        <div className="ecosystem-toolbar">
+        <div className="ecosystem-toolbar package-toolbar">
           <div className="segmented-control" role="tablist" aria-label="插件视图">
             <button
               type="button"
@@ -234,34 +234,41 @@ export function PackageManagerView({
                 const itemBusy = ecosystem.operation?.endsWith(item.source) ?? false;
                 return (
                   <div className="package-row" role="listitem" key={`${item.scope}:${item.source}`}>
+                    <input
+                      className="package-row-select"
+                      type="checkbox"
+                      aria-label={`选择${packageDisplayName(item.source)}更新`}
+                      checked={selected.includes(item.source)}
+                      disabled={busy || item.kind === "local"}
+                      onChange={(event) => setSelected((current) => event.target.checked ? [...current, item.source] : current.filter((source) => source !== item.source))}
+                    />
                     <div className="package-row-icon" aria-hidden="true">
                       <Package size={17} />
                     </div>
-                    <input type="checkbox" aria-label={`选择${packageDisplayName(item.source)}更新`} checked={selected.includes(item.source)} disabled={busy || item.kind === "local"} onChange={(event) => setSelected((current) => event.target.checked ? [...current, item.source] : current.filter((source) => source !== item.source))} />
                     <div className="package-row-main">
                       <strong title={item.source}>{packageDisplayName(item.source)}</strong>
-                      <span title={item.installedPath ?? item.source}>
-                        {item.scope === "project" ? "项目" : "全局"} · {item.kind}
-                        {item.filtered ? " · 已过滤" : ""}
-                      </span>
                       <div className="package-version-info">
+                        <span title={item.installedPath ?? item.source}>
+                          {item.scope === "project" ? "项目" : "全局"} · {item.kind}
+                          {item.filtered ? " · 已过滤" : ""}
+                        </span>
                         <span className="package-version">{item.version ? `v${item.version}` : item.installedPath ? "版本未知" : "未安装"}</span>
                         {updateSources.has(`${item.scope}:${item.source}`) && <span className="update-badge"><Download size={12} aria-hidden />可更新</span>}
                       </div>
                     </div>
-                    <label className="compact-switch" title={item.enabled ? "停用" : "启用"}>
-                      <input
-                        type="checkbox"
-                        aria-label={`${item.enabled ? "停用" : "启用"}${packageDisplayName(item.source)}`}
-                        checked={item.enabled}
-                        disabled={busy}
-                        onChange={(event) =>
-                          void ecosystem.setPackageEnabled(cwd, item, event.target.checked)
-                        }
-                      />
-                      <span aria-hidden="true" />
-                    </label>
                     <div className="package-row-actions">
+                      <label className="compact-switch" title={item.enabled ? "停用" : "启用"}>
+                        <input
+                          type="checkbox"
+                          aria-label={`${item.enabled ? "停用" : "启用"}${packageDisplayName(item.source)}`}
+                          checked={item.enabled}
+                          disabled={busy}
+                          onChange={(event) =>
+                            void ecosystem.setPackageEnabled(cwd, item, event.target.checked)
+                          }
+                        />
+                        <span aria-hidden="true" />
+                      </label>
                       <button
                         className="icon-button"
                         type="button"

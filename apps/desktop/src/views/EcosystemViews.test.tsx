@@ -100,7 +100,7 @@ describe("EcosystemViews", () => {
     expect(screen.getByText("可更新")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "更新pi-test-1" })).toBeDisabled();
 
-    fireEvent.click(screen.getAllByRole("checkbox")[0]);
+    fireEvent.click(screen.getByRole("checkbox", { name: "停用pi-test-0" }));
     expect(ecosystem.setPackageEnabled).toHaveBeenCalledWith(
       "C:\\work",
       packages[0],
@@ -122,6 +122,23 @@ describe("EcosystemViews", () => {
     });
     expect(await screen.findByText("pi-test-0")).toBeInTheDocument();
     expect(screen.queryByText("pi-test-11")).not.toBeInTheDocument();
+  });
+
+  it("批量选择与启停相互独立，本地插件不能选择更新", () => {
+    const ecosystem = controller({
+      packages: [basePackage, { ...basePackage, source: "C:/plugins/local", kind: "local" }],
+      updatePackages: vi.fn(async () => ({ succeeded: ["npm:pi-test"], failed: [] })),
+    });
+    render(<PackageManagerView {...packageProps(ecosystem)} />);
+    expect(screen.getByRole("button", { name: "批量更新 (0)" })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "选择local更新" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择pi-test更新" }));
+    expect(ecosystem.setPackageEnabled).not.toHaveBeenCalled();
+    expect(screen.getByRole("checkbox", { name: "停用pi-test" })).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "批量更新 (1)" }));
+    expect(ecosystem.updatePackages).toHaveBeenCalledWith("C:\\work", ["npm:pi-test"]);
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择pi-test更新" }));
+    expect(screen.getByRole("button", { name: "批量更新 (0)" })).toBeDisabled();
   });
 
   it("安装插件时校验重复名称、范围并在成功后返回列表", async () => {

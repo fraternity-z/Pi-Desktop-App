@@ -47,7 +47,7 @@ import {
 import { getRequestHeaderSettings, updateRequestHeaderSettings } from "../ipc/settings";
 import { DEFAULT_PROXY_SETTINGS, getProxySettings } from "../ipc/proxy";
 import {
-  closeAppWindow,
+  exitApp,
   getRuntimeSettings,
   getRuntimeStatus,
   listenToRuntimeStatus,
@@ -150,7 +150,7 @@ vi.mock("../ipc/settings", async (importOriginal) => ({
   updateRequestHeaderSettings: vi.fn(),
 }));
 vi.mock("../ipc/system", () => ({
-  closeAppWindow: vi.fn(),
+  exitApp: vi.fn(),
   getRuntimeSettings: vi.fn(),
   getRuntimeStatus: vi.fn(),
   listenToRuntimeStatus: vi.fn(),
@@ -227,7 +227,7 @@ describe("ChatWorkbenchView", () => {
     runtimeUnlisten = vi.fn<() => void>();
     unlisten = vi.fn<() => void>();
     vi.mocked(getRuntimeStatus).mockReset().mockResolvedValue(readyRuntime);
-    vi.mocked(closeAppWindow).mockReset().mockResolvedValue(undefined);
+    vi.mocked(exitApp).mockReset().mockResolvedValue(undefined);
     vi.mocked(restartRuntime).mockReset().mockResolvedValue(readyRuntime);
     vi.mocked(getRuntimeSettings).mockReset().mockResolvedValue({
       schemaVersion: 1,
@@ -805,7 +805,7 @@ describe("ChatWorkbenchView", () => {
         .every((button) => button.hasAttribute("disabled")),
     ).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "退出应用" }));
-    await waitFor(() => expect(closeAppWindow).toHaveBeenCalledOnce());
+    await waitFor(() => expect(exitApp).toHaveBeenCalledOnce());
   });
 
   it("退出启动失败时保留遮罩并给出可执行的降级提示", async () => {
@@ -816,13 +816,13 @@ describe("ChatWorkbenchView", () => {
       nodeVersion: null,
       error: { code: "RUNTIME_NOT_FOUND", message: "未找到可用运行时" },
     });
-    vi.mocked(closeAppWindow).mockRejectedValueOnce(new Error("close denied"));
+    vi.mocked(exitApp).mockRejectedValueOnce(new Error("close denied"));
     render(<ChatWorkbenchView />);
 
     fireEvent.click(await screen.findByRole("button", { name: "退出应用" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "APP_EXIT_FAILED: 无法退出应用，请使用窗口关闭按钮",
+      "APP_EXIT_FAILED: 无法退出应用，请使用托盘菜单中的“退出应用”",
     );
     expect(screen.getByRole("dialog", { name: "PI Desktop 启动界面" })).toHaveAttribute(
       "data-state",

@@ -3,6 +3,7 @@ mod commands;
 pub mod discovery;
 pub mod error;
 mod image;
+mod lifecycle;
 pub mod storage;
 
 use std::{
@@ -111,9 +112,13 @@ fn runtime_selection(settings: &AppSettings, bridge_script: &Path) -> RuntimeSel
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(lifecycle::ExitState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .on_menu_event(lifecycle::on_menu_event)
+        .on_window_event(lifecycle::on_window_event)
         .setup(|app| {
+            lifecycle::initialize(app.handle())?;
             let config_dir = app
                 .path()
                 .app_config_dir()
@@ -180,6 +185,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::application::exit_app,
             commands::appearance::install_appearance_background,
             commands::appearance::import_appearance_theme,
             commands::appearance::export_appearance_theme,
@@ -238,6 +244,7 @@ pub fn run() {
             commands::workspace::workspace_get_worktree_options,
             commands::workspace::workspace_create_worktree
         ])
-        .run(tauri::generate_context!())
-        .expect("启动 Pi Desktop 的 Tauri Runtime 失败");
+        .build(tauri::generate_context!())
+        .expect("启动 Pi Desktop 的 Tauri Runtime 失败")
+        .run(lifecycle::on_run_event);
 }

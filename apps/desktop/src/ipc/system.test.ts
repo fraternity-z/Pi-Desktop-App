@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   closeAppWindow,
+  exitApp,
   getArchitectureStatus,
   getRuntimeSettings,
   getRuntimeStatus,
@@ -31,6 +32,24 @@ describe("closeAppWindow", () => {
     await expect(closeAppWindow()).resolves.toBeUndefined();
     expect(getCurrentWindow).toHaveBeenCalledOnce();
     expect(close).toHaveBeenCalledOnce();
+  });
+});
+
+describe("exitApp", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  it("通过显式退出命令停止应用", async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await expect(exitApp()).resolves.toBeUndefined();
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("exit_app");
+  });
+
+  it("保留退出命令错误供界面提示", async () => {
+    const error = { code: "APP_EXIT_FAILED", message: "无法退出应用" };
+    vi.mocked(invoke).mockRejectedValue(error);
+    await expect(exitApp()).rejects.toEqual(error);
   });
 });
 

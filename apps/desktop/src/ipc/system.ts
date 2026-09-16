@@ -52,6 +52,10 @@ export async function closeAppWindow(): Promise<void> {
   await getCurrentWindow().close();
 }
 
+export async function exitApp(): Promise<void> {
+  await invoke<void>("exit_app");
+}
+
 export async function getRuntimeSettings(): Promise<RuntimeSettings> {
   const value = await invoke<unknown>("get_runtime_settings");
   const settings = readRuntimeSettings(value);

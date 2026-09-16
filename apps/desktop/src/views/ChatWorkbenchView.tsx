@@ -41,7 +41,7 @@ import {
   selectAttachmentFiles,
   selectProjectDirectory,
 } from "../ipc/project";
-import { closeAppWindow } from "../ipc/system";
+import { exitApp } from "../ipc/system";
 import {
   createWorkspaceWorktree,
   getWorktreeOptions,
@@ -883,8 +883,8 @@ export function ChatWorkbenchView() {
     session.retryEventListener,
   ]);
   const exitStartup = useCallback(() => {
-    void closeAppWindow().catch(() => {
-      setStartupActionError("APP_EXIT_FAILED: 无法退出应用，请使用窗口关闭按钮");
+    void exitApp().catch(() => {
+      setStartupActionError("APP_EXIT_FAILED: 无法退出应用，请使用托盘菜单中的“退出应用”");
     });
   }, []);
 

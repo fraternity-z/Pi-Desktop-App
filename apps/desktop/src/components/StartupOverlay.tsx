@@ -15,6 +15,7 @@ const STARTUP_STEPS = [
   { stage: "events", label: "事件连接", icon: Radio },
   { stage: "catalog", label: "工作区与会话", icon: MessagesSquare },
 ] as const;
+const STARTUP_STEP_COUNT = STARTUP_STEPS.length;
 
 const STAGE_LABELS: Record<StartupStage, string> = {
   runtime: "正在连接本机 Pi 运行时",
@@ -58,6 +59,16 @@ export function StartupOverlay({
   const failed = error !== null;
   const complete = ready && !failed;
   const activeStep = STARTUP_STEPS.findIndex((step) => step.stage === stage);
+  const completedStepCount = complete
+    ? STARTUP_STEP_COUNT
+    : Math.max(0, Math.min(activeStep, STARTUP_STEP_COUNT));
+  const progressPercent = Math.round((completedStepCount / STARTUP_STEP_COUNT) * 100);
+  const progressState = failed ? "error" : complete ? "complete" : "active";
+  const progressText = failed
+    ? `${completedStepCount} 个启动阶段已完成，${STAGE_LABELS[stage]}失败`
+    : complete
+      ? "全部启动阶段已完成"
+      : `${completedStepCount} 个启动阶段已完成，${STAGE_LABELS[stage]}`;
   const statusLabel = complete ? "准备就绪" : STAGE_LABELS[stage];
 
   useEffect(() => { finishCallback.current = onFinished; }, [onFinished]);
@@ -174,6 +185,19 @@ export function StartupOverlay({
               onFinished={() => setAnimationFinished(true)} />
           </h1>
         </div>
+
+        <div
+          className="startup-progress-meter"
+          data-state={progressState}
+          data-completed-steps={completedStepCount}
+          role="progressbar"
+          aria-label="启动阶段进度"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={progressPercent}
+          aria-valuetext={progressText}
+          style={{ "--startup-progress-scale": completedStepCount / STARTUP_STEP_COUNT } as CSSProperties}
+        />
 
         <ol className="startup-steps" aria-label="启动进度">
           {STARTUP_STEPS.map(({ stage: step, label, icon: Icon }, index) => {

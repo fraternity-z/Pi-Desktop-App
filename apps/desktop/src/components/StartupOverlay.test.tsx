@@ -130,6 +130,10 @@ describe("StartupOverlay", () => {
     await act(async () => vi.advanceTimersByTimeAsync(0));
     expect(screen.getByRole("dialog")).toHaveAttribute("data-state", "leaving");
     expect(screen.getByRole("status")).toHaveTextContent("准备就绪");
+    expect(screen.getByRole("progressbar", { name: "启动阶段进度" })).toHaveAttribute(
+      "aria-valuenow",
+      "100",
+    );
     for (const step of within(screen.getByRole("list", { name: "启动进度" })).getAllByRole("listitem")) {
       expect(step).toHaveAttribute("data-state", "complete");
       expect(step).not.toHaveAttribute("aria-current");
@@ -162,6 +166,7 @@ describe("StartupOverlay", () => {
     const props = { ready: false, error: null, onRetry: vi.fn(), onExit: vi.fn(), onFinished };
     const { rerender } = render(<StartupOverlay {...props} stage="runtime" />);
     const progress = screen.getByRole("list", { name: "启动进度" });
+    const progressMeter = screen.getByRole("progressbar", { name: "启动阶段进度" });
     expect(progress.tagName).toBe("OL");
     const steps = within(progress).getAllByRole("listitem");
     expect(steps).toHaveLength(3);
@@ -176,6 +181,10 @@ describe("StartupOverlay", () => {
     ] as const) {
       rerender(<StartupOverlay {...props} stage={stage} />);
       expect(screen.getByRole("status", { name: label })).toHaveTextContent(label);
+      expect(progressMeter).toHaveAttribute(
+        "aria-valuenow",
+        String({ runtime: 0, events: 33, catalog: 67 }[stage]),
+      );
       states.forEach((state, index) => {
         expect(steps[index]).toHaveAttribute("data-state", state);
         if (state === "active") {
@@ -204,6 +213,14 @@ describe("StartupOverlay", () => {
       expect(steps[index]).not.toHaveAttribute("aria-current");
     });
     expect(screen.getByRole("dialog")).toHaveAttribute("data-state", "error");
+    expect(screen.getByRole("progressbar", { name: "启动阶段进度" })).toHaveAttribute(
+      "data-state",
+      "error",
+    );
+    expect(screen.getByRole("progressbar", { name: "启动阶段进度" })).toHaveAttribute(
+      "aria-valuenow",
+      "33",
+    );
     expect(screen.getByRole("alert")).toHaveTextContent("EVENT_CHANNEL_FAILED: 事件连接失败");
     expect(screen.queryByText("准备就绪")).not.toBeInTheDocument();
     await act(async () => vi.advanceTimersByTimeAsync(STARTUP_SLOW_NOTICE_MS));
@@ -226,7 +243,10 @@ describe("StartupOverlay", () => {
     await act(async () => vi.advanceTimersByTimeAsync(1));
     expect(screen.getByRole("status")).toHaveTextContent("启动耗时较长，仍在等待本机响应");
     expect(screen.getByRole("dialog")).toHaveAttribute("data-state", "loading");
-    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "启动阶段进度" })).toHaveAttribute(
+      "aria-valuenow",
+      "33",
+    );
     expect(screen.queryByText(/\d+\s*%/)).not.toBeInTheDocument();
     expect(onRetry).not.toHaveBeenCalled();
     expect(onExit).not.toHaveBeenCalled();

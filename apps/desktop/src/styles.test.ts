@@ -91,6 +91,11 @@ describe("启动遮罩动画", () => {
     expect(startupStyles).toMatch(
       /@keyframes loading-indicator-pulse\s*\{[^}]*opacity:/s,
     );
+    expect(startupStyles).toMatch(
+      /\.startup-progress-meter::after\s*\{[^}]*transform:\s*scaleX\(var\(--startup-progress-scale, 0\)\);[^}]*transition:\s*transform 360ms/s,
+    );
+    expect(startupStyles).toMatch(/@keyframes startup-step-pulse\s*\{[^}]*opacity:/s);
+    expect(startupStyles).not.toContain("startup-step-scan");
     expect(startupStyles).not.toContain("backdrop-filter");
     expect(startupStyles).not.toContain("will-change");
   });

@@ -1,0 +1,219 @@
+.general-system-settings {
+  display: grid;
+  gap: 30px;
+}
+.general-system-section {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.general-system-section > h2 {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.general-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  min-height: 70px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  background: var(--surface-subtle);
+  color: var(--text);
+  box-sizing: border-box;
+}
+.general-setting-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 14px;
+}
+.general-setting-control {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+.general-setting-help {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.general-setting-help > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  padding: 3px;
+  background: transparent;
+  color: var(--subtle);
+  cursor: help;
+  border-radius: 4px;
+}
+.general-setting-help > button:hover {
+  color: var(--text);
+}
+.general-setting-help > button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.general-setting-tooltip {
+  position: absolute;
+  top: calc(100% + 7px);
+  left: -80px;
+  z-index: 20;
+  width: min(440px, calc(100vw - 64px));
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-raised);
+  color: var(--muted);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.general-proxy-segments {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--hover);
+  gap: 2px;
+}
+.general-proxy-segments label {
+  position: relative;
+  cursor: pointer;
+}
+.general-proxy-segments input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+.general-proxy-segments span {
+  display: block;
+  padding: 5px 13px;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.general-proxy-segments input:checked + span {
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 12%);
+}
+.general-proxy-segments input:focus-visible + span {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.general-proxy-segments input:disabled + span {
+  opacity: var(--disabled-opacity);
+  cursor: not-allowed;
+}
+.general-system-settings .settings-toggle {
+  width: 34px;
+  height: 21px;
+  min-width: 34px;
+}
+.general-system-settings .settings-toggle span {
+  width: 15px;
+  height: 15px;
+  top: 2px;
+  left: 2px;
+}
+.general-system-settings .settings-toggle[aria-checked="true"] span {
+  transform: translateX(13px);
+}
+.general-proxy-settings {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.general-proxy-details {
+  padding: 4px 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.general-proxy-details > summary {
+  cursor: pointer;
+  padding: 6px 0;
+  width: fit-content;
+}
+.general-proxy-details[open] {
+  display: grid;
+  gap: 8px;
+}
+.general-proxy-details .general-setting-row {
+  margin-top: 8px;
+}
+.general-proxy-fields {
+  display: grid;
+  gap: 10px;
+  padding: 14px 18px;
+  background: var(--surface-subtle);
+  border-radius: 16px;
+}
+.general-proxy-fields label {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.general-proxy-fields input {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 12px;
+  border: 1px solid var(--input-border);
+  border-radius: 8px;
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+}
+.general-proxy-fields input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.general-settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+  padding: 4px 0;
+  flex-wrap: wrap;
+}
+.general-settings-note {
+  margin: 4px 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.general-settings-feedback {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 560px) {
+  .general-setting-row {
+    gap: 12px;
+    padding: 14px;
+    min-height: 66px;
+    border-radius: 14px;
+    flex-wrap: wrap;
+  }
+  .general-proxy-segments span {
+    padding: 5px 10px;
+  }
+  .general-setting-tooltip {
+    left: -64px;
+    width: min(260px, calc(100vw - 90px));
+  }
+  .general-proxy-details {
+    padding: 4px 0;
+  }
+}

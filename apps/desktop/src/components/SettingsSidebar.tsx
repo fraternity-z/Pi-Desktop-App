@@ -150,7 +150,7 @@ export function SettingsSidebar({
             <h2>{group.label}</h2>
             {group.items.map((item) => {
               const Icon = item.icon;
-              const active = item.id === activeSection;
+              const active = item.id === (activeSection === "proxy" ? "general" : activeSection);
               return (
                 <button
                   className="settings-nav-item"

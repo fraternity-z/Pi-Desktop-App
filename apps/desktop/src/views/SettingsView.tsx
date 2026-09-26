@@ -16,7 +16,7 @@ import { AgentConfigurationSettings } from "../components/AgentConfigurationSett
 import { AppearanceSettings } from "../components/AppearanceSettings";
 import { PersonalizationSettings } from "../components/PersonalizationSettings";
 import { KeyboardShortcutSettings } from "../components/KeyboardShortcutSettings";
-import { ProxySettings } from "../components/ProxySettings";
+import { GeneralSystemSettings } from "../components/GeneralSystemSettings";
 import type { KeyboardShortcutsController } from "../stores/useKeyboardShortcuts";
 import { ConfirmSidebarDialog } from "../components/SidebarDialog";
 import {
@@ -126,7 +126,7 @@ export function SettingsView({
           {(section === "general" || section === "proxy") && (
             <>
               <GeneralSettings preferences={preferences} onChange={onPreferencesChange} />
-              <ProxySettings />
+              <GeneralSystemSettings />
             </>
           )}
           {section === "appearance" && (

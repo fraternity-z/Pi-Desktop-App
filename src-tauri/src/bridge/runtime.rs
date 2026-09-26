@@ -54,6 +54,7 @@ const STARTUP_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const STARTUP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub struct BridgeRuntime {
+    relaxed_network: AtomicBool,
     proxy: Mutex<crate::storage::proxy::ProxyEndpoint>,
     supervisor: Mutex<SupervisorSlot>,
     supervisor_ready: Condvar,
@@ -161,6 +162,7 @@ impl BridgeRuntime {
         Self {
             supervisor: Mutex::new(SupervisorSlot::default()),
             proxy: Mutex::new(Default::default()),
+            relaxed_network: AtomicBool::new(true),
             supervisor_ready: Condvar::new(),
             runtime_paths: Mutex::new(None),
             known_sessions: Mutex::new(HashSet::new()),
@@ -176,6 +178,7 @@ impl BridgeRuntime {
     pub fn unavailable(error: AppError, request_header_settings: RequestHeaderSettings) -> Self {
         Self {
             proxy: Mutex::new(Default::default()),
+            relaxed_network: AtomicBool::new(true),
             supervisor: Mutex::new(SupervisorSlot::default()),
             supervisor_ready: Condvar::new(),
             runtime_paths: Mutex::new(None),
@@ -210,9 +213,10 @@ impl BridgeRuntime {
         persist: impl FnOnce() -> Result<(), AppError>,
     ) -> Result<Option<RestartRequest>, AppError> {
         proxy.validate()?;
-        let mut slot = self.supervisor.lock().map_err(|_| {
-            AppError::new("BRIDGE_STATE_POISONED", "Bridge 状态锁不可用")
-        })?;
+        let mut slot = self
+            .supervisor
+            .lock()
+            .map_err(|_| AppError::new("BRIDGE_STATE_POISONED", "Bridge 状态锁不可用"))?;
         let mut current = self.proxy.lock().map_err(|_| {
             AppError::new("PROXY_STATE_UNAVAILABLE", "代理设置锁不可用")
         })?;
@@ -239,6 +243,48 @@ impl BridgeRuntime {
             attempt: slot.attempt,
         };
         drop(current);
+        drop(slot);
+        if let Ok(mut sessions) = self.known_sessions.lock() {
+            sessions.clear();
+        }
+        self.set_snapshot(starting_snapshot());
+        Ok(Some(request))
+    }
+
+    pub(crate) fn initialize_network_policy(&self, relaxed: bool) {
+        self.relaxed_network.store(relaxed, Ordering::Release);
+    }
+
+    pub(crate) fn update_network_policy(
+        &self,
+        relaxed: bool,
+        persist: impl FnOnce() -> Result<(), AppError>,
+    ) -> Result<Option<RestartRequest>, AppError> {
+        let mut slot = self.supervisor.lock().map_err(|_| {
+            AppError::new("BRIDGE_STATE_POISONED", "Bridge 状态锁不可用")
+        })?;
+        if self.relaxed_network.load(Ordering::Acquire) == relaxed {
+            persist()?;
+            return Ok(None);
+        }
+        if self.closed.load(Ordering::Acquire) {
+            return Err(AppError::new("BRIDGE_CLOSED", "Pi Bridge 已关闭"));
+        }
+        if slot.starting {
+            return Err(AppError::new("BRIDGE_STARTING", "运行时正在启动，请稍后保存网络设置"));
+        }
+        persist()?;
+        self.relaxed_network.store(relaxed, Ordering::Release);
+        if self.launch.is_none() {
+            return Ok(None);
+        }
+        slot.starting = true;
+        slot.attempt = slot.attempt.wrapping_add(1);
+        slot.last_error = None;
+        let request = RestartRequest {
+            supervisor: slot.supervisor.take(),
+            attempt: slot.attempt,
+        };
         drop(slot);
         if let Ok(mut sessions) = self.known_sessions.lock() {
             sessions.clear();
@@ -755,7 +801,13 @@ impl BridgeRuntime {
                 let proxy = self.proxy.lock().map_err(|_| {
                     AppError::new("PROXY_STATE_UNAVAILABLE", "代理设置锁不可用")
                 })?.clone();
-                start_bridge_with_paths(runtime_paths, launch, request_header_settings, proxy)
+                start_bridge_with_paths(
+                    runtime_paths,
+                    launch,
+                    request_header_settings,
+                    proxy,
+                    self.relaxed_network.load(Ordering::Acquire),
+                )
             },
         )
     }
@@ -932,6 +984,7 @@ fn start_bridge_with_paths(
     launch: &RuntimeLaunchContext,
     request_header_settings: &RequestHeaderSettings,
     proxy: crate::storage::proxy::ProxyEndpoint,
+    relaxed_network: bool,
 ) -> Result<(BridgeSupervisor, RuntimeSource), AppError> {
     let source = runtime_paths.source.clone();
     eprintln!(
@@ -946,7 +999,8 @@ fn start_bridge_with_paths(
             runtime_paths.sdk_root,
             agent_dir,
         )
-        .with_proxy(proxy),
+        .with_proxy(proxy)
+        .with_relaxed_network(relaxed_network),
         launch.event_sink.clone(),
         launch.fault_sink.clone(),
     )?;
@@ -1380,6 +1434,59 @@ mod tests {
         assert_eq!(snapshot.error.unwrap().code, "RUNTIME_NOT_FOUND");
         assert_eq!(snapshot.pi_version, None);
         assert_eq!(snapshot.node_version, None);
+    }
+
+    #[test]
+    fn network_policy_changes_are_transactional_and_serialize_with_startup() {
+        let runtime = BridgeRuntime::initialize(
+            PathBuf::from("fixture.mjs"),
+            Arc::new(|_| {}),
+            RequestHeaderSettings::default(),
+        );
+        runtime.supervisor.lock().unwrap().starting = true;
+        assert_eq!(
+            runtime
+                .update_network_policy(false, || panic!("must not save while starting"))
+                .err()
+                .unwrap()
+                .code,
+            "BRIDGE_STARTING",
+        );
+        assert!(
+            runtime
+                .update_network_policy(true, || Ok(()))
+                .unwrap()
+                .is_none()
+        );
+        runtime.supervisor.lock().unwrap().starting = false;
+        assert!(
+            runtime
+                .update_network_policy(false, || Err(AppError::new("FIXTURE", "fixture")))
+                .is_err()
+        );
+        assert!(runtime.relaxed_network.load(Ordering::Acquire));
+        assert!(
+            runtime
+                .update_network_policy(false, || Ok(()))
+                .unwrap()
+                .is_some()
+        );
+        assert!(!runtime.relaxed_network.load(Ordering::Acquire));
+        assert!(
+            runtime
+                .update_network_policy(false, || Ok(()))
+                .unwrap()
+                .is_none()
+        );
+        runtime.shutdown();
+        assert_eq!(
+            runtime
+                .update_network_policy(true, || panic!("must not save after shutdown"))
+                .err()
+                .unwrap()
+                .code,
+            "BRIDGE_CLOSED",
+        );
     }
 
     #[test]

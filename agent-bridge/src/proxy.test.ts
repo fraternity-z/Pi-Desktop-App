@@ -45,6 +45,9 @@ describe("proxy configuration", () => {
     expect(setGlobalDispatcher).toHaveBeenCalledTimes(4);
   });
   it("rejects invalid modes and URLs without leaking input", () => {
+    expect(() => configureProxy({ PI_DESKTOP_NETWORK_POLICY: "invalid" })).toThrow(
+      ProxyConfigurationError,
+    );
     expect(() => configureProxy({ PI_DESKTOP_PROXY_MODE: "invalid" })).toThrow(
       ProxyConfigurationError,
     );

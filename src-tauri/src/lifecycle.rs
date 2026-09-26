@@ -200,7 +200,12 @@ pub(crate) fn on_run_event(app: &AppHandle, event: RunEvent) {
                 api.prevent_exit();
             }
         }
-        RunEvent::Exit => shutdown_runtime(app),
+        RunEvent::Exit => {
+            if let Some(power) = app.try_state::<crate::power::PowerManager>() {
+                power.shutdown();
+            }
+            shutdown_runtime(app);
+        }
         _ => {}
     }
 }

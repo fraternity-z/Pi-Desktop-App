@@ -7,6 +7,59 @@ use crate::{
     storage::{AppSettings, AppSettingsStore, RequestHeaderSettingsStore},
 };
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneralSettingsState {
+    settings: crate::storage::general::GeneralSettings,
+    power_supported: bool,
+    power_error: Option<AppError>,
+}
+
+#[tauri::command]
+pub fn get_general_settings(
+    store: State<'_, crate::storage::general::GeneralSettingsStore>,
+    power: State<'_, crate::power::PowerManager>,
+) -> Result<GeneralSettingsState, AppError> {
+    Ok(GeneralSettingsState {
+        settings: store.state()?,
+        power_supported: power.supported(),
+        power_error: power.error(),
+    })
+}
+
+#[tauri::command]
+pub async fn update_general_settings(
+    app: AppHandle,
+    settings: crate::storage::general::GeneralSettings,
+) -> Result<GeneralSettingsState, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app.state::<crate::storage::general::GeneralSettingsStore>();
+        let power = app.state::<crate::power::PowerManager>();
+        let request = store.update(settings.clone(), |persist| {
+            app.state::<BridgeRuntime>().update_network_policy(
+                settings.relaxed_network,
+                || {
+                    power.apply_and_persist(
+                        crate::power::PowerSettings {
+                            keep_awake: settings.keep_awake_while_running,
+                            prevent_screen_sleep: settings.prevent_screen_sleep,
+                        },
+                        persist,
+                    )
+                },
+            )
+        })?;
+        super::runtime::schedule_runtime_restart(&app, request);
+        Ok(GeneralSettingsState {
+            settings,
+            power_supported: power.supported(),
+            power_error: power.error(),
+        })
+    })
+    .await
+    .map_err(|_| AppError::new("GENERAL_SAVE_FAILED", "常规设置保存任务失败，请重试"))?
+}
+
 #[tauri::command]
 pub fn get_proxy_settings(
     store: State<'_, crate::storage::proxy::ProxySettingsStore>,

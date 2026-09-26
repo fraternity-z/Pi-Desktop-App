@@ -4,6 +4,7 @@ pub mod discovery;
 pub mod error;
 mod image;
 mod lifecycle;
+mod power;
 pub mod storage;
 
 use std::{
@@ -125,6 +126,8 @@ pub fn run() {
                 .map_err(|error| error.to_string())?;
             let app_settings_store = AppSettingsStore::new(config_dir.clone());
             let proxy_store = storage::proxy::ProxySettingsStore::new(config_dir.clone());
+            let general_store = storage::general::GeneralSettingsStore::new(config_dir.clone());
+            let power = power::PowerManager::new();
             let app_settings = app_settings_store.state();
             let request_header_store = RequestHeaderSettingsStore::new(config_dir.clone());
             let request_header_settings = request_header_store.state();
@@ -169,6 +172,19 @@ pub fn run() {
                 }
                 Err(error) => BridgeRuntime::unavailable(error, request_header_store.state()),
             };
+            let runtime = match general_store.state() {
+                Ok(settings) => {
+                    runtime.initialize_network_policy(settings.relaxed_network);
+                    power.restore(power::PowerSettings {
+                        keep_awake: settings.keep_awake_while_running,
+                        prevent_screen_sleep: settings.prevent_screen_sleep,
+                    });
+                    runtime
+                }
+                Err(error) => BridgeRuntime::unavailable(error, request_header_store.state()),
+            };
+            app.manage(general_store);
+            app.manage(power);
             app.manage(proxy_store);
             app.manage(runtime);
             app.manage(app_settings_store);
@@ -216,6 +232,8 @@ pub fn run() {
             commands::settings::get_runtime_settings,
             commands::settings::get_proxy_settings,
             commands::settings::update_proxy_settings,
+            commands::settings::get_general_settings,
+            commands::settings::update_general_settings,
             commands::settings::get_prompt_document,
             commands::settings::save_prompt_document,
             commands::settings::set_runtime_mode,

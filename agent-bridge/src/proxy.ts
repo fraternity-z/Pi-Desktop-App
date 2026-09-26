@@ -1,4 +1,5 @@
 import { Agent, EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
+import { strictNetworkAgentFactory } from "./network-policy.js";
 
 export class ProxyConfigurationError extends Error {
   readonly code = "PROXY_CONFIGURATION_INVALID";
@@ -9,13 +10,17 @@ export class ProxyConfigurationError extends Error {
 
 export function configureProxy(env: NodeJS.ProcessEnv = process.env): void {
   try {
+    const policy = env.PI_DESKTOP_NETWORK_POLICY ?? "relaxed";
+    if (policy !== "relaxed" && policy !== "strict") throw new ProxyConfigurationError();
+    const networkOptions = policy === "strict" ? { factory: strictNetworkAgentFactory } : {};
     const mode = env.PI_DESKTOP_PROXY_MODE ?? "system";
     if (mode === "direct") {
-      setGlobalDispatcher(new Agent());
+      setGlobalDispatcher(new Agent(networkOptions));
     } else if (mode === "system") {
       const all = env.all_proxy || env.ALL_PROXY;
       setGlobalDispatcher(
         new EnvHttpProxyAgent({
+          ...networkOptions,
           httpProxy: env.http_proxy || env.HTTP_PROXY || all,
           httpsProxy:
             env.https_proxy ||
@@ -45,6 +50,7 @@ export function configureProxy(env: NodeJS.ProcessEnv = process.env): void {
       }
       setGlobalDispatcher(
         new EnvHttpProxyAgent({
+          ...networkOptions,
           httpProxy: raw,
           httpsProxy: raw,
           noProxy: env.PI_DESKTOP_NO_PROXY ?? "",

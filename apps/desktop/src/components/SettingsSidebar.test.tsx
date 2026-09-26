@@ -22,6 +22,7 @@ describe("SettingsSidebar", () => {
     );
 
     expect(screen.getByRole("button", { name: "常规" })).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByRole("button", { name: "代理" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "外观" }));
     expect(onSectionChange).toHaveBeenCalledWith("appearance");
     fireEvent.click(screen.getByRole("button", { name: "通知" }));
@@ -48,6 +49,10 @@ describe("SettingsSidebar", () => {
       target: { value: "Codex" },
     });
     expect(screen.getByRole("button", { name: "运行时" })).toBeInTheDocument();
+    for (const value of ["代理", "宽松", "唤醒", "电源"]) {
+      fireEvent.change(screen.getByRole("searchbox", { name: "搜索设置" }), { target: { value } });
+      expect(screen.getByRole("button", { name: "常规" })).toBeInTheDocument();
+    }
 
     fireEvent.keyDown(screen.getByRole("separator", { name: "调整侧边栏宽度" }), {
       key: "ArrowLeft",
@@ -56,6 +61,23 @@ describe("SettingsSidebar", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "返回" }));
     expect(onBack).toHaveBeenCalledOnce();
+  });
+
+  it("旧代理入口高亮常规分类", () => {
+    render(
+      <SettingsSidebar
+        open
+        width={272}
+        activeSection="proxy"
+        onBack={vi.fn()}
+        onSectionChange={vi.fn()}
+        onClose={vi.fn()}
+        onWidthChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "常规" })).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByRole("button", { name: "代理" })).not.toBeInTheDocument();
   });
 
   it("搜索无结果时显示空状态", () => {

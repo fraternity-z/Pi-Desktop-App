@@ -42,6 +42,7 @@ pub type BridgeFaultSink = Arc<dyn Fn(AppError) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone)]
 pub struct BridgeLaunchConfig {
+    pub relaxed_network: bool,
     pub proxy: crate::storage::proxy::ProxyEndpoint,
     pub node_path: PathBuf,
     pub bridge_script: PathBuf,
@@ -62,6 +63,7 @@ impl BridgeLaunchConfig {
         Self {
             node_path,
             proxy: Default::default(),
+            relaxed_network: true,
             bridge_script,
             sdk_root,
             agent_dir,
@@ -76,10 +78,16 @@ impl BridgeLaunchConfig {
         self
     }
 
+    pub fn with_relaxed_network(mut self, relaxed: bool) -> Self {
+        self.relaxed_network = relaxed;
+        self
+    }
+
     fn canonicalize(self) -> Result<Self, AppError> {
         self.proxy.validate()?;
         Ok(Self {
             proxy: self.proxy,
+            relaxed_network: self.relaxed_network,
             node_path: canonical_file(
                 &self.node_path,
                 "NODE_PATH_INVALID",
@@ -1491,6 +1499,7 @@ impl Drop for ProcessTransport {
 fn bridge_command(config: &BridgeLaunchConfig) -> Command {
     let mut command = Command::new(&config.node_path);
     config.proxy.apply_to_command(&mut command);
+    command.env("PI_DESKTOP_NETWORK_POLICY", if config.relaxed_network { "relaxed" } else { "strict" });
     command
         .arg(&config.bridge_script)
         .arg("--sdk-root")
@@ -2335,6 +2344,8 @@ mod tests {
 
         assert_eq!(request_error.code, "BRIDGE_WRITE_FAILED");
         assert_eq!(fault_error.code, "BRIDGE_WRITE_FAILED");
+        // The fault notification precedes transport cleanup; join the worker first.
+        drop(supervisor);
         assert_eq!(*stop_calls.lock().unwrap(), 1);
     }
 
@@ -2753,6 +2764,9 @@ mod tests {
             PathBuf::from("agent"),
         );
         let command = bridge_command(&config);
+        assert!(command.get_envs().any(|(key, value)| key == "PI_DESKTOP_NETWORK_POLICY" && value == Some(std::ffi::OsStr::new("relaxed"))));
+        let strict = bridge_command(&config.clone().with_relaxed_network(false));
+        assert!(strict.get_envs().any(|(key, value)| key == "PI_DESKTOP_NETWORK_POLICY" && value == Some(std::ffi::OsStr::new("strict"))));
         let arguments: Vec<OsString> = command.get_args().map(OsString::from).collect();
 
         assert_eq!(command.get_program(), "node");

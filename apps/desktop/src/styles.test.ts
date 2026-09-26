@@ -89,6 +89,16 @@ describe("外观设置排版", () => {
 });
 
 describe("设置页统一排版", () => {
+  it("说明浮层使用视口定位，不再负向偏移至滚动容器外", () => {
+    const tooltip = generalSettingsStyles.split(".general-setting-tooltip {")[1].split("}")[0];
+    expect(tooltip).toContain("position: fixed;");
+    expect(tooltip).toContain("z-index: 10000;");
+    expect(tooltip).toContain("max-height: calc(100dvh - 16px);");
+    expect(tooltip).toContain("box-sizing: border-box;");
+    expect(tooltip).toContain("var(--settings-caption-size,");
+    expect(generalSettingsStyles).not.toMatch(/left:\s*-\d+px/);
+  });
+
   it("标题与辅助文字使用共享字号，并跟随用户字体偏好", () => {
     expect(stylesheet).toContain("--settings-label-size: max(12px, calc(var(--app-ui-font-size) - 1px));");
     expect(stylesheet).toContain("--settings-caption-size: max(11px, calc(var(--app-ui-font-size) - 2px));");

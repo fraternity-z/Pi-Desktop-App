@@ -27,7 +27,7 @@ describe("ProxySettings", () => {
       .mockReset()
       .mockImplementation(async (settings) => settings);
   });
-  it("loads, validates and persists independent proxy scopes", async () => {
+  it("shows one proxy control and validates the shared address", async () => {
     render(<ProxySettings />);
     const mode = within(
       screen.getByRole("radiogroup", { name: "代理模式" }),
@@ -36,27 +36,24 @@ describe("ProxySettings", () => {
     expect(
       screen.queryByRole("button", { name: "保存代理设置" }),
     ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByText("分别配置 AI 与应用"));
+    expect(screen.getAllByRole("radiogroup")).toHaveLength(1);
+    expect(screen.queryByText("分别配置 AI 与应用")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("绕过代理（仅 AI）")).not.toBeInTheDocument();
     fireEvent.click(
       within(
-        await screen.findByRole("radiogroup", { name: "AI代理模式" }),
+        screen.getByRole("radiogroup", { name: "代理模式" }),
       ).getByRole("radio", { name: "自定义" }),
     );
-    const address = screen.getByLabelText("AI 代理地址");
+    const address = screen.getByLabelText("代理地址");
+    expect(screen.getAllByRole("textbox")).toHaveLength(1);
     fireEvent.change(address, {
       target: { value: "http://user:password@localhost:7890" },
     });
     expect(screen.getByRole("button", { name: "保存代理设置" })).toBeDisabled();
     expect(screen.getByRole("alert")).not.toHaveTextContent("password");
+    fireEvent.change(address, { target: { value: "https://127.0.0.1:7890" } });
+    expect(screen.getByRole("button", { name: "保存代理设置" })).toBeDisabled();
     fireEvent.change(address, { target: { value: "http://127.0.0.1:7890" } });
-    fireEvent.change(screen.getByLabelText("绕过代理（仅 AI）"), {
-      target: { value: "localhost" },
-    });
-    fireEvent.click(
-      within(
-        screen.getByRole("radiogroup", { name: "应用代理模式" }),
-      ).getByRole("radio", { name: "直连" }),
-    );
     fireEvent.click(screen.getByRole("button", { name: "保存代理设置" }));
     await screen.findByRole("status");
     expect(updateProxySettings).toHaveBeenCalledWith({
@@ -64,17 +61,36 @@ describe("ProxySettings", () => {
       ai: {
         mode: "custom",
         url: "http://127.0.0.1:7890",
-        noProxy: "localhost",
+        noProxy: "",
       },
-      app: { mode: "direct", url: "", noProxy: "" },
+      app: { mode: "custom", url: "http://127.0.0.1:7890", noProxy: "" },
     });
+  });
+  it.each([
+    ["direct", "直连"],
+    ["system", "系统"],
+  ] as const)("clears the shared custom address when switching to %s", async (mode, label) => {
+    vi.mocked(getProxySettings).mockResolvedValueOnce({
+      schemaVersion: 1,
+      ai: { mode: "custom", url: "http://localhost:7890", noProxy: "" },
+      app: { mode: "custom", url: "http://localhost:7890", noProxy: "" },
+    });
+    render(<ProxySettings />);
+    await screen.findByLabelText("代理地址");
     fireEvent.click(
-      within(screen.getByRole("radiogroup", { name: "AI代理模式" })).getByRole(
+      within(screen.getByRole("radiogroup", { name: "代理模式" })).getByRole(
         "radio",
-        { name: "系统" },
+        { name: label },
       ),
     );
-    expect(screen.queryByLabelText("AI 代理地址")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("代理地址")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "保存代理设置" }));
+    await screen.findByRole("status");
+    expect(updateProxySettings).toHaveBeenCalledWith({
+      schemaVersion: 1,
+      ai: { mode, url: "", noProxy: "" },
+      app: { mode, url: "", noProxy: "" },
+    });
   });
   it("retains draft on save failure and recovers from load failure", async () => {
     vi.mocked(getProxySettings).mockRejectedValueOnce(Error("private"));
@@ -84,13 +100,12 @@ describe("ProxySettings", () => {
     await waitFor(() =>
       expect(screen.queryByRole("alert")).not.toBeInTheDocument(),
     );
-    fireEvent.click(screen.getByText("分别配置 AI 与应用"));
     fireEvent.click(
       within(
-        await screen.findByRole("radiogroup", { name: "应用代理模式" }),
+        await screen.findByRole("radiogroup", { name: "代理模式" }),
       ).getByRole("radio", { name: "自定义" }),
     );
-    fireEvent.change(screen.getByLabelText("应用代理地址"), {
+    fireEvent.change(screen.getByLabelText("代理地址"), {
       target: { value: "http://localhost:7890" },
     });
     vi.mocked(updateProxySettings).mockRejectedValueOnce({
@@ -100,7 +115,7 @@ describe("ProxySettings", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "运行时正在启动",
     );
-    expect(screen.getByLabelText("应用代理地址")).toHaveValue(
+    expect(screen.getByLabelText("代理地址")).toHaveValue(
       "http://localhost:7890",
     );
     fireEvent.click(screen.getByRole("button", { name: "保存代理设置" }));
@@ -139,7 +154,7 @@ describe("ProxySettings", () => {
     fireEvent.keyDown(help, { key: "Escape" });
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   });
-  it("does not overwrite previously independent proxies on load", async () => {
+  it("loads legacy scopes as one shared app proxy without writing on mount", async () => {
     vi.mocked(getProxySettings).mockResolvedValueOnce({
       ...DEFAULT_PROXY_SETTINGS,
       ai: {
@@ -147,20 +162,19 @@ describe("ProxySettings", () => {
         url: "https://localhost:7890",
         noProxy: "example.com",
       },
+      app: { mode: "custom", url: "http://localhost:8080", noProxy: "" },
     });
     render(<ProxySettings />);
-    expect(await screen.findByLabelText("AI 代理地址")).toHaveValue(
-      "https://localhost:7890",
-    );
-    expect(screen.getByLabelText("绕过代理（仅 AI）")).toHaveValue(
-      "example.com",
-    );
+    expect(await screen.findByLabelText("代理地址")).toHaveValue("http://localhost:8080");
+    expect(screen.queryByLabelText("绕过代理（仅 AI）")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("radiogroup")).toHaveLength(1);
     expect(updateProxySettings).not.toHaveBeenCalled();
     expect(
-      within(screen.getByRole("radiogroup", { name: "代理模式" })).queryByRole(
+      within(screen.getByRole("radiogroup", { name: "代理模式" })).getByRole(
         "radio",
-        { checked: true },
+        { name: "自定义" },
       ),
-    ).not.toBeInTheDocument();
+    ).toBeChecked();
+    expect(screen.queryByRole("button", { name: "保存代理设置" })).not.toBeInTheDocument();
   });
 });

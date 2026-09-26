@@ -27,7 +27,7 @@ describe("useProxySettings", () => {
     act(() =>
       result.current.setDraft({
         ...DEFAULT_PROXY_SETTINGS,
-        ai: { mode: "direct", url: "", noProxy: "" },
+        app: { mode: "direct", url: "", noProxy: "" },
       }),
     );
     vi.mocked(updateProxySettings).mockRejectedValueOnce(Error("private"));
@@ -35,10 +35,11 @@ describe("useProxySettings", () => {
     expect(result.current.error).toContain("保存失败");
     expect(result.current.error).not.toContain("private");
     expect(result.current.draft.ai.mode).toBe("direct");
+    expect(result.current.draft.ai).toEqual(result.current.draft.app);
     act(() =>
       result.current.setDraft({
         ...DEFAULT_PROXY_SETTINGS,
-        ai: { mode: "custom", url: "", noProxy: "" },
+        app: { mode: "custom", url: "", noProxy: "" },
       }),
     );
     await act(() => result.current.save());

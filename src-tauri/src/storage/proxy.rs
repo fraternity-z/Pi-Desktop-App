@@ -135,6 +135,13 @@ impl ProxyEndpoint {
 }
 
 impl ProxySettings {
+    /// Preserve the v1 format while migrating legacy scopes to the shared app endpoint.
+    pub fn into_unified(mut self) -> Result<Self, AppError> {
+        self.validate()?;
+        self.ai = self.app.clone();
+        Ok(self)
+    }
+
     pub fn validate(&self) -> Result<(), AppError> {
         if self.schema_version != 1 {
             return Err(AppError::new(
@@ -149,7 +156,7 @@ impl ProxySettings {
         {
             return Err(AppError::new(
                 "APP_PROXY_INVALID",
-                "应用代理仅支持无认证的 HTTP 代理地址，暂不支持绕过列表",
+                "统一代理仅支持无认证的 HTTP 代理地址，暂不支持绕过列表",
             ));
         }
         Ok(())
@@ -176,10 +183,7 @@ impl ProxySettingsStore {
                 .map_err(|_| {
                     AppError::new("PROXY_READ_FAILED", "代理配置无法读取，请重新保存代理设置")
                 })
-                .and_then(|settings| {
-                    settings.validate()?;
-                    Ok(settings)
-                }),
+                .and_then(ProxySettings::into_unified),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 Ok(ProxySettings::default())
             }
@@ -204,7 +208,7 @@ impl ProxySettingsStore {
         settings: ProxySettings,
         apply: impl FnOnce(Box<dyn FnOnce() -> Result<(), AppError> + '_>) -> Result<T, AppError>,
     ) -> Result<T, AppError> {
-        settings.validate()?;
+        let settings = settings.into_unified()?;
         let mut current = self.settings.lock().map_err(|_| state_error())?;
         let result = apply(Box::new(|| self.persist(&settings)))?;
         *current = Ok(settings);
@@ -393,27 +397,123 @@ mod tests {
     }
 
     #[test]
+    fn unifies_legacy_scopes_using_the_app_endpoint() {
+        for mode in [ProxyMode::System, ProxyMode::Direct, ProxyMode::Custom] {
+            let legacy = ProxySettings {
+                ai: ProxyEndpoint {
+                    mode: ProxyMode::Custom,
+                    url: "https://localhost:7890".into(),
+                    no_proxy: "localhost".into(),
+                },
+                app: ProxyEndpoint {
+                    mode,
+                    url: if mode == ProxyMode::Custom {
+                        "http://localhost:8080".into()
+                    } else {
+                        String::new()
+                    },
+                    no_proxy: String::new(),
+                },
+                ..Default::default()
+            };
+            let unified = legacy.clone().into_unified().unwrap();
+            assert_eq!(unified.ai, legacy.app);
+            assert_eq!(unified.app, legacy.app);
+            assert_eq!(unified.clone().into_unified().unwrap(), unified);
+        }
+    }
+
+    #[test]
+    fn validates_legacy_configuration_before_unifying() {
+        let mut settings = ProxySettings {
+            schema_version: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            settings.clone().into_unified().unwrap_err().code,
+            "PROXY_VERSION_UNSUPPORTED"
+        );
+        settings.schema_version = 1;
+        settings.ai = ProxyEndpoint {
+            mode: ProxyMode::Custom,
+            url: "http://user:password@localhost:7890".into(),
+            no_proxy: String::new(),
+        };
+        let error = settings.clone().into_unified().unwrap_err();
+        assert_eq!(error.code, "PROXY_INVALID");
+        assert!(!error.message.contains("password"));
+        settings.ai = ProxyEndpoint::default();
+        settings.app = ProxyEndpoint {
+            mode: ProxyMode::Custom,
+            url: "https://localhost:7890".into(),
+            no_proxy: String::new(),
+        };
+        assert_eq!(
+            settings.clone().into_unified().unwrap_err().code,
+            "APP_PROXY_INVALID"
+        );
+        settings.app.url = "http://localhost:7890".into();
+        settings.app.no_proxy = "localhost".into();
+        assert_eq!(
+            settings.into_unified().unwrap_err().code,
+            "APP_PROXY_INVALID"
+        );
+    }
+
+    #[test]
+    fn loads_legacy_scopes_without_rewriting_the_file() {
+        let root = std::env::temp_dir().join(format!("pi-proxy-legacy-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("proxy-settings.json");
+        let legacy = ProxySettings {
+            ai: ProxyEndpoint {
+                mode: ProxyMode::Custom,
+                url: "https://localhost:7890".into(),
+                no_proxy: "example.com".into(),
+            },
+            app: ProxyEndpoint {
+                mode: ProxyMode::Custom,
+                url: "http://localhost:8080".into(),
+                no_proxy: String::new(),
+            },
+            ..Default::default()
+        };
+        let original = serde_json::to_vec_pretty(&legacy).unwrap();
+        fs::write(&path, &original).unwrap();
+        let store = ProxySettingsStore::new(root.clone());
+        assert_eq!(store.state().unwrap().ai, legacy.app);
+        assert_eq!(fs::read(&path).unwrap(), original);
+        store.update(legacy.clone(), |persist| persist()).unwrap();
+        let persisted: ProxySettings = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted.ai, legacy.app);
+        assert_eq!(persisted.ai, persisted.app);
+        assert_eq!(store.state().unwrap(), persisted);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn persists_reloads_and_preserves_state_on_transaction_failure() {
         let root = std::env::temp_dir().join(format!("pi-proxy-{}", std::process::id()));
         let store = ProxySettingsStore::new(root.clone());
         let settings = ProxySettings {
-            ai: ProxyEndpoint {
+            app: ProxyEndpoint {
                 mode: ProxyMode::Direct,
                 ..Default::default()
             },
             ..Default::default()
         };
+        let unified = settings.clone().into_unified().unwrap();
         store.update(settings.clone(), |persist| persist()).unwrap();
         assert_eq!(
             ProxySettingsStore::new(root.clone()).state().unwrap(),
-            settings
+            unified
         );
         assert!(
             store
                 .update(ProxySettings::default(), |_| Err::<(), _>(state_error()))
                 .is_err()
         );
-        assert_eq!(store.state().unwrap(), settings);
+        assert_eq!(store.state().unwrap(), unified);
         fs::write(root.join("proxy-settings.json"), b"invalid").unwrap();
         assert!(ProxySettingsStore::new(root.clone()).state().is_err());
         fs::remove_dir_all(root).unwrap();

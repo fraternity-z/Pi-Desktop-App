@@ -74,7 +74,8 @@ pub async fn update_proxy_settings(
 ) -> Result<crate::storage::proxy::ProxySettings, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         let store = app.state::<crate::storage::proxy::ProxySettingsStore>();
-        let proxy = settings.ai.clone();
+        let settings = settings.into_unified()?;
+        let proxy = settings.app.clone();
         let request = store.update(settings.clone(), |persist| {
             app.state::<BridgeRuntime>().update_proxy(proxy, persist)
         })?;

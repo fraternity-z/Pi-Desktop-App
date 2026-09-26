@@ -64,18 +64,19 @@
   outline-offset: 2px;
 }
 .general-setting-tooltip {
-  position: absolute;
-  top: calc(100% + 7px);
-  left: -80px;
-  z-index: 20;
-  width: min(440px, calc(100vw - 64px));
+  position: fixed;
+  z-index: 10000;
+  width: min(440px, calc(100vw - 16px));
+  max-height: calc(100dvh - 16px);
+  overflow: auto;
+  box-sizing: border-box;
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--surface-raised);
   color: var(--muted);
   box-shadow: var(--shadow);
-  font-size: var(--settings-caption-size);
+  font-size: var(--settings-caption-size, max(11px, calc(var(--app-ui-font-size) - 2px)));
   font-weight: 400;
   line-height: 1.5;
   white-space: normal;
@@ -124,23 +125,6 @@
   display: grid;
   gap: 8px;
   min-width: 0;
-}
-.general-proxy-details {
-  padding: 2px 14px;
-  color: var(--muted);
-  font-size: var(--settings-caption-size);
-}
-.general-proxy-details > summary {
-  cursor: pointer;
-  padding: 6px 0;
-  width: fit-content;
-}
-.general-proxy-details[open] {
-  display: grid;
-  gap: 8px;
-}
-.general-proxy-details .general-setting-row {
-  margin-top: 8px;
 }
 .general-proxy-fields {
   display: grid;
@@ -198,10 +182,6 @@
     padding: 5px 10px;
   }
   .general-setting-tooltip {
-    left: -64px;
-    width: min(260px, calc(100vw - 90px));
-  }
-  .general-proxy-details {
-    padding: 4px 0;
+    width: min(320px, calc(100vw - 16px));
   }
 }

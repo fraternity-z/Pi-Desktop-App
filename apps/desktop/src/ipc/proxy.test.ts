@@ -5,6 +5,7 @@ import {
   getProxySettings,
   updateProxySettings,
   proxyValidationError,
+  unifyProxySettings,
 } from "./proxy";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -22,10 +23,13 @@ describe("proxy IPC", () => {
       code: "PROXY_WRITE_FAILED",
     });
   });
-  it("validates URLs and bypass lists without echoing credentials", () => {
+  it("validates the shared HTTP address without echoing credentials", () => {
     expect(proxyValidationError(DEFAULT_PROXY_SETTINGS)).toBeNull();
     for (const url of [
       "ftp://localhost:9",
+      "https://localhost:9",
+      "http://local\nhost:9",
+      String.raw`http://localhost\path`,
       "http://private:private@localhost:9",
       "http://localhost:0",
       "http://localhost/path",
@@ -35,7 +39,7 @@ describe("proxy IPC", () => {
     ]) {
       const error = proxyValidationError({
         ...DEFAULT_PROXY_SETTINGS,
-        ai: { mode: "custom", url, noProxy: "" },
+        app: { mode: "custom", url, noProxy: "" },
       });
       expect(error).not.toBeNull();
       expect(error).not.toContain("private");
@@ -43,18 +47,36 @@ describe("proxy IPC", () => {
     expect(
       proxyValidationError({
         ...DEFAULT_PROXY_SETTINGS,
-        ai: {
+        app: {
           mode: "custom",
-          url: "https://localhost:9",
+          url: "http://localhost:9",
           noProxy: "bad\nname",
         },
       }),
-    ).toContain("列表格式无效");
+    ).toContain("不支持");
     expect(
       proxyValidationError({
         ...DEFAULT_PROXY_SETTINGS,
-        app: { mode: "custom", url: "https://localhost:9", noProxy: "" },
+        app: { mode: "direct", url: "http://localhost:9", noProxy: "" },
       }),
     ).not.toBeNull();
+    expect(proxyValidationError({
+      ...DEFAULT_PROXY_SETTINGS,
+      app: { mode: "custom", url: "http://[::1]:7890", noProxy: "" },
+    })).toBeNull();
+  });
+  it.each(["system", "direct", "custom"] as const)("unifies legacy scopes using the app %s mode without mutating inputs", (mode) => {
+    const legacy = {
+      ...DEFAULT_PROXY_SETTINGS,
+      ai: { mode: "custom" as const, url: "https://localhost:7890", noProxy: "example.com" },
+      app: { mode, url: mode === "custom" ? "http://localhost:8080" : "", noProxy: "" },
+    };
+    const result = unifyProxySettings(legacy);
+    expect(result.ai).toEqual(legacy.app);
+    expect(result.app).toEqual(legacy.app);
+    expect(result.ai).not.toBe(result.app);
+    expect(result.app).not.toBe(legacy.app);
+    expect(legacy.ai.noProxy).toBe("example.com");
+    expect(unifyProxySettings(result)).toEqual(result);
   });
 });

@@ -3,6 +3,7 @@ import {
   DEFAULT_PROXY_SETTINGS,
   getProxySettings,
   proxyValidationError,
+  unifyProxySettings,
   updateProxySettings,
   type ProxySettings,
 } from "../ipc/proxy";
@@ -23,7 +24,7 @@ export function useProxySettings() {
     setError(null);
     setStatus(null);
     try {
-      const settings = await getProxySettings();
+      const settings = unifyProxySettings(await getProxySettings());
       if (request === requestId.current) {
         setSaved(settings);
         setDraft(settings);
@@ -54,12 +55,12 @@ export function useProxySettings() {
     setError(null);
     setStatus(null);
     try {
-      const settings = await updateProxySettings(draft);
+      const settings = unifyProxySettings(await updateProxySettings(draft));
       if (request === requestId.current) {
         setSaved(settings);
         setDraft(settings);
         setStatus(
-          "代理设置已保存。AI 代理变更会重连；更新检查立即生效，内置浏览器请重启应用。若正在修复损坏的配置，也请重启应用。",
+          "统一代理设置已保存。Agent 会重连；更新检查下次请求生效，内置浏览器请重启应用。若正在修复损坏的配置，也请重启应用。",
         );
       }
     } catch (cause) {
@@ -89,7 +90,7 @@ export function useProxySettings() {
     save,
     dirty: JSON.stringify(draft) !== JSON.stringify(saved),
     setDraft: (value: ProxySettings) => {
-      setDraft(value);
+      setDraft(unifyProxySettings(value));
       setStatus(null);
     },
   };

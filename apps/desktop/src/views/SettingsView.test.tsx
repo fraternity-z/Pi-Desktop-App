@@ -69,6 +69,38 @@ describe("SettingsView", () => {
     vi.mocked(selectAppearanceBackground).mockReset();
   });
 
+  it("关于作为独立设置子页面展示，支持收起导航后的打开与返回", () => {
+    const onOpenSidebar = vi.fn();
+    const onBack = vi.fn();
+    render(
+      <SettingsView
+        section="about"
+        sidebarOpen={false}
+        sidebarWidth={272}
+        preferences={DEFAULT_APP_PREFERENCES}
+        notifications={readyNotifications()}
+        requestHeaders={readyRequestHeaders()}
+        runtime={readyRuntime}
+        eventConnection="ready"
+        onOpenSidebar={onOpenSidebar}
+        onBack={onBack}
+        onSidebarWidthChange={vi.fn()}
+        onPreferencesChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("main")).toHaveClass("settings-main-about");
+    expect(screen.getByTestId("settings-about")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "关于" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "检查更新" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("settings-general")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "打开设置导航" }));
+    expect(onOpenSidebar).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: "返回会话工作台" }));
+    expect(onBack).toHaveBeenCalledOnce();
+  });
+
   it("常规设置通过可访问开关即时提交", () => {
     const onPreferencesChange = vi.fn();
     const onBack = vi.fn();

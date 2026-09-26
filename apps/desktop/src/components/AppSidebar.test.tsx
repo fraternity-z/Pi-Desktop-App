@@ -133,10 +133,8 @@ describe("AppSidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: "系统设置" }));
     expect(props.onOpenSettings).toHaveBeenCalledOnce();
 
-    fireEvent.click(screen.getByRole("button", { name: "帮助" }));
-    expect(screen.getByRole("dialog", { name: "帮助与支持" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "关闭帮助" }));
-    expect(screen.queryByRole("dialog", { name: "帮助与支持" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "帮助" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "关于" })).not.toBeInTheDocument();
 
     fireEvent.keyDown(screen.getByRole("separator", { name: "调整侧边栏宽度" }), {
       key: "ArrowRight",
@@ -422,21 +420,6 @@ describe("AppSidebar", () => {
     fireEvent.keyDown(resizer, { key: "ArrowLeft" });
     expect(props.onWidthChange).toHaveBeenCalledWith(292);
     fireEvent.keyDown(resizer, { key: "Home" });
-  });
-
-  it("帮助面板打开时不会触发侧栏自动收起", () => {
-    vi.useFakeTimers();
-    window.localStorage.setItem("pix.sidebar.fixed", "0");
-    const props = sidebarProps();
-    render(<AppSidebar {...props} />);
-    const sidebar = screen.getByRole("complementary", { name: "项目与会话导航" });
-
-    fireEvent.click(screen.getByRole("button", { name: "帮助" }));
-    fireEvent.pointerLeave(sidebar);
-    vi.advanceTimersByTime(260);
-
-    expect(props.onClose).not.toHaveBeenCalled();
-    expect(screen.getByRole("dialog", { name: "帮助与支持" })).toBeInTheDocument();
   });
 
   it("移除项目失败时保留元数据并在确认框显示稳定错误", async () => {

@@ -13,6 +13,7 @@ import {
 import { useMemo, useState } from "react";
 
 import { AgentConfigurationSettings } from "../components/AgentConfigurationSettings";
+import { AboutSettings } from "../components/AboutSettings";
 import { ModelProviderSettings } from "../components/ModelProviderSettings";
 import { AppearanceSettings } from "../components/AppearanceSettings";
 import { PersonalizationSettings } from "../components/PersonalizationSettings";
@@ -69,6 +70,7 @@ const SECTION_TITLES: Record<SettingsSectionId, string> = {
   shortcuts: "快捷键",
   proxy: "常规",
   archived: "已归档",
+  about: "关于",
 };
 
 export function SettingsView({
@@ -122,6 +124,7 @@ export function SettingsView({
       <div className="settings-content-scroll">
         <div className="settings-content" data-testid={`settings-${section}`}>
           <h1 className="settings-page-title">{SECTION_TITLES[section]}</h1>
+          {section === "about" && <AboutSettings />}
           {section === "personalization" && <PersonalizationSettings />}
           {section === "shortcuts" && shortcuts && <KeyboardShortcutSettings controller={shortcuts} />}
           {section === "configuration" && <>

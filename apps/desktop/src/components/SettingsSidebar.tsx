@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   Bell,
   Gauge,
+  Info,
   Keyboard,
   Palette,
   PanelLeftClose,
@@ -27,7 +28,8 @@ export type SettingsSectionId =
   | "configuration"
   | "shortcuts"
   | "proxy"
-  | "archived";
+  | "archived"
+  | "about";
 
 interface SettingsSidebarProps {
   open: boolean;
@@ -65,6 +67,7 @@ const SETTINGS_GROUPS: Array<{ label: string; items: SettingsNavItem[] }> = [
       },
       { id: "behavior", label: "行为", keywords: "确认 导航 移除", icon: ShieldCheck },
       { id: "shortcuts", label: "快捷键", keywords: "键盘 热键 绑定 重置", icon: Keyboard },
+      { id: "about", label: "关于", keywords: "Pi Desktop 版本 更新 反馈 帮助 支持 项目 GitHub", icon: Info },
     ],
   },
   {

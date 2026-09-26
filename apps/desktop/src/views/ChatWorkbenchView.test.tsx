@@ -1366,8 +1366,18 @@ describe("ChatWorkbenchView", () => {
     render(<ChatWorkbenchView />);
     await screen.findByRole("status", { name: "状态正常" });
 
+    expect(screen.queryByRole("button", { name: "帮助" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "关于" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "系统设置" }));
     expect(await screen.findByTestId("settings-general")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "关于" }));
+    expect(screen.getByTestId("settings-about")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "关于" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "关于" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "反馈" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "检查更新" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: /帮助与支持|关于 Pi Desktop/ })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "通知" }));
     expect(screen.getByTestId("settings-notifications")).toBeInTheDocument();

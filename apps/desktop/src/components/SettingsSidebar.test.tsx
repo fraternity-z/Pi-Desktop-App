@@ -80,6 +80,33 @@ describe("SettingsSidebar", () => {
     expect(screen.queryByRole("button", { name: "代理" })).not.toBeInTheDocument();
   });
 
+  it("关于子页面支持导航、高亮和版本与帮助搜索", () => {
+    const onSectionChange = vi.fn();
+    render(
+      <SettingsSidebar
+        open
+        width={272}
+        activeSection="about"
+        onBack={vi.fn()}
+        onSectionChange={onSectionChange}
+        onClose={vi.fn()}
+        onWidthChange={vi.fn()}
+      />,
+    );
+
+    const about = screen.getByRole("button", { name: "关于" });
+    expect(about).toHaveAttribute("aria-current", "page");
+    fireEvent.click(about);
+    expect(onSectionChange).toHaveBeenCalledWith("about");
+
+    for (const value of ["关于", "版本", "更新", "反馈", "帮助", "github"]) {
+      fireEvent.change(screen.getByRole("searchbox", { name: "搜索设置" }), {
+        target: { value },
+      });
+      expect(screen.getByRole("button", { name: "关于" })).toBeInTheDocument();
+    }
+  });
+
   it("搜索无结果时显示空状态", () => {
     render(
       <SettingsSidebar

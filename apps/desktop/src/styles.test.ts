@@ -45,7 +45,7 @@ describe("统一矩形圆角", () => {
     ["聊天消息", ".user-message-bubble"],
     ["聊天输入框", ".composer-frame"],
     ["浮层菜单", ".floating-menu"],
-    ["帮助面板", ".help-panel"],
+    ["关于页面操作", ".about-settings-option"],
     ["包列表", ".ecosystem-list"],
   ])("%s 使用统一圆角 token", (_label, selector) => {
     expect(selectorsUsing("border-radius: var(--radius-ui);")).toContain(selector);

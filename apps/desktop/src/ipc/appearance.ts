@@ -1,5 +1,6 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import type { AppearanceConfiguration } from "./appearanceTypes";
 
 export interface InstalledAppearanceBackground {
   path: string;
@@ -11,12 +12,14 @@ export interface AppearanceThemeTransfer {
   backgroundPreset: "default" | "cyan-stage" | "rose-cinema" | "custom";
   uiScale: 80 | 90 | 100 | 110 | 125;
   uiFont: "system" | "microsoft-yahei" | "noto-sans";
-  uiFontSize: 12 | 13 | 14 | 15 | 16;
+  uiFontSize: number;
   codeFont: "system" | "cascadia-code" | "consolas";
-  codeFontSize: 11 | 12 | 13 | 14 | 15;
+  codeFontSize: number;
   sidebarTranslucent: boolean;
   sidebarWidth: number;
   customBackgroundPath: string | null;
+  appearance?: AppearanceConfiguration | null;
+  reduceMotion?: boolean | "system" | null;
 }
 
 export interface AppearanceSelectionError {

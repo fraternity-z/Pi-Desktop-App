@@ -470,10 +470,11 @@
   overflow: hidden;
   background: var(--code-bg);
   color: var(--code-text);
-  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
-  font-size: 11px;
+  font-family: var(--app-code-font);
+  font-size: var(--app-code-font-size);
+  font-weight: var(--app-code-weight, 400);
   font-variant-ligatures: none;
-  line-height: 18px;
+  line-height: 1.5;
 }
 
 .git-review-code-viewport {
@@ -811,7 +812,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .git-review-panel * {
+  :root:not([data-reduce-motion="false"]) .git-review-panel * {
     scroll-behavior: auto !important;
   }
 }

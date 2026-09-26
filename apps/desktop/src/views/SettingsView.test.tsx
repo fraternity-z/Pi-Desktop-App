@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -149,8 +149,10 @@ describe("SettingsView", () => {
     );
 
     expect(screen.getByRole("main")).toHaveClass("settings-main-appearance");
+    fireEvent.change(screen.getByRole("combobox", { name: "主题" }), { target: { value: "manage" } });
+    const library = within(screen.getByRole("dialog", { name: "管理主题与背景" }));
 
-    fireEvent.change(screen.getByRole("combobox", { name: "主题" }), {
+    fireEvent.change(library.getByRole("combobox", { name: "主题" }), {
       target: { value: "dark" },
     });
     expect(onPreferencesChange).toHaveBeenCalledWith({ theme: "dark" });
@@ -170,19 +172,19 @@ describe("SettingsView", () => {
     fireEvent.change(screen.getByRole("combobox", { name: "UI 字号" }), {
       target: { value: "15" },
     });
-    fireEvent.change(screen.getByRole("combobox", { name: "代码字体" }), {
+    fireEvent.change(library.getByRole("combobox", { name: "代码字体" }), {
       target: { value: "consolas" },
     });
     fireEvent.change(screen.getByRole("combobox", { name: "代码字号" }), {
       target: { value: "13" },
     });
-    expect(onPreferencesChange).toHaveBeenCalledWith({ uiFont: "microsoft-yahei" });
+    expect(onPreferencesChange).toHaveBeenCalledWith(expect.objectContaining({ uiFont: "microsoft-yahei" }));
     expect(onPreferencesChange).toHaveBeenCalledWith({ uiFontSize: 15 });
-    expect(onPreferencesChange).toHaveBeenCalledWith({ codeFont: "consolas" });
+    expect(onPreferencesChange).toHaveBeenCalledWith(expect.objectContaining({ codeFont: "consolas" }));
     expect(onPreferencesChange).toHaveBeenCalledWith({ codeFontSize: 13 });
 
     fireEvent.click(screen.getByRole("switch", { name: "侧边栏半透明" }));
-    expect(onPreferencesChange).toHaveBeenCalledWith({ sidebarTranslucent: true });
+    expect(onPreferencesChange).toHaveBeenCalledWith({ sidebarTranslucent: false });
 
     fireEvent.change(screen.getByRole("slider", { name: "侧边栏宽度" }), {
       target: { value: "320" },
@@ -212,6 +214,7 @@ describe("SettingsView", () => {
       />,
     );
 
+    fireEvent.change(screen.getByRole("combobox", { name: "主题" }), { target: { value: "manage" } });
     fireEvent.click(screen.getByRole("button", { name: "新建主题" }));
     fireEvent.change(screen.getByLabelText("主题名称"), { target: { value: "夜航" } });
     fireEvent.click(screen.getByRole("button", { name: "选择图片" }));
@@ -223,12 +226,23 @@ describe("SettingsView", () => {
       customThemeName: "夜航",
       customBackgroundPath: "C:\\AppData\\Pi Desktop\\appearance\\backgrounds\\custom.png",
     });
-    expect(screen.getByRole("status")).toHaveTextContent("主题已保存，可预览后应用");
+    expect(within(screen.getByRole("dialog", { name: "管理主题与背景" })).getByRole("status")).toHaveTextContent("主题已保存，可预览后应用");
   });
 
-  it("主题导入后完整应用并可导出当前预览", async () => {
+  it.each([false, true])("主题导入后完整应用并可导出当前预览（新配置：%s）", async (includeAppearance) => {
     const onPreferencesChange = vi.fn();
     const onSidebarWidthChange = vi.fn();
+    const appearance = {
+      ...DEFAULT_APP_PREFERENCES.appearance,
+      separateModes: true,
+      pointerCursor: true,
+      darkProfile: {
+        ...DEFAULT_APP_PREFERENCES.appearance.profile,
+        accentColor: "#8055CC",
+        backgroundColor: "#202638",
+        contrast: 70,
+      },
+    };
     vi.mocked(importAppearanceTheme).mockResolvedValue({
       name: "导入主题",
       theme: "dark",
@@ -240,6 +254,8 @@ describe("SettingsView", () => {
       codeFontSize: 13,
       sidebarTranslucent: true,
       sidebarWidth: 320,
+      appearance: includeAppearance ? appearance : null,
+      reduceMotion: includeAppearance ? "system" : null,
       customBackgroundPath: "C:\\AppData\\background.png",
     });
     vi.mocked(exportAppearanceTheme).mockResolvedValue(true);
@@ -260,6 +276,7 @@ describe("SettingsView", () => {
       />,
     );
 
+    fireEvent.change(screen.getByRole("combobox", { name: "主题" }), { target: { value: "manage" } });
     fireEvent.click(screen.getByRole("button", { name: "导入" }));
     await waitFor(() =>
       expect(onPreferencesChange).toHaveBeenCalledWith(
@@ -274,6 +291,12 @@ describe("SettingsView", () => {
     expect(onSidebarWidthChange).toHaveBeenCalledWith(320);
 
     fireEvent.click(screen.getByRole("button", { name: "预览主题：魔女伊雷娜 · 花海日记" }));
+    if (includeAppearance) {
+      expect(onPreferencesChange.mock.calls[0][0]).toMatchObject({ appearance, reduceMotion: "system" });
+    } else {
+      expect(onPreferencesChange.mock.calls[0][0]).not.toHaveProperty("appearance");
+      expect(onPreferencesChange.mock.calls[0][0]).not.toHaveProperty("reduceMotion");
+    }
     fireEvent.click(screen.getByRole("button", { name: "导出" }));
     await waitFor(() =>
       expect(exportAppearanceTheme).toHaveBeenCalledWith(

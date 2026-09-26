@@ -561,6 +561,18 @@ describe("StartupOverlay", () => {
     expect(onFinished).toHaveBeenCalledOnce();
   });
 
+  it("显式关闭减少动态效果时不被系统偏好覆盖", () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: true })));
+    document.documentElement.dataset.reduceMotion = "false";
+    render(
+      <StartupOverlay ready={false} stage="runtime" error={null} onRetry={vi.fn()}
+        onExit={vi.fn()} onFinished={vi.fn()} />,
+    );
+    presentOverlay();
+    expect(document.querySelector(".startup-handwriting")).toHaveAttribute("data-complete", "false");
+    expect(document.querySelector(".startup-progress-scan")).toBeInTheDocument();
+  });
+
   it("遵循系统减少动态效果偏好，立即完成退出过渡", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const matchMedia = vi.fn().mockReturnValue({ matches: true });

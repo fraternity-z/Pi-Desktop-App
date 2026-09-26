@@ -271,8 +271,8 @@ export function StartupOverlay({
 }
 
 function reduceMotionEnabled(): boolean {
-  return (
-    document.documentElement.dataset.reduceMotion === "true" ||
-    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true
-  );
+  const preference = document.documentElement.dataset.reduceMotion;
+  return preference === undefined
+    ? window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true
+    : preference === "true";
 }

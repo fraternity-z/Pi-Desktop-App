@@ -112,6 +112,15 @@ describe("useStreamingText", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("lets explicit app motion override the system reduction preference", () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: true })));
+    document.documentElement.dataset.reduceMotion = "false";
+    const { result } = renderHook(() => useStreamingText("仍然逐字显示", true));
+    expect(result.current).toBe("");
+    act(() => vi.advanceTimersByTime(28));
+    expect(result.current).toBe("仍");
+  });
+
   it("cleans pending timers and listeners on unmount", () => {
     const removeListener = vi.spyOn(document, "removeEventListener");
     const { unmount } = renderHook(() => useStreamingText("卸载前仍在输出", true));

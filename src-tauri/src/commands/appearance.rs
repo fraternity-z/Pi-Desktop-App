@@ -10,7 +10,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::error::AppError;
 
-const APPEARANCE_THEME_SCHEMA_VERSION: u16 = 1;
+const APPEARANCE_THEME_SCHEMA_VERSION: u16 = 2;
 const MAX_BACKGROUND_BYTES: u64 = 24 * 1024 * 1024;
 const MAX_THEME_BYTES: u64 = 128 * 1024;
 
@@ -28,6 +28,43 @@ pub struct AppearanceThemeInput {
     pub sidebar_translucent: bool,
     pub sidebar_width: u16,
     pub custom_background_path: Option<String>,
+    pub appearance: Option<AppearanceConfiguration>,
+    pub reduce_motion: Option<MotionPreference>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AppearanceProfile {
+    theme_preset: String,
+    theme_name: String,
+    accent_color: String,
+    background_color: Option<String>,
+    foreground_color: Option<String>,
+    ui_font: String,
+    ui_font_style: String,
+    content_font: String,
+    content_font_style: String,
+    code_font: String,
+    code_font_style: String,
+    contrast: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AppearanceConfiguration {
+    profile: AppearanceProfile,
+    separate_modes: bool,
+    light_profile: Option<AppearanceProfile>,
+    dark_profile: Option<AppearanceProfile>,
+    diff_indicators: String,
+    pointer_cursor: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum MotionPreference {
+    Enabled(bool),
+    System(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -50,6 +87,8 @@ pub struct ImportedAppearanceTheme {
     pub sidebar_translucent: bool,
     pub sidebar_width: u16,
     pub custom_background_path: Option<String>,
+    pub appearance: Option<AppearanceConfiguration>,
+    pub reduce_motion: Option<MotionPreference>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -67,6 +106,8 @@ struct AppearanceThemeFile {
     sidebar_translucent: bool,
     sidebar_width: u16,
     background_file: Option<String>,
+    appearance: Option<AppearanceConfiguration>,
+    reduce_motion: Option<MotionPreference>,
 }
 
 #[tauri::command]
@@ -196,6 +237,8 @@ fn export_theme_file(
         sidebar_translucent: theme.sidebar_translucent,
         sidebar_width: theme.sidebar_width,
         background_file,
+        appearance: theme.appearance,
+        reduce_motion: theme.reduce_motion,
     };
     let bytes = serde_json::to_vec_pretty(&payload)
         .map_err(|_| AppError::new("APPEARANCE_THEME_EXPORT_FAILED", "无法序列化外观主题"))?;
@@ -231,7 +274,7 @@ fn import_theme_file(
         .map_err(|_| AppError::new("APPEARANCE_THEME_IMPORT_READ_FAILED", "无法读取主题文件"))?;
     let file: AppearanceThemeFile = serde_json::from_slice(&bytes)
         .map_err(|_| AppError::new("APPEARANCE_THEME_IMPORT_INVALID", "主题文件格式无效"))?;
-    if file.schema_version != APPEARANCE_THEME_SCHEMA_VERSION {
+    if file.schema_version != 1 && file.schema_version != APPEARANCE_THEME_SCHEMA_VERSION {
         return Err(AppError::new(
             "APPEARANCE_THEME_IMPORT_VERSION_UNSUPPORTED",
             "主题文件版本不受支持",
@@ -250,6 +293,8 @@ fn import_theme_file(
         sidebar_translucent: file.sidebar_translucent,
         sidebar_width: file.sidebar_width,
         custom_background_path: None,
+        appearance: file.appearance,
+        reduce_motion: file.reduce_motion,
     };
     normalize_and_validate_theme(&mut input)?;
 
@@ -290,6 +335,8 @@ fn import_theme_file(
         sidebar_translucent: input.sidebar_translucent,
         sidebar_width: input.sidebar_width,
         custom_background_path,
+        appearance: input.appearance,
+        reduce_motion: input.reduce_motion,
     })
 }
 
@@ -396,17 +443,86 @@ fn normalize_and_validate_theme(theme: &mut AppearanceThemeInput) -> Result<(), 
             theme.ui_font.as_str(),
             "system" | "microsoft-yahei" | "noto-sans"
         )
-        || !matches!(theme.ui_font_size, 12 | 13 | 14 | 15 | 16)
+        || !(10..=24).contains(&theme.ui_font_size)
         || !matches!(
             theme.code_font.as_str(),
             "system" | "cascadia-code" | "consolas"
         )
-        || !matches!(theme.code_font_size, 11 | 12 | 13 | 14 | 15)
+        || !(10..=24).contains(&theme.code_font_size)
         || !(232..=360).contains(&theme.sidebar_width)
     {
         return Err(AppError::new(
             "APPEARANCE_THEME_INVALID",
             "主题包含不受支持的外观设置",
+        ));
+    }
+    if let Some(appearance) = &theme.appearance {
+        if !matches!(appearance.diff_indicators.as_str(), "color" | "symbols") {
+            return Err(AppError::new(
+                "APPEARANCE_THEME_INVALID",
+                "差异标记设置无效",
+            ));
+        }
+        validate_appearance_profile(&appearance.profile)?;
+        for profile in [&appearance.light_profile, &appearance.dark_profile]
+            .into_iter()
+            .flatten()
+        {
+            validate_appearance_profile(profile)?;
+        }
+    }
+    if let Some(MotionPreference::System(value)) = &theme.reduce_motion {
+        if value != "system" {
+            return Err(AppError::new(
+                "APPEARANCE_THEME_INVALID",
+                "动态效果设置无效",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_appearance_profile(profile: &AppearanceProfile) -> Result<(), AppError> {
+    let valid_color = |value: &str| {
+        value.len() == 7
+            && value.starts_with('#')
+            && value.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
+    };
+    let valid_style = |value: &str| matches!(value, "normal" | "medium" | "bold");
+    if !matches!(
+        profile.theme_preset.as_str(),
+        "chatgpt" | "paper" | "midnight" | "custom"
+    ) || profile.theme_name.trim().is_empty()
+        || profile.theme_name.chars().count() > 40
+        || (profile.accent_color != "default" && !valid_color(&profile.accent_color))
+        || profile
+            .background_color
+            .as_deref()
+            .is_some_and(|value| !valid_color(value))
+        || profile
+            .foreground_color
+            .as_deref()
+            .is_some_and(|value| !valid_color(value))
+        || !matches!(
+            profile.ui_font.as_str(),
+            "system" | "microsoft-yahei" | "noto-sans"
+        )
+        || !matches!(
+            profile.content_font.as_str(),
+            "inherit" | "system" | "microsoft-yahei" | "noto-sans" | "serif"
+        )
+        || !matches!(
+            profile.code_font.as_str(),
+            "system" | "cascadia-code" | "consolas"
+        )
+        || !valid_style(&profile.ui_font_style)
+        || !valid_style(&profile.content_font_style)
+        || !valid_style(&profile.code_font_style)
+        || profile.contrast > 100
+    {
+        return Err(AppError::new(
+            "APPEARANCE_THEME_INVALID",
+            "主题颜色、字体或对比度设置无效",
         ));
     }
     Ok(())
@@ -491,6 +607,143 @@ mod tests {
             sidebar_translucent: true,
             sidebar_width: 300,
             custom_background_path: Some(path),
+            appearance: None,
+            reduce_motion: None,
+        }
+    }
+
+    fn appearance_configuration() -> AppearanceConfiguration {
+        let profile = AppearanceProfile {
+            theme_preset: "custom".to_owned(),
+            theme_name: "测试配色".to_owned(),
+            accent_color: "#8B5CF6".to_owned(),
+            background_color: Some("#FAF8F4".to_owned()),
+            foreground_color: Some("#1A1C1F".to_owned()),
+            ui_font: "microsoft-yahei".to_owned(),
+            ui_font_style: "medium".to_owned(),
+            content_font: "serif".to_owned(),
+            content_font_style: "bold".to_owned(),
+            code_font: "cascadia-code".to_owned(),
+            code_font_style: "normal".to_owned(),
+            contrast: 45,
+        };
+        let dark = AppearanceProfile {
+            background_color: Some("#191919".to_owned()),
+            foreground_color: Some("#F2F2F2".to_owned()),
+            ..profile.clone()
+        };
+        AppearanceConfiguration {
+            profile: profile.clone(),
+            separate_modes: true,
+            light_profile: Some(profile),
+            dark_profile: Some(dark),
+            diff_indicators: "symbols".to_owned(),
+            pointer_cursor: true,
+        }
+    }
+
+    fn plain_theme() -> AppearanceThemeInput {
+        AppearanceThemeInput {
+            background_preset: "default".to_owned(),
+            custom_background_path: None,
+            appearance: Some(appearance_configuration()),
+            reduce_motion: Some(MotionPreference::System("system".to_owned())),
+            ..custom_theme(String::new())
+        }
+    }
+
+    #[test]
+    fn roundtrips_all_appearance_profiles_and_motion_modes() {
+        let root = TestDirectory::new("appearance-roundtrip");
+        let target = root.0.join("theme.json");
+        for motion in [
+            MotionPreference::System("system".to_owned()),
+            MotionPreference::Enabled(true),
+            MotionPreference::Enabled(false),
+        ] {
+            let mut theme = plain_theme();
+            theme.reduce_motion = Some(motion.clone());
+            theme.ui_font_size = 10;
+            theme.code_font_size = 24;
+            let expected = theme.appearance.clone();
+            export_theme_file(&target, &root.0, theme).unwrap();
+            let imported = import_theme_file(&target, &root.0).unwrap();
+            assert_eq!(imported.appearance, expected);
+            assert_eq!(imported.reduce_motion, Some(motion));
+            assert_eq!((imported.ui_font_size, imported.code_font_size), (10, 24));
+            let file: serde_json::Value =
+                serde_json::from_slice(&fs::read(&target).unwrap()).unwrap();
+            assert_eq!(file["schemaVersion"], 2);
+        }
+    }
+
+    #[test]
+    fn imports_legacy_theme_without_new_fields_and_rejects_unknown_versions() {
+        let root = TestDirectory::new("appearance-legacy");
+        let target = root.0.join("theme.json");
+        export_theme_file(&target, &root.0, plain_theme()).unwrap();
+        let mut file: serde_json::Value =
+            serde_json::from_slice(&fs::read(&target).unwrap()).unwrap();
+        file["schemaVersion"] = serde_json::json!(1);
+        file.as_object_mut().unwrap().remove("appearance");
+        file.as_object_mut().unwrap().remove("reduceMotion");
+        fs::write(&target, serde_json::to_vec(&file).unwrap()).unwrap();
+        let imported = import_theme_file(&target, &root.0).unwrap();
+        assert!(imported.appearance.is_none());
+        assert!(imported.reduce_motion.is_none());
+        assert_eq!(imported.ui_font_size, 14);
+        file["schemaVersion"] = serde_json::json!(99);
+        fs::write(&target, serde_json::to_vec(&file).unwrap()).unwrap();
+        assert_eq!(
+            import_theme_file(&target, &root.0).unwrap_err().code,
+            "APPEARANCE_THEME_IMPORT_VERSION_UNSUPPORTED"
+        );
+    }
+
+    #[test]
+    fn rejects_unsafe_or_invalid_fields_in_every_profile() {
+        for profile in ["profile", "lightProfile", "darkProfile"] {
+            for (field, value) in [
+                ("themePreset", serde_json::json!("unknown")),
+                ("themeName", serde_json::json!(" ")),
+                (
+                    "accentColor",
+                    serde_json::json!("url(https://invalid.example/image)"),
+                ),
+                ("backgroundColor", serde_json::json!("#fff;display:none")),
+                ("foregroundColor", serde_json::json!("#GGGGGG")),
+                ("uiFont", serde_json::json!("unknown")),
+                ("contentFont", serde_json::json!("unknown")),
+                ("codeFont", serde_json::json!("unknown")),
+                ("uiFontStyle", serde_json::json!("900")),
+                ("contentFontStyle", serde_json::json!("900")),
+                ("codeFontStyle", serde_json::json!("900")),
+                ("contrast", serde_json::json!(101)),
+            ] {
+                let mut value_json = serde_json::to_value(appearance_configuration()).unwrap();
+                value_json[profile][field] = value;
+                let mut theme = plain_theme();
+                theme.appearance = Some(serde_json::from_value(value_json).unwrap());
+                assert_eq!(
+                    normalize_and_validate_theme(&mut theme).unwrap_err().code,
+                    "APPEARANCE_THEME_INVALID",
+                    "{profile}.{field}"
+                );
+            }
+        }
+        let mut theme = plain_theme();
+        theme.appearance.as_mut().unwrap().diff_indicators = "unknown".to_owned();
+        assert!(normalize_and_validate_theme(&mut theme).is_err());
+        let mut theme = plain_theme();
+        theme.reduce_motion = Some(MotionPreference::System("unknown".to_owned()));
+        assert!(normalize_and_validate_theme(&mut theme).is_err());
+        for size in [0, 9, 25, u16::MAX] {
+            let mut theme = plain_theme();
+            theme.ui_font_size = size;
+            assert!(normalize_and_validate_theme(&mut theme).is_err());
+            theme.ui_font_size = 14;
+            theme.code_font_size = size;
+            assert!(normalize_and_validate_theme(&mut theme).is_err());
         }
     }
 
@@ -554,11 +807,9 @@ mod tests {
 
         assert_eq!(imported.name, "我的主题");
         assert_eq!(imported.background_preset, "custom");
-        assert!(
-            imported
-                .custom_background_path
-                .is_some_and(|path| Path::new(&path).is_file())
-        );
+        assert!(imported
+            .custom_background_path
+            .is_some_and(|path| Path::new(&path).is_file()));
         let manifest: AppearanceThemeFile =
             serde_json::from_slice(&fs::read(target).unwrap()).unwrap();
         assert!(manifest.background_file.is_some());
@@ -581,6 +832,8 @@ mod tests {
             sidebar_translucent: false,
             sidebar_width: 300,
             background_file: Some("../outside.png".to_owned()),
+            appearance: None,
+            reduce_motion: None,
         };
         fs::write(&theme_path, serde_json::to_vec(&file).unwrap()).unwrap();
 

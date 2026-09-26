@@ -683,7 +683,7 @@ function BehaviorSettings({
           control={
             <SettingsToggle
               label="减少动态效果"
-              checked={preferences.reduceMotion}
+              checked={preferences.reduceMotion === true}
               onChange={(checked) => onChange({ reduceMotion: checked })}
             />
           }

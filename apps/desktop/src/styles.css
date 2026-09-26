@@ -1303,9 +1303,9 @@ p {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
+  :root:not([data-reduce-motion="false"]) *,
+  :root:not([data-reduce-motion="false"]) *::before,
+  :root:not([data-reduce-motion="false"]) *::after {
     scroll-behavior: auto !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
@@ -2043,20 +2043,20 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .startup-overlay,
-  .startup-overlay *,
-  .startup-overlay *::before,
-  .startup-overlay *::after,
-  .loading-indicator-track > span {
+  :root:not([data-reduce-motion="false"]) .startup-overlay,
+  :root:not([data-reduce-motion="false"]) .startup-overlay *,
+  :root:not([data-reduce-motion="false"]) .startup-overlay *::before,
+  :root:not([data-reduce-motion="false"]) .startup-overlay *::after,
+  :root:not([data-reduce-motion="false"]) .loading-indicator-track > span {
     animation: none !important;
     transition: none;
   }
 
-  .startup-handwriting-letter {
+  :root:not([data-reduce-motion="false"]) .startup-handwriting-letter {
     mask: none;
   }
 
-  .startup-progress-scan {
+  :root:not([data-reduce-motion="false"]) .startup-progress-scan {
     display: none;
   }
 }
@@ -2205,7 +2205,7 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .conversation-run-timer svg {
+  :root:not([data-reduce-motion="false"]) .conversation-run-timer svg {
     transition: none;
   }
 }
@@ -2563,8 +2563,8 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .timeline-thinking-text,
-  .timeline-thinking-text * {
+  :root:not([data-reduce-motion="false"]) .timeline-thinking-text,
+  :root:not([data-reduce-motion="false"]) .timeline-thinking-text * {
     animation: none;
     background-image: none;
     color: var(--muted);
@@ -3028,11 +3028,11 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .conversation-loading-content,
-  .conversation-loading-orbit > span:first-child,
-  .conversation-loading-orbit > span:last-child,
-  .package-update-button svg,
-  .thread-body:not([data-session-loading="true"]) {
+  :root:not([data-reduce-motion="false"]) .conversation-loading-content,
+  :root:not([data-reduce-motion="false"]) .conversation-loading-orbit > span:first-child,
+  :root:not([data-reduce-motion="false"]) .conversation-loading-orbit > span:last-child,
+  :root:not([data-reduce-motion="false"]) .package-update-button svg,
+  :root:not([data-reduce-motion="false"]) .thread-body:not([data-session-loading="true"]) {
     animation: none;
     transition: none;
   }
@@ -5830,7 +5830,7 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .package-update-button svg {
+  :root:not([data-reduce-motion="false"]) .package-update-button svg {
     transition: none;
   }
 }
@@ -8840,8 +8840,9 @@ samp,
   background: var(--surface);
   color: var(--code-text);
   font-family: var(--app-code-font);
-  font-size: 12px;
-  line-height: 23px;
+  font-size: var(--app-code-font-size);
+  font-weight: var(--app-code-weight, 400);
+  line-height: 1.9;
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar) transparent;
   overscroll-behavior: contain;
@@ -8875,6 +8876,21 @@ samp,
 .timeline-tool-diff-line[data-kind="add"] { background: var(--success-bg); border-left-color: var(--success); }
 .timeline-tool-diff-line[data-kind="delete"] { background: var(--danger-bg); border-left-color: var(--danger); }
 .timeline-tool-diff-line[data-kind="collapsed"] { color: var(--subtle); background: var(--surface-subtle); }
+
+/* Persisted appearance preferences must apply before lazy settings load. */
+:root body { font-weight: var(--app-ui-weight, 400); }
+:root :is(.settings-row-title, .settings-nav-item, .sidebar-session-title) { font-weight: max(500, var(--app-ui-weight, 400)); }
+:root :is(.markdown-content, .user-message-bubble) { font-family: var(--app-content-font, var(--app-ui-font)); font-weight: var(--app-content-weight, 400); }
+:root :is(code, pre, kbd, samp), :root .markdown-content code, :root .markdown-code-block pre, :root .timeline-tool-diff-line code { font-weight: var(--app-code-weight, 400); }
+:root[data-pointer-cursor="false"] :is(button, select, summary, [role="button"], [role="switch"], [role="radio"], input[type="radio"], input[type="range"], input[type="color"], input[type="checkbox"], a[href]) { cursor: default; }
+:root[data-pointer-cursor="true"] :is(button, select, summary, [role="button"], [role="switch"], [role="radio"], input[type="radio"], input[type="range"], input[type="color"], input[type="checkbox"], a[href]):not(:disabled):not([aria-disabled="true"]) { cursor: pointer; }
+:root[data-diff-indicators="color"] .timeline-tool-diff-sign { visibility: hidden; }
+:root[data-diff-indicators="symbols"] .timeline-tool-diff-line:is([data-kind="add"], [data-kind="delete"]) { background: transparent; border-left-color: transparent; }
+:root[data-diff-indicators="symbols"] .timeline-tool-diff-sign { visibility: visible; color: var(--text); font-weight: 700; }
+:root[data-diff-indicators="color"] .git-review-line-sign { visibility: hidden; }
+:root[data-diff-indicators="symbols"] .git-review-code-row:is(.add, .delete),
+:root[data-diff-indicators="symbols"] .git-review-word-change { background: transparent; }
+:root[data-diff-indicators="symbols"] .git-review-line-sign { visibility: visible; color: var(--text); font-weight: 700; }
 
 .timeline-tool-diff-note {
   margin: 0;

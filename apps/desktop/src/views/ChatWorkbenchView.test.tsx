@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 import {
@@ -46,6 +46,7 @@ import {
 } from "../ipc/git";
 import { getRequestHeaderSettings, updateRequestHeaderSettings } from "../ipc/settings";
 import { DEFAULT_PROXY_SETTINGS, getProxySettings } from "../ipc/proxy";
+import { APP_PREFERENCES_STORAGE_KEY } from "../stores/useAppPreferences";
 import {
   exitApp,
   getRuntimeSettings,
@@ -1385,9 +1386,11 @@ describe("ChatWorkbenchView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "外观" }));
     expect(screen.getByTestId("settings-appearance")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: "主题" }), { target: { value: "manage" } });
     fireEvent.click(screen.getByRole("button", { name: "预览主题：魔女伊雷娜 · 月夜旅途" }));
     fireEvent.click(screen.getByRole("button", { name: "应用" }));
     await waitFor(() => expect(document.documentElement.dataset.backgroundActive).toBe("true"));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "管理主题与背景" })).getByRole("button", { name: "关闭" }));
 
     fireEvent.click(screen.getByRole("button", { name: "行为" }));
     fireEvent.click(screen.getByRole("switch", { name: "减少动态效果" }));
@@ -1411,7 +1414,7 @@ describe("ChatWorkbenchView", () => {
 
     expect(screen.getByRole("heading", { name: "会话工作台" })).toBeInTheDocument();
     expect(screen.queryByRole("status", { name: "状态正常" })).not.toBeInTheDocument();
-    expect(window.localStorage.getItem("pi-desktop.app-preferences.v2")).toContain(
+    expect(window.localStorage.getItem(APP_PREFERENCES_STORAGE_KEY)).toContain(
       '"showRuntimeStatus":false',
     );
   });

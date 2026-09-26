@@ -39,7 +39,7 @@ describe("app preferences", () => {
     window.localStorage.setItem(APP_PREFERENCES_STORAGE_KEY, "{");
     expect(loadAppPreferences()).toEqual(DEFAULT_APP_PREFERENCES);
 
-    expect(normalizeAppPreferences({ schemaVersion: 3, showSuggestions: false })).toEqual(
+    expect(normalizeAppPreferences({ schemaVersion: 99, showSuggestions: false })).toEqual(
       DEFAULT_APP_PREFERENCES,
     );
   });
@@ -150,7 +150,8 @@ describe("app preferences", () => {
       removeListener: vi.fn(),
       dispatchEvent: vi.fn(),
     } as unknown as MediaQueryList;
-    vi.stubGlobal("matchMedia", vi.fn(() => mediaQuery));
+    vi.stubGlobal("matchMedia", vi.fn((query: string) => query.includes("color-scheme")
+      ? mediaQuery : { matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
 
     const { unmount } = renderHook(() => useAppPreferences());
     expect(document.documentElement.dataset.theme).toBe("light");
@@ -197,7 +198,7 @@ describe("app preferences", () => {
     );
 
     expect(loadAppPreferences()).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       showSuggestions: false,
       theme: "dark",
       backgroundPreset: "default",
@@ -222,5 +223,31 @@ describe("app preferences", () => {
         throw new Error("asset protocol unavailable");
       }),
     ).toBeNull();
+  });
+
+  it("迁移 v2 偏好时保留已有字体、透明度与动画选择", () => {
+    window.localStorage.setItem("pi-desktop.app-preferences.v2", JSON.stringify({
+      schemaVersion: 2, uiFont: "microsoft-yahei", sidebarTranslucent: false, reduceMotion: false,
+    }));
+    const migrated = loadAppPreferences();
+    expect(migrated).toMatchObject({ schemaVersion: 3, uiFont: "microsoft-yahei", sidebarTranslucent: false, reduceMotion: false });
+    expect(migrated.appearance.profile.contrast).toBe(45);
+    saveAppPreferences(migrated);
+    expect(JSON.parse(window.localStorage.getItem(APP_PREFERENCES_STORAGE_KEY)!)).toEqual(migrated);
+  });
+
+  it("系统减少动态效果变化会实时生效，显式关闭优先于系统", () => {
+    let reduced = false;
+    let listener: (() => void) | undefined;
+    const motion = { get matches() { return reduced; }, addEventListener: vi.fn((_event, handler) => { listener = handler; }), removeEventListener: vi.fn() };
+    vi.stubGlobal("matchMedia", vi.fn((query: string) => query.includes("reduced-motion")
+      ? motion : { matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
+    const { result, unmount } = renderHook(() => useAppPreferences());
+    act(() => { reduced = true; listener?.(); });
+    expect(document.documentElement.dataset.reduceMotion).toBe("true");
+    act(() => result.current.updatePreferences({ reduceMotion: false }));
+    expect(document.documentElement.dataset.reduceMotion).toBe("false");
+    unmount();
+    expect(motion.removeEventListener).toHaveBeenCalled();
   });
 });

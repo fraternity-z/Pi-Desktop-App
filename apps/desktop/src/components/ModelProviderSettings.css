@@ -575,7 +575,7 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .model-provider-card {
+  :root:not([data-reduce-motion="false"]) .model-provider-card {
     transition: none;
   }
 }

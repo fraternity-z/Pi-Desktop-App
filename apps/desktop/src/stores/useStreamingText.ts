@@ -14,8 +14,10 @@ function splitGraphemes(text: string): string[] {
 }
 
 function skipAnimation(): boolean {
-  return document.hidden || document.documentElement.dataset.reduceMotion === "true" ||
-    Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
+  const preference = document.documentElement.dataset.reduceMotion;
+  return document.hidden || (preference === undefined
+    ? Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches)
+    : preference === "true");
 }
 
 /** Smooth only presentation; the session store remains the authoritative complete text. */

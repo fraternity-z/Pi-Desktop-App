@@ -172,8 +172,6 @@ export function StartupOverlay({
       aria-label="PI Desktop 启动界面"
       tabIndex={-1}
     >
-      <div className="startup-orbit startup-orbit-one" aria-hidden="true" />
-      <div className="startup-orbit startup-orbit-two" aria-hidden="true" />
       <div className="startup-overlay-content">
         <p className="startup-kicker">PI WORKSPACE · SECURE LOCAL RUNTIME</p>
         <div className="startup-brand">
@@ -199,8 +197,13 @@ export function StartupOverlay({
           aria-valuemax={100}
           aria-valuenow={progressPercent}
           aria-valuetext={progressText}
-          style={{ "--startup-progress-scale": completedStepCount / STARTUP_STEP_COUNT } as CSSProperties}
-        />
+          style={{
+            "--startup-progress-scale": completedStepCount / STARTUP_STEP_COUNT,
+            "--startup-progress-step": 1 / STARTUP_STEP_COUNT,
+          } as CSSProperties}
+        >
+          {!failed && !complete && <span className="startup-progress-scan" aria-hidden="true" />}
+        </div>
 
         <ol className="startup-steps" aria-label="启动进度">
           {STARTUP_STEPS.map(({ stage: step, label, icon: Icon }, index) => {
@@ -209,7 +212,6 @@ export function StartupOverlay({
               : index === activeStep ? failed ? "error" : "active" : "pending";
             return (
               <li key={step} data-state={state} aria-current={state === "active" ? "step" : undefined}>
-                <span className="startup-step-track" aria-hidden="true" />
                 <span className="startup-step-label">
                   {state === "complete" ? <Check size={14} aria-hidden="true" />
                     : state === "error" ? <AlertTriangle size={14} aria-hidden="true" />

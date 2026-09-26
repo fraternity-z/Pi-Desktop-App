@@ -65,7 +65,7 @@ const SECTION_TITLES: Record<SettingsSectionId, string> = {
   personalization: "个性化",
   configuration: "配置",
   shortcuts: "快捷键",
-  proxy: "代理",
+  proxy: "常规",
   archived: "已归档",
 };
 
@@ -122,10 +122,12 @@ export function SettingsView({
           <h1 className="settings-page-title">{SECTION_TITLES[section]}</h1>
           {section === "personalization" && <PersonalizationSettings />}
           {section === "shortcuts" && shortcuts && <KeyboardShortcutSettings controller={shortcuts} />}
-          {section === "proxy" && <ProxySettings />}
           {section === "configuration" && <AgentConfigurationSettings tools={toolPermissions} />}
-          {section === "general" && (
-            <GeneralSettings preferences={preferences} onChange={onPreferencesChange} />
+          {(section === "general" || section === "proxy") && (
+            <>
+              <GeneralSettings preferences={preferences} onChange={onPreferencesChange} />
+              <ProxySettings />
+            </>
           )}
           {section === "appearance" && (
             <AppearanceSettings

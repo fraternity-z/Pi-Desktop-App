@@ -49,6 +49,27 @@ afterEach(() => {
 });
 
 describe("StartupOverlay", () => {
+  it("保留手写字标和单条进度轨道，失败与完成时停止滑动，重试后恢复", () => {
+    const props = { ready: false, error: null, onRetry: vi.fn(), onExit: vi.fn(), onFinished: vi.fn() };
+    const { container, rerender } = render(<StartupOverlay {...props} stage="runtime" />);
+    expect(container.querySelectorAll(".startup-handwriting")).toHaveLength(1);
+    expect(container.querySelector(".startup-orbit, .startup-step-track")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("progressbar")).toHaveLength(1);
+    expect(container.querySelector(".startup-progress-scan")).toHaveAttribute("aria-hidden", "true");
+
+    rerender(<StartupOverlay {...props} stage="events" error="事件连接失败" />);
+    expect(container.querySelector(".startup-progress-scan")).not.toBeInTheDocument();
+    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "33");
+
+    rerender(<StartupOverlay {...props} stage="runtime" />);
+    expect(container.querySelector(".startup-progress-scan")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "0");
+
+    rerender(<StartupOverlay {...props} stage="catalog" ready />);
+    expect(container.querySelector(".startup-progress-scan")).not.toBeInTheDocument();
+    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "100");
+  });
+
   it("展示真实阶段，并在显式指定的最短时长后退出", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const onFinished = vi.fn();
@@ -185,6 +206,10 @@ describe("StartupOverlay", () => {
         "aria-valuenow",
         String({ runtime: 0, events: 33, catalog: 67 }[stage]),
       );
+      expect(progressMeter.style.getPropertyValue("--startup-progress-scale")).toBe(
+        String({ runtime: 0, events: 1 / 3, catalog: 2 / 3 }[stage]),
+      );
+      expect(progressMeter.style.getPropertyValue("--startup-progress-step")).toBe(String(1 / steps.length));
       states.forEach((state, index) => {
         expect(steps[index]).toHaveAttribute("data-state", state);
         if (state === "active") {

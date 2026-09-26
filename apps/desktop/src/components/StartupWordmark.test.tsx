@@ -1,10 +1,33 @@
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
+import { STARTUP_WORDMARK } from "../assets/startup-wordmark";
 import { StartupOverlay } from "./StartupOverlay";
 import { StartupWordmark } from "./StartupWordmark";
 
 describe("StartupWordmark", () => {
+  it("统一放慢笔迹和字形收尾，约 1.1 秒写完且最后一笔不被提前截断", () => {
+    const { container } = render(<StartupWordmark playing />);
+    const masks = [...container.querySelectorAll("mask")];
+    for (const [index, letter] of STARTUP_WORDMARK.letters.entries()) {
+      const mask = masks[index]!;
+      const finish = mask.querySelector<SVGElement>(".startup-handwriting-mask-finish")!;
+      const finishDelay = Number.parseFloat(finish.style.getPropertyValue("--stroke-delay"));
+      expect(finishDelay).toBe(Math.round(letter.finish * 0.4));
+      const strokes = [...mask.querySelectorAll<SVGElement>(".startup-handwriting-stroke")];
+      for (const [strokeIndex, stroke] of letter.strokes.entries()) {
+        const style = strokes[strokeIndex]!.style;
+        const delay = Number.parseFloat(style.getPropertyValue("--stroke-delay"));
+        const duration = Number.parseFloat(style.getPropertyValue("--stroke-duration"));
+        expect(delay).toBe(Math.round(stroke.delay * 0.4));
+        expect(duration).toBe(Math.max(16, Math.round(stroke.duration * 0.4)));
+        expect(delay + duration).toBeLessThanOrEqual(finishDelay + 36);
+      }
+    }
+    const final = container.querySelector<SVGElement>('[data-final="true"]')!;
+    expect(Number.parseFloat(final.style.getPropertyValue("--stroke-delay")) + 36).toBe(1_119);
+  });
+
   it("多个实例的遮罩 ID 互不冲突，每个字形只引用本实例的离线路径", () => {
     const { container } = render(
       <>

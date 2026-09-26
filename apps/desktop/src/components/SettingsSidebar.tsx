@@ -5,7 +5,6 @@ import {
   Bell,
   Gauge,
   Keyboard,
-  Network,
   Palette,
   PanelLeftClose,
   Search,
@@ -51,7 +50,7 @@ const SETTINGS_GROUPS: Array<{ label: string; items: SettingsNavItem[] }> = [
   {
     label: "应用",
     items: [
-      { id: "general", label: "常规", keywords: "提示 状态 工作台", icon: Gauge },
+      { id: "general", label: "常规", keywords: "提示 状态 工作台 网络 代理 HTTP HTTPS 连接 环境变量 宽松 电源 唤醒 休眠", icon: Gauge },
       {
         id: "notifications",
         label: "通知",
@@ -80,10 +79,6 @@ const SETTINGS_GROUPS: Array<{ label: string; items: SettingsNavItem[] }> = [
         icon: Activity,
       },
     ],
-  },
-  {
-    label: "网络",
-    items: [{ id: "proxy", label: "代理", keywords: "网络 HTTP HTTPS 连接 环境变量", icon: Network }],
   },
   {
     label: "数据",

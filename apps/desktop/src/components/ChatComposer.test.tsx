@@ -29,6 +29,60 @@ const permissionProps = {
 };
 
 describe("ChatComposer", () => {
+  it("隐藏项目栏时移除整行及已打开菜单，恢复显示时仍可选择项目", () => {
+    const onProjectChange = vi.fn();
+    const baseProps = {
+      workspaceName: "work",
+      workspacePath: "C:\\work",
+      recentWorkspaces: ["C:\\other"],
+      branchName: "main",
+      draft: "",
+      phase: "ready" as const,
+      eventConnection: "ready" as const,
+      models: [],
+      configuration: null,
+      configuring: false,
+      canSend: false,
+      queuedMessages: { steering: [], followUp: [] },
+      queuePaused: false,
+      ...permissionProps,
+      onProjectChange,
+      onDraftChange: vi.fn(),
+      onModelChange: vi.fn(),
+      onThinkingLevelChange: vi.fn(),
+      onSend: vi.fn(),
+      onClearQueue: vi.fn(),
+      onAbort: vi.fn(),
+    };
+    const { container, rerender } = render(<ChatComposer {...baseProps} showProjectBar />);
+
+    expect(screen.getByRole("button", { name: "选择项目" })).toBeEnabled();
+    expect(screen.getByTitle("本机 Pi Runtime")).toBeInTheDocument();
+    expect(screen.getByTitle("Git 分支：main")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "选择项目" }));
+    expect(screen.getByRole("menu", { name: "项目列表" })).toBeInTheDocument();
+
+    rerender(<ChatComposer {...baseProps} showProjectBar={false} />);
+
+    expect(container.querySelector(".composer-project-bar")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "选择项目" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menu", { name: "项目列表" })).not.toBeInTheDocument();
+    expect(screen.queryByTitle("本机 Pi Runtime")).not.toBeInTheDocument();
+    expect(screen.queryByTitle("Git 分支：main")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("发送给 Pi 的消息")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "选择模型" })).toBeInTheDocument();
+
+    rerender(<ChatComposer {...baseProps} showProjectBar />);
+
+    expect(screen.getByRole("button", { name: "选择项目" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "选择项目" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /other/ }));
+    expect(onProjectChange).toHaveBeenCalledWith("C:\\other");
+  });
+
   it("无 SDK 配置时保留模型错误入口并禁用依赖会话的操作", () => {
     const onSend = vi.fn();
     render(

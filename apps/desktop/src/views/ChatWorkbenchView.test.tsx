@@ -476,6 +476,8 @@ describe("ChatWorkbenchView", () => {
 
     expect(await screen.findByLabelText("发送给 Pi 的消息")).toBeInTheDocument();
     expect(createAgentSession).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "选择项目" })).toBeEnabled();
+    expect(screen.getByTitle("本机 Pi Runtime")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("发送给 Pi 的消息"), {
       target: { value: "检查项目" },
     });
@@ -486,6 +488,7 @@ describe("ChatWorkbenchView", () => {
       expect(promptAgent).toHaveBeenCalledWith("s-1", "检查项目", undefined, defaultToolNames),
     );
     expect(await screen.findAllByText("检查项目")).not.toHaveLength(0);
+    expect(container.querySelector(".composer-project-bar")).not.toBeInTheDocument();
     act(() => {
       emitAgentEvent?.(
         agentEvent("tool.started", { toolCallId: "tool-1", toolName: "read_file" }, 1),
@@ -892,6 +895,34 @@ describe("ChatWorkbenchView", () => {
     }
   });
 
+  it("首条消息正在创建会话时隐藏项目栏，避免切换工作区", async () => {
+    let completeCreation!: (session: typeof defaultSession) => void;
+    vi.mocked(createAgentSession).mockReturnValueOnce(
+      new Promise((resolve) => {
+        completeCreation = resolve;
+      }),
+    );
+    const { container } = render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    await addProject("C:\\work");
+    const composer = await screen.findByLabelText("发送给 Pi 的消息");
+    expect(screen.getByRole("button", { name: "选择项目" })).toBeEnabled();
+
+    fireEvent.change(composer, { target: { value: "开始任务" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => expect(createAgentSession).toHaveBeenCalledWith("C:\\work"));
+    expect(promptAgent).not.toHaveBeenCalled();
+    expect(container.querySelector(".composer-project-bar")).not.toBeInTheDocument();
+
+    await act(async () => completeCreation(defaultSession));
+
+    await waitFor(() =>
+      expect(promptAgent).toHaveBeenCalledWith("s-1", "开始任务", undefined, defaultToolNames),
+    );
+    expect(container.querySelector(".composer-project-bar")).not.toBeInTheDocument();
+  });
+
   it("展示结构化会话错误并在卸载时解绑事件", async () => {
     vi.mocked(createAgentSession).mockRejectedValue({
       code: "WORKSPACE_PATH_INVALID",
@@ -907,6 +938,8 @@ describe("ChatWorkbenchView", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "WORKSPACE_PATH_INVALID: 工作区不存在",
     );
+    expect(screen.getByRole("button", { name: "选择项目" })).toBeEnabled();
+    expect(screen.getByTitle("本机 Pi Runtime")).toBeInTheDocument();
     unmount();
     expect(unlisten).toHaveBeenCalledOnce();
   });
@@ -1008,6 +1041,8 @@ describe("ChatWorkbenchView", () => {
     fireEvent.click(await screen.findByTitle("既有任务"));
     expect(openAgentSession).toHaveBeenCalledWith("C:\\agent\\sessions\\saved.jsonl");
     expect(await screen.findByText("saved prompt")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "选择项目" })).not.toBeInTheDocument();
+    expect(screen.queryByTitle("本机 Pi Runtime")).not.toBeInTheDocument();
 
     vi.mocked(configureAgentSession).mockResolvedValueOnce({
       ...defaultSession.configuration,
@@ -1102,6 +1137,7 @@ describe("ChatWorkbenchView", () => {
     const composer = await screen.findByLabelText("发送给 Pi 的消息");
     expect(ensureConversationWorkspace).not.toHaveBeenCalled();
     expect(createAgentSession).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "选择项目" })).toBeEnabled();
     fireEvent.change(composer, { target: { value: "开始纯对话" } });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
 
@@ -1110,6 +1146,15 @@ describe("ChatWorkbenchView", () => {
       "C:\\Users\\me\\Documents\\Pix\\conversations",
     );
     expect(screen.queryByRole("button", { name: "显示审查侧栏" })).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "选择项目" })).not.toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+
+    expect(await screen.findByRole("heading", { name: "开始对话" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "选择项目" })).toBeEnabled();
+    expect(screen.getByTitle("本机 Pi Runtime")).toBeInTheDocument();
   });
 
   it("从侧栏新建会话时沿用当前项目路径", async () => {

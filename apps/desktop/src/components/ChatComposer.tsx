@@ -74,6 +74,7 @@ interface ChatComposerProps {
   workspacePath?: string;
   recentWorkspaces?: string[];
   branchName?: string | null;
+  showProjectBar?: boolean;
   draft: string;
   phase: ChatPhase;
   eventConnection: AgentEventConnection;
@@ -121,6 +122,7 @@ export function ChatComposer({
   workspacePath = "",
   recentWorkspaces = [],
   branchName = null,
+  showProjectBar = true,
   draft,
   phase,
   eventConnection,
@@ -337,12 +339,13 @@ export function ChatComposer({
 
   useEffect(() => {
     if (
-      (disabled || configuring || streaming) &&
-      (openMenu === "permission" || openMenu === "model" || openMenu === "thinking")
+      (!showProjectBar && openMenu === "project") ||
+      ((disabled || configuring || streaming) &&
+        (openMenu === "permission" || openMenu === "model" || openMenu === "thinking"))
     ) {
       setOpenMenu(null);
     }
-  }, [configuring, disabled, openMenu, streaming]);
+  }, [configuring, disabled, openMenu, showProjectBar, streaming]);
 
   useEffect(() => {
     if (openMenu !== "resources") return;
@@ -479,82 +482,84 @@ export function ChatComposer({
         onClear={onClearQueue}
       />
 
-      <div className="composer-project-bar">
-        <div className="composer-project-picker">
-          <button
-            ref={projectTriggerRef}
-            className="composer-project-trigger"
-            type="button"
-            aria-label="选择项目"
-            aria-haspopup="menu"
-            aria-expanded={openMenu === "project"}
-            aria-controls={openMenu === "project" ? "composer-project-menu" : undefined}
-            title={workspacePath || workspaceName}
-            onClick={() => setOpenMenu((current) => (current === "project" ? null : "project"))}
-          >
-            <Folder size={18} aria-hidden="true" />
-            <span>{workspaceName}</span>
-            <ChevronDown size={14} aria-hidden="true" />
-          </button>
-          {openMenu === "project" && (
-            <AnchoredComposerMenu
-              id="composer-project-menu"
-              anchor={projectTriggerRef.current}
-              menuRef={floatingMenuRef}
-              className="composer-project-menu"
-              ariaLabel="项目列表"
-              align="left"
+      {showProjectBar && (
+        <div className="composer-project-bar">
+          <div className="composer-project-picker">
+            <button
+              ref={projectTriggerRef}
+              className="composer-project-trigger"
+              type="button"
+              aria-label="选择项目"
+              aria-haspopup="menu"
+              aria-expanded={openMenu === "project"}
+              aria-controls={openMenu === "project" ? "composer-project-menu" : undefined}
+              title={workspacePath || workspaceName}
+              onClick={() => setOpenMenu((current) => (current === "project" ? null : "project"))}
             >
-              <p className="composer-menu-title">项目</p>
-              {projectOptions.map((path) => {
-                const selected = samePath(path, workspacePath);
-                return (
-                  <button
-                    className="composer-project-row"
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={selected}
-                    key={path}
-                    onClick={() => {
-                      setOpenMenu(null);
-                      if (!selected) onProjectChange?.(path);
-                    }}
-                  >
-                    <Folder size={15} aria-hidden="true" />
-                    <span className="composer-project-copy">
-                      <strong>{getPathName(path)}</strong>
-                      <small title={path}>{path}</small>
-                    </span>
-                    {selected && <Check size={14} aria-hidden="true" />}
-                  </button>
-                );
-              })}
-              {projectOptions.length > 0 && <div className="composer-menu-divider" role="separator" />}
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setOpenMenu(null);
-                  onAddProject?.();
-                }}
+              <Folder size={18} aria-hidden="true" />
+              <span>{workspaceName}</span>
+              <ChevronDown size={14} aria-hidden="true" />
+            </button>
+            {openMenu === "project" && (
+              <AnchoredComposerMenu
+                id="composer-project-menu"
+                anchor={projectTriggerRef.current}
+                menuRef={floatingMenuRef}
+                className="composer-project-menu"
+                ariaLabel="项目列表"
+                align="left"
               >
-                <FolderPlus size={15} aria-hidden="true" />
-                <span>添加项目</span>
-              </button>
-            </AnchoredComposerMenu>
+                <p className="composer-menu-title">项目</p>
+                {projectOptions.map((path) => {
+                  const selected = samePath(path, workspacePath);
+                  return (
+                    <button
+                      className="composer-project-row"
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={selected}
+                      key={path}
+                      onClick={() => {
+                        setOpenMenu(null);
+                        if (!selected) onProjectChange?.(path);
+                      }}
+                    >
+                      <Folder size={15} aria-hidden="true" />
+                      <span className="composer-project-copy">
+                        <strong>{getPathName(path)}</strong>
+                        <small title={path}>{path}</small>
+                      </span>
+                      {selected && <Check size={14} aria-hidden="true" />}
+                    </button>
+                  );
+                })}
+                {projectOptions.length > 0 && <div className="composer-menu-divider" role="separator" />}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setOpenMenu(null);
+                    onAddProject?.();
+                  }}
+                >
+                  <FolderPlus size={15} aria-hidden="true" />
+                  <span>添加项目</span>
+                </button>
+              </AnchoredComposerMenu>
+            )}
+          </div>
+          <span className="composer-environment-chip" title="本机 Pi Runtime">
+            <Monitor size={17} aria-hidden="true" />
+            本地
+          </span>
+          {branchName && (
+            <span className="composer-environment-chip" title={`Git 分支：${branchName}`}>
+              <GitBranch size={17} aria-hidden="true" />
+              {branchName}
+            </span>
           )}
         </div>
-        <span className="composer-environment-chip" title="本机 Pi Runtime">
-          <Monitor size={17} aria-hidden="true" />
-          本地
-        </span>
-        {branchName && (
-          <span className="composer-environment-chip" title={`Git 分支：${branchName}`}>
-            <GitBranch size={17} aria-hidden="true" />
-            {branchName}
-          </span>
-        )}
-      </div>
+      )}
 
       <form
         ref={composerFormRef}

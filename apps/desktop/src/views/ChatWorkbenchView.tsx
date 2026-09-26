@@ -1178,6 +1178,7 @@ export function ChatWorkbenchView() {
                   workspacePath={session.cwd}
                   recentWorkspaces={session.recentWorkspaces}
                   branchName={branchName}
+                  showProjectBar={session.messages.length === 0 && session.phase !== "creating"}
                   draft={draft}
                   phase={session.phase}
                   eventConnection={session.eventConnection}

@@ -66,6 +66,7 @@
   --permission-full: #c94d22;
   --permission-full-bg: #fff0ea;
   --focus: #3478d4;
+  --focus-border: var(--muted);
 }
 
 :root[data-theme="dark"] {
@@ -164,11 +165,16 @@ button {
 }
 
 button:focus-visible,
-input:focus-visible,
-textarea:focus-visible,
+input:is([type="checkbox"], [type="radio"], [type="range"], [type="color"]):focus-visible,
 select:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
+}
+
+input:focus-visible,
+textarea:focus-visible {
+  outline: 0;
+  border-color: var(--focus-border);
 }
 
 button:disabled,
@@ -3718,7 +3724,6 @@ body {
 .sidebar-footer button:focus-visible,
 .settings-back-button:focus-visible,
 .settings-nav-item:focus-visible,
-.settings-search-field:focus-within,
 .settings-select:focus-visible,
 .settings-toggle:focus-visible,
 .settings-range-control input:focus-visible {
@@ -3891,9 +3896,9 @@ body {
 }
 .shortcut-binding[aria-pressed="true"] { border-color: var(--focus); }
 .shortcut-binding:focus-visible,
-.proxy-fields input:focus-visible,
-.command-palette input:focus-visible,
 .command-palette button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.proxy-fields input:focus-visible,
+.command-palette input:focus-visible { border-color: var(--focus-border); }
 .settings-main-shortcuts .prompt-scope-note { margin-top: 20px; }
 .proxy-fields { padding: 0 0 20px; }
 .proxy-fields label { display: grid; gap: 8px; margin-top: 16px; font-size: 13px; color: var(--text); }
@@ -3952,8 +3957,7 @@ body {
 }
 
 .prompt-editor textarea:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
+  border-color: var(--focus-border);
 }
 
 .prompt-editor-footer {
@@ -4283,8 +4287,8 @@ body {
 }
 
 .settings-archive-search:focus-within {
-  border-color: #6f91c4;
-  box-shadow: 0 0 0 2px rgb(111 145 196 / 14%);
+  border-color: var(--focus-border);
+  box-shadow: none;
 }
 
 .settings-archive-search input {
@@ -4574,8 +4578,8 @@ body {
 }
 
 .sidebar-search-field:focus-within {
-  border-color: #a8c8f5;
-  box-shadow: 0 0 0 2px rgb(79 148 244 / 12%);
+  border-color: var(--focus-border);
+  box-shadow: none;
 }
 
 .sidebar-search-field input {
@@ -7131,8 +7135,8 @@ body,
 .sidebar-search-field:focus-within,
 .settings-search-field:focus-within,
 .settings-archive-search:focus-within {
-  border-color: var(--focus);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus) 18%, transparent);
+  border-color: var(--focus-border);
+  box-shadow: none;
 }
 
 .app-sidebar:not(.settings-sidebar) .sidebar-scroll,
@@ -7303,8 +7307,8 @@ body,
 .sidebar-dialog-form select:focus,
 .package-install-form input:focus,
 .ecosystem-search:focus-within {
-  border-color: var(--focus);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus) 18%, transparent);
+  border-color: var(--focus-border);
+  box-shadow: none;
 }
 
 .project-folder-picker {
@@ -7392,8 +7396,8 @@ body,
 }
 
 .composer-frame:focus-within {
-  border-color: var(--focus);
-  box-shadow: var(--shadow), 0 0 0 2px color-mix(in srgb, var(--focus) 16%, transparent);
+  border-color: var(--focus-border);
+  box-shadow: var(--shadow);
 }
 
 .composer-frame textarea,

@@ -9,6 +9,15 @@ const stylesheet = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8"
 const generalSettingsStyles = readFileSync(
   resolve(process.cwd(), "src/components/GeneralSettings.css"), "utf8",
 );
+const branchMenuStyles = readFileSync(
+  resolve(process.cwd(), "src/components/git-branch-menu.css"), "utf8",
+);
+const modelProviderStyles = readFileSync(
+  resolve(process.cwd(), "src/components/ModelProviderSettings.css"), "utf8",
+);
+const appearanceSettingsStyles = readFileSync(
+  resolve(process.cwd(), "src/components/AppearanceSettings.css"), "utf8",
+);
 const radiusSectionMarker = "/* Unified rectangular UI corners */";
 const radiusSection = stylesheet.slice(
   stylesheet.indexOf(radiusSectionMarker) + radiusSectionMarker.length,
@@ -28,6 +37,50 @@ function selectorsUsing(declaration: string): Set<string> {
   }
   return selectors;
 }
+
+describe("输入区域焦点提示", () => {
+  it("文本输入不显示蓝色外框，焦点边框随主题使用中性色", () => {
+    expect(stylesheet).toContain("--focus-border: var(--muted);");
+    expect(stylesheet).toMatch(/input:focus-visible,\s*textarea:focus-visible\s*\{[^}]*outline:\s*0;[^}]*border-color:\s*var\(--focus-border\);/s);
+    expect(branchMenuStyles).toMatch(/\.git-branch-search input,\s*\.git-branch-create input\s*\{[^}]*outline:\s*0;/s);
+  });
+
+  it.each([
+    [stylesheet, ".settings-search-field:focus-within"],
+    [stylesheet, ".sidebar-search-field:focus-within"],
+    [stylesheet, ".settings-archive-search:focus-within"],
+    [stylesheet, ".ecosystem-search:focus-within"],
+    [stylesheet, ".sidebar-dialog-form input:focus"],
+    [stylesheet, ".package-install-form input:focus"],
+    [stylesheet, ".proxy-fields input:focus-visible"],
+    [stylesheet, ".command-palette input:focus-visible"],
+    [stylesheet, ".prompt-editor textarea:focus-visible"],
+    [branchMenuStyles, ".git-branch-search:focus-within"],
+    [branchMenuStyles, ".git-branch-create input:focus-visible"],
+    [generalSettingsStyles, ".general-proxy-fields input:focus-visible"],
+    [modelProviderStyles, ".model-search:focus-within"],
+  ])("输入区域焦点规则 %# 使用边框而不是蓝色外框", (source, selector) => {
+    const rules = [...source.matchAll(/([^{}]+)\{([^{}]+)\}/g)]
+      .filter((rule) => rule[1].split(",").some((part) => part.trim() === selector));
+    const declarations = rules.at(-1)?.[2];
+    expect(declarations).toBeDefined();
+    expect(declarations).toContain("border-color: var(--focus-border);");
+    expect(declarations).not.toMatch(/outline:|var\(--focus\)|0 0 0 2px/);
+  });
+
+  it("聊天输入框保留已有中性边框和阴影，不添加蓝色光晕", () => {
+    const rules = [...stylesheet.matchAll(/\.composer-frame:focus-within\s*\{([^}]*)\}/g)];
+    const declarations = rules.at(-1)?.[1];
+    expect(declarations).toContain("border-color: color-mix(in srgb, var(--muted) 65%, var(--line));");
+    expect(declarations).not.toMatch(/outline:|var\(--focus\)|0 0 0 2px/);
+  });
+
+  it("按钮、选择器及非文本控件仍保留键盘焦点提示", () => {
+    expect(stylesheet).toMatch(/button:focus-visible,\s*input:is\(\[type="checkbox"\], \[type="radio"\], \[type="range"\], \[type="color"\]\):focus-visible,\s*select:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--focus\);/s);
+    expect(appearanceSettingsStyles).not.toContain(":is(button, select, input):focus-visible");
+    expect(appearanceSettingsStyles).toContain('input[type="range"], input[type="color"]):focus-visible { outline: 2px solid var(--focus);');
+  });
+});
 
 describe("统一矩形圆角", () => {
   it("以对话框的 12px 圆角作为全局矩形 UI token", () => {
@@ -132,7 +185,7 @@ describe("设置页统一排版", () => {
   it("长路径省略显示，保存状态不被挤压，编辑器保留焦点提示", () => {
     expect(stylesheet).toMatch(/\.settings-path\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s);
     expect(stylesheet).toMatch(/\.prompt-editor-status\s*\{[^}]*flex-shrink:\s*0;/s);
-    expect(stylesheet).toMatch(/\.prompt-editor textarea:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--focus\);/s);
+    expect(stylesheet).toMatch(/\.prompt-editor textarea:focus-visible\s*\{[^}]*border-color:\s*var\(--focus-border\);/s);
   });
 });
 

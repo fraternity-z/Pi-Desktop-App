@@ -158,8 +158,7 @@
   outline: 0;
 }
 .model-search:focus-within {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
+  border-color: var(--focus-border);
 }
 .model-search input::placeholder,
 .model-editor input::placeholder {

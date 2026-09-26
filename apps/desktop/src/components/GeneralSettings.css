@@ -152,8 +152,7 @@
   font: inherit;
 }
 .general-proxy-fields input:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 1px;
+  border-color: var(--focus-border);
 }
 .general-settings-actions {
   display: flex;

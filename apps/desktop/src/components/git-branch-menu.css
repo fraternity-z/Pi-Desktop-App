@@ -51,6 +51,7 @@
   min-width: 0;
   padding: 8px 4px;
   border: 0;
+  outline: 0;
   background: transparent;
   color: var(--text);
   font: inherit;
@@ -67,6 +68,11 @@
   padding-inline: 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
+}
+
+.git-branch-search:focus-within,
+.git-branch-create input:focus-visible {
+  border-color: var(--focus-border);
 }
 
 .git-branch-hint {

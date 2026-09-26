@@ -53,7 +53,9 @@ import type {
   ChatPhase,
 } from "../stores/useChatSession";
 import type { ToolPermissionMode } from "../stores/useToolPermissions";
+import type { GitBranchesState } from "../stores/useGitBranches";
 import { ComposerQueueCard } from "./ComposerQueueCard";
+import { GitBranchMenu } from "./GitBranchMenu";
 import { isPromptImagePath, MAX_COMPOSER_ATTACHMENTS } from "./composerAttachments";
 import {
   buildComposerCommandCatalog,
@@ -65,7 +67,7 @@ import {
   type ComposerCommand,
 } from "./composerCommands";
 
-type ComposerMenu = "project" | "resources" | "permission" | "model" | "thinking";
+type ComposerMenu = "project" | "branch" | "resources" | "permission" | "model" | "thinking";
 type ResourcePhase = "idle" | "loading" | "ready" | "error";
 type SlashCommandsPhase = "idle" | "loading" | "ready" | "error";
 
@@ -74,6 +76,7 @@ interface ChatComposerProps {
   workspacePath?: string;
   recentWorkspaces?: string[];
   branchName?: string | null;
+  branchControl?: GitBranchesState;
   showProjectBar?: boolean;
   draft: string;
   phase: ChatPhase;
@@ -122,6 +125,7 @@ export function ChatComposer({
   workspacePath = "",
   recentWorkspaces = [],
   branchName = null,
+  branchControl,
   showProjectBar = true,
   draft,
   phase,
@@ -169,6 +173,7 @@ export function ChatComposer({
   const menuRootRef = useRef<HTMLDivElement>(null);
   const floatingMenuRef = useRef<HTMLDivElement>(null);
   const projectTriggerRef = useRef<HTMLButtonElement>(null);
+  const branchTriggerRef = useRef<HTMLButtonElement>(null);
   const resourcesTriggerRef = useRef<HTMLButtonElement>(null);
   const permissionTriggerRef = useRef<HTMLButtonElement>(null);
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
@@ -295,7 +300,10 @@ export function ChatComposer({
       }
     }
     function closeOnEscape(event: globalThis.KeyboardEvent) {
-      if (event.key === "Escape") setOpenMenu(null);
+      if (event.key === "Escape") {
+        setOpenMenu(null);
+        if (openMenu === "branch") branchTriggerRef.current?.focus();
+      }
     }
     function closeOnViewportChange(event: Event) {
       const target = event.target;
@@ -339,13 +347,16 @@ export function ChatComposer({
 
   useEffect(() => {
     if (
-      (!showProjectBar && openMenu === "project") ||
+      (!showProjectBar && (openMenu === "project" || openMenu === "branch")) ||
+      ((streaming || phase === "creating") && openMenu === "branch") ||
       ((disabled || configuring || streaming) &&
         (openMenu === "permission" || openMenu === "model" || openMenu === "thinking"))
     ) {
       setOpenMenu(null);
     }
-  }, [configuring, disabled, openMenu, showProjectBar, streaming]);
+  }, [configuring, disabled, openMenu, phase, showProjectBar, streaming]);
+
+  useEffect(() => { setOpenMenu(null); }, [workspacePath]);
 
   useEffect(() => {
     if (openMenu !== "resources") return;
@@ -552,11 +563,43 @@ export function ChatComposer({
             <Monitor size={17} aria-hidden="true" />
             本地
           </span>
-          {branchName && (
-            <span className="composer-environment-chip" title={`Git 分支：${branchName}`}>
-              <GitBranch size={17} aria-hidden="true" />
-              {branchName}
-            </span>
+          {(branchName || (branchControl && branchControl.isRepository !== false)) && (
+            <div className="composer-picker">
+              <button
+                ref={branchTriggerRef}
+                className="composer-environment-chip composer-branch-trigger"
+                type="button"
+                title={`Git 分支：${branchName ?? "读取中"}`}
+                aria-label="选择 Git 分支"
+                aria-haspopup="menu"
+                aria-expanded={openMenu === "branch"}
+                aria-controls={openMenu === "branch" ? "composer-branch-menu" : undefined}
+                disabled={!branchControl || streaming || phase === "creating" || branchControl.busy}
+                onClick={() => {
+                  if (openMenu === "branch") setOpenMenu(null);
+                  else { setOpenMenu("branch"); void branchControl?.refresh(); }
+                }}
+              >
+                <GitBranch size={17} aria-hidden="true" />
+                <span>{branchName ?? "Git 分支"}</span>
+                <ChevronDown size={12} aria-hidden="true" />
+              </button>
+              {openMenu === "branch" && branchControl && (
+                <AnchoredComposerMenu
+                  id="composer-branch-menu"
+                  anchor={branchTriggerRef.current}
+                  menuRef={floatingMenuRef}
+                  className="composer-branch-menu"
+                  ariaLabel="Git 分支"
+                  defaultWidth={340}
+                >
+                  <GitBranchMenu key={workspacePath} state={branchControl} onClose={() => {
+                    setOpenMenu(null);
+                    window.setTimeout(() => branchTriggerRef.current?.focus(), 0);
+                  }} />
+                </AnchoredComposerMenu>
+              )}
+            </div>
           )}
         </div>
       )}

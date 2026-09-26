@@ -1757,6 +1757,10 @@ body {
   transition: transform 360ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+.startup-progress-meter[data-state="active"]::after {
+  opacity: 0;
+}
+
 .startup-progress-meter[data-state="complete"]::after {
   background: var(--success);
 }
@@ -1768,12 +1772,9 @@ body {
 
 .startup-progress-scan {
   position: absolute;
-  inset-block: 0;
-  left: calc(var(--startup-progress-scale, 0) * 100%);
-  width: calc(var(--startup-progress-step) * 100%);
+  inset: 0;
   overflow: hidden;
   border-radius: inherit;
-  transition: left 360ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .startup-progress-scan::before {
@@ -1981,7 +1982,7 @@ body {
 @keyframes startup-progress-slide {
   from { transform: translateX(-100%); opacity: 0; }
   20%, 65% { opacity: 0.8; }
-  to { transform: translateX(325%); opacity: 0; }
+  to { transform: translateX(225%); opacity: 0; }
 }
 
 @keyframes startup-copy-enter {
@@ -2059,6 +2060,10 @@ body {
   :root:not([data-reduce-motion="false"]) .startup-progress-scan {
     display: none;
   }
+
+  :root:not([data-reduce-motion="false"]) .startup-progress-meter[data-state="active"]::after {
+    opacity: 1;
+  }
 }
 
 :root[data-reduce-motion="true"] .startup-overlay,
@@ -2076,6 +2081,10 @@ body {
 
 :root[data-reduce-motion="true"] .startup-progress-scan {
   display: none;
+}
+
+:root[data-reduce-motion="true"] .startup-progress-meter[data-state="active"]::after {
+  opacity: 1;
 }
 
 .empty-workspace h2,

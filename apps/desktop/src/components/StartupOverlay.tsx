@@ -199,7 +199,6 @@ export function StartupOverlay({
           aria-valuetext={progressText}
           style={{
             "--startup-progress-scale": completedStepCount / STARTUP_STEP_COUNT,
-            "--startup-progress-step": 1 / STARTUP_STEP_COUNT,
           } as CSSProperties}
         >
           {!failed && !complete && <span className="startup-progress-scan" aria-hidden="true" />}

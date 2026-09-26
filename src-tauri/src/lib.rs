@@ -251,6 +251,7 @@ pub fn run() {
             commands::git::git_commit,
             commands::git::git_push,
             commands::git::git_create_branch,
+            commands::git::git_switch_branch,
             commands::workspace::workspace_get_state,
             commands::workspace::workspace_remember,
             commands::workspace::workspace_remove_recent,

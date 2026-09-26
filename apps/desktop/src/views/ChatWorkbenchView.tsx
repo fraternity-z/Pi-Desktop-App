@@ -75,6 +75,7 @@ import {
 import { useRightPanelLayout, useRightPanelVisibility } from "../stores/useRightPanelLayout";
 import { useSidebarPreferences } from "../stores/useSidebarPreferences";
 import { useToolPermissions } from "../stores/useToolPermissions";
+import { useGitBranches } from "../stores/useGitBranches";
 import {
   buildComposerCommandCatalog,
   parseSlashLine,
@@ -118,6 +119,7 @@ export function ChatWorkbenchView() {
   const closeCommandPalette = useCallback(() => setCommandPaletteOpen(false), []);
   const runtime = useRuntimeStatus();
   const session = useChatSession();
+  const gitBranches = useGitBranches(session.cwd, session.phase === "streaming" || session.phase === "creating");
   const toolPermissions = useToolPermissions(session.configuration);
   const ecosystem = useAgentEcosystem();
   const sidebarPreferences = useSidebarPreferences();
@@ -138,7 +140,6 @@ export function ChatWorkbenchView() {
   const [attachments, setAttachments] = useState<string[]>([]);
   const [pastedImagePaths, setPastedImagePaths] = useState<string[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
-  const [branchName, setBranchName] = useState<string | null>(null);
   const [slashCommands, setSlashCommands] = useState<AgentSlashCommand[]>([]);
   const [slashCommandsPhase, setSlashCommandsPhase] = useState<
     "idle" | "loading" | "ready" | "error"
@@ -196,6 +197,7 @@ export function ChatWorkbenchView() {
     session.cwd || session.recentWorkspaces[0] || session.conversationHome;
   const canSend =
     hasSession &&
+    !gitBranches.busy &&
     (session.phase === "ready" || session.phase === "streaming") &&
     eventChannelReady &&
     !session.configuring &&
@@ -393,24 +395,6 @@ export function ChatWorkbenchView() {
     });
     return () => { cancelled = true; };
   }, [activeView, ecosystem.refresh, eventChannelReady, managementCwd, runtimeReady, startupOverlayVisible]);
-
-  useEffect(() => {
-    if (!session.cwd) {
-      setBranchName(null);
-      return;
-    }
-    let cancelled = false;
-    void getWorktreeOptions(session.cwd)
-      .then((options) => {
-        if (!cancelled) setBranchName(options.branches.find((branch) => branch.current)?.name ?? null);
-      })
-      .catch(() => {
-        if (!cancelled) setBranchName(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [session.cwd]);
 
   useEffect(() => {
     setFileSearchOpen(false);
@@ -1177,7 +1161,8 @@ export function ChatWorkbenchView() {
                   workspaceName={workspaceName}
                   workspacePath={session.cwd}
                   recentWorkspaces={session.recentWorkspaces}
-                  branchName={branchName}
+                  branchName={gitBranches.branchName}
+                  branchControl={gitBranches}
                   showProjectBar={session.messages.length === 0 && session.phase !== "creating"}
                   draft={draft}
                   phase={session.phase}
@@ -1313,7 +1298,9 @@ export function ChatWorkbenchView() {
               <BrowserSidebarPanel active={rightPanelVisibility.open && !commandPaletteOpen} />
             ) : (
               <GitReviewPanel
+                key={`${session.cwd}:${gitBranches.branchName}`}
                 cwd={session.cwd}
+                onRepositoryChange={gitBranches.refresh}
                 active={rightPanelVisibility.open && rightPanelTab === "review"}
                 diffStyle={rightPanelLayout.diffStyle}
                 displayOptions={rightPanelLayout.displayOptions}

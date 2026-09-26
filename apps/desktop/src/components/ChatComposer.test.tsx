@@ -36,6 +36,13 @@ describe("ChatComposer", () => {
       workspacePath: "C:\\work",
       recentWorkspaces: ["C:\\other"],
       branchName: "main",
+      branchControl: {
+        branchName: "main", isRepository: true, branches: [],
+        loading: false, busy: false, error: null,
+        refresh: vi.fn().mockResolvedValue(undefined),
+        create: vi.fn().mockResolvedValue(true),
+        switchTo: vi.fn().mockResolvedValue(true),
+      },
       draft: "",
       phase: "ready" as const,
       eventConnection: "ready" as const,
@@ -81,6 +88,13 @@ describe("ChatComposer", () => {
     fireEvent.click(screen.getByRole("button", { name: "选择项目" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /other/ }));
     expect(onProjectChange).toHaveBeenCalledWith("C:\\other");
+    fireEvent.click(screen.getByRole("button", { name: "选择 Git 分支" }));
+    expect(screen.getByRole("menu", { name: "Git 分支" })).toBeInTheDocument();
+    expect(baseProps.branchControl.refresh).toHaveBeenCalledOnce();
+    rerender(<ChatComposer {...baseProps} showProjectBar={false} />);
+    expect(screen.queryByRole("menu", { name: "Git 分支" })).not.toBeInTheDocument();
+    rerender(<ChatComposer {...baseProps} phase="streaming" showProjectBar />);
+    expect(screen.getByRole("button", { name: "选择 Git 分支" })).toBeDisabled();
   });
 
   it("无 SDK 配置时保留模型错误入口并禁用依赖会话的操作", () => {

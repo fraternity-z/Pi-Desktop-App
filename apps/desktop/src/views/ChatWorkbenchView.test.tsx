@@ -42,6 +42,7 @@ import {
   gitPush,
   gitStage,
   gitStatus,
+  gitSwitchBranch,
   gitUnstage,
 } from "../ipc/git";
 import { getRequestHeaderSettings, updateRequestHeaderSettings } from "../ipc/settings";
@@ -135,6 +136,7 @@ vi.mock("../ipc/browser", () => ({
   updateBrowserSidebarBounds: vi.fn(),
 }));
 vi.mock("../ipc/git", () => ({
+  gitSwitchBranch: vi.fn(),
   gitStatus: vi.fn(),
   gitDiff: vi.fn(),
   gitStage: vi.fn(),
@@ -287,6 +289,7 @@ describe("ChatWorkbenchView", () => {
     vi.mocked(gitCommit).mockReset().mockResolvedValue(undefined);
     vi.mocked(gitPush).mockReset().mockResolvedValue(undefined);
     vi.mocked(gitCreateBranch).mockReset().mockResolvedValue(undefined);
+    vi.mocked(gitSwitchBranch).mockReset().mockResolvedValue(undefined);
     vi.mocked(hideBrowserSidebar).mockReset().mockResolvedValue(undefined);
     vi.mocked(openBrowserSidebar).mockReset().mockResolvedValue(undefined);
     vi.mocked(updateBrowserSidebarBounds).mockReset().mockResolvedValue(undefined);
@@ -467,6 +470,53 @@ describe("ChatWorkbenchView", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("项目栏可搜索切换分支、创建分支并刷新当前分支，菜单支持关闭", async () => {
+    let current = "main";
+    vi.mocked(gitStatus).mockImplementation(async () => ({
+      isRepository: true, repoRoot: "C:\\work",
+      branch: { head: current, upstream: null, ahead: 0, behind: 0, detached: false },
+      staged: [], unstaged: [], untracked: [], conflicted: [], isClean: true,
+    }));
+    vi.mocked(getWorktreeOptions).mockImplementation(async () => ({
+      branches: ["main", "feature/local", ...(current === "feature/new" ? [current] : [])]
+        .map((name) => ({ name, current: name === current, remote: false })),
+      suggestedName: "unused",
+    }));
+    vi.mocked(gitSwitchBranch).mockImplementation(async (_cwd, name) => { current = name; });
+    vi.mocked(gitCreateBranch).mockImplementation(async (_cwd, name) => { current = name; });
+    render(<ChatWorkbenchView />);
+    expect(await screen.findByRole("status", { name: "状态正常" })).toBeInTheDocument();
+    await addProject("C:\\work");
+    const trigger = await screen.findByRole("button", { name: "选择 Git 分支" });
+    await waitFor(() => expect(trigger).toHaveTextContent("main"));
+    fireEvent.click(trigger);
+    const target = await screen.findByRole("menuitemradio", { name: "feature/local" });
+    await waitFor(() => expect(target).toBeEnabled());
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索分支" }), { target: { value: "LOCAL" } });
+    expect(screen.queryByRole("menuitemradio", { name: /main/ })).not.toBeInTheDocument();
+    fireEvent.click(target);
+    await waitFor(() => expect(trigger).toHaveTextContent("feature/local"));
+    await waitFor(() => expect(screen.queryByRole("menu", { name: "Git 分支" })).not.toBeInTheDocument());
+    expect(gitSwitchBranch).toHaveBeenCalledWith("C:\\work", "feature/local", false);
+    fireEvent.click(trigger);
+    const create = await screen.findByRole("menuitem", { name: "新建分支…" });
+    await waitFor(() => expect(create).toBeEnabled());
+    fireEvent.click(create);
+    fireEvent.change(screen.getByRole("textbox", { name: "分支名称" }), { target: { value: "feature/new" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建并切换" }));
+    await waitFor(() => expect(trigger).toHaveTextContent("feature/new"));
+    await waitFor(() => expect(screen.queryByRole("menu", { name: "Git 分支" })).not.toBeInTheDocument());
+    expect(gitCreateBranch).toHaveBeenCalledWith("C:\\work", "feature/new");
+    fireEvent.click(trigger);
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("menu", { name: "Git 分支" })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    fireEvent.click(trigger);
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole("menu", { name: "Git 分支" })).not.toBeInTheDocument();
+    expect(createAgentSession).not.toHaveBeenCalled();
   });
 
   it("通过项目弹窗创建会话、发送提示并合并流式文本", async () => {

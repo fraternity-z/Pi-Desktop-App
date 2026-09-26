@@ -1,0 +1,81 @@
+.composer-branch-trigger {
+  cursor: pointer;
+}
+
+.composer-branch-trigger:not(:disabled):hover,
+.composer-branch-trigger[aria-expanded="true"] {
+  background: var(--hover);
+}
+
+.composer-branch-trigger > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.composer-branch-trigger > svg {
+  flex-shrink: 0;
+}
+
+.composer-menu.composer-branch-menu {
+  width: min(340px, calc(100vw - 16px));
+}
+
+.git-branch-menu-header,
+.git-branch-search,
+.git-branch-create-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.git-branch-menu-header {
+  justify-content: space-between;
+}
+
+.composer-branch-menu .git-branch-menu-header > button {
+  width: auto;
+}
+
+.git-branch-search {
+  margin: 4px 4px 8px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+}
+
+.git-branch-search input,
+.git-branch-create input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+}
+
+.git-branch-create {
+  display: grid;
+  gap: 8px;
+  padding: 6px;
+  font-size: 12px;
+}
+
+.git-branch-create input {
+  padding-inline: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.git-branch-hint {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.git-branch-create-actions > button {
+  justify-content: center;
+}

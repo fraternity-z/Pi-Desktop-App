@@ -81,3 +81,7 @@ export async function gitPush(cwd: string, forceWithLease?: boolean): Promise<vo
 export async function gitCreateBranch(cwd: string, name: string): Promise<void> {
   return invoke<void>("git_create_branch", { cwd, name });
 }
+
+export async function gitSwitchBranch(cwd: string, name: string, remote = false): Promise<void> {
+  return invoke<void>("git_switch_branch", { cwd, name, remote });
+}

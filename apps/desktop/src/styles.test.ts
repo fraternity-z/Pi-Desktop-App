@@ -170,12 +170,29 @@ describe("启动遮罩动画", () => {
       /\.startup-progress-meter\s*\{[^}]*height:\s*6px;[^}]*border-radius:\s*999px;/s,
     );
     expect(startupStyles).toMatch(
-      /\.startup-progress-scan\s*\{[^}]*left:\s*calc\(var\(--startup-progress-scale, 0\) \* 100%\);[^}]*width:\s*calc\(var\(--startup-progress-step\) \* 100%\);/s,
+      /\.startup-progress-scan\s*\{[^}]*inset:\s*0;/s,
     );
     expect(startupStyles).toMatch(/@keyframes startup-progress-slide\s*\{[^}]*transform:/s);
     expect(startupStyles).not.toContain("startup-step-scan");
     expect(startupStyles).not.toContain("backdrop-filter");
     expect(startupStyles).not.toContain("will-change");
+  });
+
+  it("启动时只显示贯穿整条轨道的连续滑动条，不按阶段分段", () => {
+    expect(startupStyles).not.toContain("--startup-progress-step");
+    expect(startupStyles).toMatch(
+      /\.startup-progress-meter\[data-state="active"\]::after\s*\{\s*opacity:\s*0;/s,
+    );
+    const scanStyles = startupStyles.match(/\.startup-progress-scan\s*\{([^}]*)\}/s)?.[1];
+    expect(scanStyles).toBeDefined();
+    expect(scanStyles).not.toContain("--startup-progress-scale");
+    expect(scanStyles).not.toContain("transition:");
+    expect(startupStyles).toMatch(
+      /\.startup-progress-scan::before\s*\{[^}]*width:\s*45%;[^}]*animation:\s*startup-progress-slide 1\.8s ease-in-out infinite;/s,
+    );
+    expect(startupStyles).toMatch(
+      /@keyframes startup-progress-slide\s*\{.*?to\s*\{\s*transform:\s*translateX\(225%\)/s,
+    );
   });
 
   it("尊重系统和应用的减少动态效果设置", () => {
@@ -184,6 +201,12 @@ describe("启动遮罩动画", () => {
     const systemMotionStyles = startupStyles.slice(startupStyles.indexOf("@media (prefers-reduced-motion: reduce)"));
     expect(systemMotionStyles).toMatch(/\.startup-progress-scan\s*\{\s*display:\s*none;/s);
     expect(startupStyles).toMatch(/:root\[data-reduce-motion="true"\] \.startup-progress-scan\s*\{\s*display:\s*none;/s);
+    expect(systemMotionStyles).toMatch(
+      /:root:not\(\[data-reduce-motion="false"\]\) \.startup-progress-meter\[data-state="active"\]::after\s*\{\s*opacity:\s*1;/s,
+    );
+    expect(startupStyles).toMatch(
+      /:root\[data-reduce-motion="true"\] \.startup-progress-meter\[data-state="active"\]::after\s*\{\s*opacity:\s*1;/s,
+    );
   });
 
   it("关闭书写动效或启动结束时仍保留完整笔迹", () => {

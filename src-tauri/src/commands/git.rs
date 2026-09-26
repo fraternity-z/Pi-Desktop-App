@@ -199,6 +199,17 @@ pub async fn git_create_branch(
     run_blocking(move || create_branch(&workspace, &name)).await
 }
 
+#[tauri::command]
+pub async fn git_switch_branch(
+    store: State<'_, WorkspaceStore>,
+    cwd: String,
+    name: String,
+    remote: bool,
+) -> Result<(), AppError> {
+    let workspace = PathBuf::from(store.authorize(&cwd)?);
+    run_blocking(move || switch_branch(&workspace, &name, remote)).await
+}
+
 async fn run_blocking<T: Send + 'static>(
     task: impl FnOnce() -> Result<T, AppError> + Send + 'static,
 ) -> Result<T, AppError> {
@@ -362,6 +373,42 @@ fn create_branch(workspace: &Path, name: &str) -> Result<(), AppError> {
         ],
     )?;
     ensure_git_success(&output, "GIT_BRANCH_CREATE_FAILED", "无法创建 Git 分支")
+}
+
+fn switch_branch(workspace: &Path, name: &str, remote: bool) -> Result<(), AppError> {
+    let repo_root = require_repository(workspace)?;
+    let name = validate_branch_name(name)?;
+    let reference = format!("refs/{}/{name}", if remote { "remotes" } else { "heads" });
+    let exists = run_git_os(
+        &repo_root,
+        vec![
+            "show-ref".into(),
+            "--verify".into(),
+            "--quiet".into(),
+            reference.clone().into(),
+        ],
+    )?;
+    ensure_git_success(
+        &exists,
+        "GIT_BRANCH_NOT_FOUND",
+        "目标 Git 分支不存在，请刷新分支列表后重试",
+    )?;
+    // Never force, stash, or interpret a branch name as a path or revision.
+    // Tracking a remote creates a local branch; an existing local name is not reset.
+    let output = run_git_os(
+        &repo_root,
+        vec![
+            "switch".into(),
+            if remote { "--track" } else { "--no-guess" }.into(),
+            "--".into(),
+            if remote { reference } else { name }.into(),
+        ],
+    )?;
+    ensure_git_success(
+        &output,
+        "GIT_BRANCH_SWITCH_FAILED",
+        "无法切换分支：请检查未提交改动、同名本地分支或其他工作树占用；不会强制覆盖改动",
+    )
 }
 
 fn run_paths<const N: usize>(
@@ -1217,6 +1264,89 @@ mod tests {
             get_status(&repo.0).unwrap().branch.unwrap().head.as_deref(),
             Some("feature/right-panel")
         );
+    }
+
+    #[test]
+    fn switches_only_to_existing_local_branches_and_preserves_unrelated_changes() {
+        let repo = TestRepo::create("switch-local");
+        run_test_git(&repo.0, ["commit", "--allow-empty", "-m", "initial"]);
+        create_branch(&repo.0, "feature/first").unwrap();
+        create_branch(&repo.0, "feature/second").unwrap();
+        fs::write(repo.0.join("untracked.txt"), "keep me").unwrap();
+        switch_branch(&repo.0, "feature/first", false).unwrap();
+        assert_eq!(
+            get_status(&repo.0).unwrap().branch.unwrap().head.as_deref(),
+            Some("feature/first")
+        );
+        assert_eq!(fs::read_to_string(repo.0.join("untracked.txt")).unwrap(), "keep me");
+        for name in ["missing", "HEAD"] {
+            assert_eq!(switch_branch(&repo.0, name, false).unwrap_err().code, "GIT_BRANCH_NOT_FOUND");
+        }
+        for name in ["--detach", "-f", "main~1", "../main", "bad name", ""] {
+            assert_eq!(switch_branch(&repo.0, name, false).unwrap_err().code, "GIT_BRANCH_NAME_INVALID");
+        }
+    }
+
+    #[test]
+    fn refuses_to_overwrite_local_changes_when_switching() {
+        let repo = TestRepo::create("switch-dirty");
+        fs::write(repo.0.join("file.txt"), "initial").unwrap();
+        run_test_git(&repo.0, ["add", "file.txt"]);
+        run_test_git(&repo.0, ["commit", "-m", "initial"]);
+        create_branch(&repo.0, "feature/original").unwrap();
+        create_branch(&repo.0, "feature/changed").unwrap();
+        fs::write(repo.0.join("file.txt"), "committed change").unwrap();
+        run_test_git(&repo.0, ["commit", "-am", "change"]);
+        switch_branch(&repo.0, "feature/original", false).unwrap();
+        fs::write(repo.0.join("file.txt"), "local work").unwrap();
+        assert_eq!(
+            switch_branch(&repo.0, "feature/changed", false).unwrap_err().code,
+            "GIT_BRANCH_SWITCH_FAILED"
+        );
+        assert_eq!(fs::read_to_string(repo.0.join("file.txt")).unwrap(), "local work");
+        assert_eq!(get_status(&repo.0).unwrap().branch.unwrap().head.as_deref(), Some("feature/original"));
+        stage_paths(&repo.0, &["file.txt".to_owned()]).unwrap();
+        assert_eq!(
+            switch_branch(&repo.0, "feature/changed", false).unwrap_err().code,
+            "GIT_BRANCH_SWITCH_FAILED"
+        );
+        assert_eq!(get_status(&repo.0).unwrap().staged.len(), 1);
+        assert_eq!(fs::read_to_string(repo.0.join("file.txt")).unwrap(), "local work");
+    }
+
+    #[test]
+    fn creates_remote_tracking_branch_without_resetting_an_existing_local_branch() {
+        let repo = TestRepo::create("switch-remote");
+        run_test_git(&repo.0, ["commit", "--allow-empty", "-m", "initial"]);
+        run_test_git(&repo.0, ["remote", "add", "origin", "https://example.invalid/repo.git"]);
+        run_test_git(&repo.0, ["update-ref", "refs/remotes/origin/feature/remote", "HEAD"]);
+        switch_branch(&repo.0, "origin/feature/remote", true).unwrap();
+        let branch = get_status(&repo.0).unwrap().branch.unwrap();
+        assert_eq!(branch.head.as_deref(), Some("feature/remote"));
+        assert_eq!(branch.upstream.as_deref(), Some("origin/feature/remote"));
+        assert!(!branch.detached);
+        create_branch(&repo.0, "feature/other").unwrap();
+        assert_eq!(
+            switch_branch(&repo.0, "origin/feature/remote", true).unwrap_err().code,
+            "GIT_BRANCH_SWITCH_FAILED"
+        );
+        assert_eq!(get_status(&repo.0).unwrap().branch.unwrap().head.as_deref(), Some("feature/other"));
+    }
+
+    #[test]
+    fn refuses_branches_checked_out_in_another_worktree() {
+        let repo = TestRepo::create("switch-occupied");
+        run_test_git(&repo.0, ["commit", "--allow-empty", "-m", "initial"]);
+        run_test_git(&repo.0, ["branch", "feature/occupied"]);
+        let original = get_status(&repo.0).unwrap().branch.unwrap().head;
+        let linked = repo.0.join("linked");
+        run_test_git(&repo.0, ["worktree", "add", linked.to_str().unwrap(), "feature/occupied"]);
+        assert_eq!(
+            switch_branch(&repo.0, "feature/occupied", false).unwrap_err().code,
+            "GIT_BRANCH_SWITCH_FAILED"
+        );
+        assert_eq!(get_status(&repo.0).unwrap().branch.unwrap().head, original);
+        assert_eq!(get_status(&linked).unwrap().branch.unwrap().head.as_deref(), Some("feature/occupied"));
     }
 
     #[cfg(windows)]

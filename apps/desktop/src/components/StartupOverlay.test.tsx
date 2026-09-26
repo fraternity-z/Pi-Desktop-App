@@ -188,6 +188,7 @@ describe("StartupOverlay", () => {
     const { rerender } = render(<StartupOverlay {...props} stage="runtime" />);
     const progress = screen.getByRole("list", { name: "启动进度" });
     const progressMeter = screen.getByRole("progressbar", { name: "启动阶段进度" });
+    const scan = progressMeter.querySelector(".startup-progress-scan");
     expect(progress.tagName).toBe("OL");
     const steps = within(progress).getAllByRole("listitem");
     expect(steps).toHaveLength(3);
@@ -209,7 +210,9 @@ describe("StartupOverlay", () => {
       expect(progressMeter.style.getPropertyValue("--startup-progress-scale")).toBe(
         String({ runtime: 0, events: 1 / 3, catalog: 2 / 3 }[stage]),
       );
-      expect(progressMeter.style.getPropertyValue("--startup-progress-step")).toBe(String(1 / steps.length));
+      expect(progressMeter.style.getPropertyValue("--startup-progress-step")).toBe("");
+      expect(progressMeter.querySelectorAll(".startup-progress-scan")).toHaveLength(1);
+      expect(progressMeter.querySelector(".startup-progress-scan")).toBe(scan);
       states.forEach((state, index) => {
         expect(steps[index]).toHaveAttribute("data-state", state);
         if (state === "active") {

@@ -90,6 +90,7 @@ export interface GitReviewPanelProps {
   readonly displayOptions?: DisplayOptions;
   readonly onDiffStyleChange?: (style: ViewStyle) => void;
   readonly onDisplayOptionToggle?: (option: RightPanelDisplayOptionKey) => void;
+  readonly onRepositoryChange?: () => Promise<void>;
 }
 
 const MAX_APPLY_PATCH_BYTES = 1024 * 1024;
@@ -166,6 +167,7 @@ export const GitReviewPanel = memo(function GitReviewPanel({
   displayOptions: controlledDisplayOptions,
   onDiffStyleChange,
   onDisplayOptionToggle,
+  onRepositoryChange,
 }: GitReviewPanelProps): ReactElement {
   const [statusState, setStatusState] = useState<{
     readonly cwd: string;
@@ -352,6 +354,7 @@ export const GitReviewPanel = memo(function GitReviewPanel({
         await action();
         if (!isCurrent()) return false;
         await refresh();
+        if (isCurrent()) void onRepositoryChange?.();
         return isCurrent();
       } catch (cause) {
         if (isCurrent()) {
@@ -363,7 +366,7 @@ export const GitReviewPanel = memo(function GitReviewPanel({
         if (isCurrent()) setBusy(false);
       }
     },
-    [busy, refresh],
+    [busy, onRepositoryChange, refresh],
   );
 
   const unstagedEntries = useMemo(

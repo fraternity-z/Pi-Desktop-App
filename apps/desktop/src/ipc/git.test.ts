@@ -10,6 +10,7 @@ import {
   gitPush,
   gitStage,
   gitStatus,
+  gitSwitchBranch,
   gitUnstage,
 } from "./git";
 
@@ -18,6 +19,17 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 describe("git IPC", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset().mockResolvedValue(undefined);
+  });
+
+  it("切换分支时明确区分本地与远程且不开放强制参数", async () => {
+    await gitSwitchBranch("C:\\repo", "feature/local");
+    await gitSwitchBranch("C:\\repo", "origin/feature/remote", true);
+    expect(invoke).toHaveBeenNthCalledWith(1, "git_switch_branch", {
+      cwd: "C:\\repo", name: "feature/local", remote: false,
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "git_switch_branch", {
+      cwd: "C:\\repo", name: "origin/feature/remote", remote: true,
+    });
   });
 
   it("仅调用稳定命令并逐项传递受限参数", async () => {

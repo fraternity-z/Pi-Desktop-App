@@ -42,6 +42,23 @@ describe("PersonalizationSettings", () => {
     );
   });
 
+  it("shows readable Windows paths without changing the document save contract", async () => {
+    vi.mocked(getPromptDocument).mockImplementation(async (kind) => ({
+      path: String.raw`\\?\C:\Users\test\.pi\agent` + (kind === "system" ? "\\SYSTEM.md" : "\\APPEND_SYSTEM.md"),
+      content: null,
+    }));
+    render(<PersonalizationSettings />);
+    const displayPath = String.raw`C:\Users\test\.pi\agent\SYSTEM.md`;
+    expect(await screen.findByText(displayPath)).toHaveAttribute("title", displayPath);
+    const system = screen.getByRole("textbox", { name: "系统提示词" });
+    expect(system).toHaveAccessibleDescription(displayPath);
+    fireEvent.change(system, { target: { value: "system content" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存系统提示词" }));
+    await waitFor(() =>
+      expect(savePromptDocument).toHaveBeenCalledWith("system", "system content", null),
+    );
+  });
+
   it("blocks oversized multibyte text and allows retry after read failure", async () => {
     vi.mocked(getPromptDocument).mockRejectedValueOnce({
       code: "PROMPT_READ_FAILED",

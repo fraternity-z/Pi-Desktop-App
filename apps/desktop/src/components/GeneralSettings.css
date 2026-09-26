@@ -1,6 +1,7 @@
 .general-system-settings {
   display: grid;
-  gap: 30px;
+  gap: var(--settings-section-gap);
+  margin-top: var(--settings-section-gap);
 }
 .general-system-section {
   display: grid;
@@ -8,8 +9,8 @@
   min-width: 0;
 }
 .general-system-section > h2 {
-  margin: 0 0 4px;
-  font-size: 14px;
+  margin: 0;
+  font-size: var(--settings-label-size);
   font-weight: 600;
   color: var(--text);
 }
@@ -17,11 +18,12 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
-  min-height: 70px;
-  padding: 16px 18px;
-  border-radius: 18px;
-  background: var(--surface-subtle);
+  gap: 16px;
+  min-height: var(--settings-row-height);
+  padding: var(--settings-row-padding);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ui);
+  background: var(--surface);
   color: var(--text);
   box-sizing: border-box;
 }
@@ -30,7 +32,8 @@
   align-items: center;
   gap: 6px;
   min-width: 0;
-  font-size: 14px;
+  font-size: var(--settings-label-size);
+  font-weight: 500;
 }
 .general-setting-control {
   flex-shrink: 0;
@@ -72,7 +75,8 @@
   background: var(--surface-raised);
   color: var(--muted);
   box-shadow: var(--shadow);
-  font-size: 12px;
+  font-size: var(--settings-caption-size);
+  font-weight: 400;
   line-height: 1.5;
   white-space: normal;
   overflow-wrap: anywhere;
@@ -100,7 +104,7 @@
   padding: 5px 13px;
   border-radius: 999px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--settings-label-size);
   white-space: nowrap;
 }
 .general-proxy-segments input:checked + span {
@@ -116,29 +120,15 @@
   opacity: var(--disabled-opacity);
   cursor: not-allowed;
 }
-.general-system-settings .settings-toggle {
-  width: 34px;
-  height: 21px;
-  min-width: 34px;
-}
-.general-system-settings .settings-toggle span {
-  width: 15px;
-  height: 15px;
-  top: 2px;
-  left: 2px;
-}
-.general-system-settings .settings-toggle[aria-checked="true"] span {
-  transform: translateX(13px);
-}
 .general-proxy-settings {
   display: grid;
   gap: 8px;
   min-width: 0;
 }
 .general-proxy-details {
-  padding: 4px 18px;
+  padding: 2px 14px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--settings-caption-size);
 }
 .general-proxy-details > summary {
   cursor: pointer;
@@ -155,21 +145,22 @@
 .general-proxy-fields {
   display: grid;
   gap: 10px;
-  padding: 14px 18px;
-  background: var(--surface-subtle);
-  border-radius: 16px;
+  padding: var(--settings-row-padding);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: var(--radius-ui);
 }
 .general-proxy-fields label {
   display: grid;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--settings-caption-size);
   color: var(--muted);
 }
 .general-proxy-fields input {
   min-width: 0;
   width: 100%;
   box-sizing: border-box;
-  padding: 9px 12px;
+  padding: 7px 10px;
   border: 1px solid var(--input-border);
   border-radius: 8px;
   background: var(--input-bg);
@@ -191,8 +182,8 @@
 .general-settings-note {
   margin: 4px 0;
   color: var(--muted);
-  font-size: 12px;
-  line-height: 1.6;
+  font-size: var(--settings-caption-size);
+  line-height: 1.5;
 }
 .general-settings-feedback {
   min-width: 0;
@@ -200,10 +191,7 @@
 }
 @media (max-width: 560px) {
   .general-setting-row {
-    gap: 12px;
-    padding: 14px;
-    min-height: 66px;
-    border-radius: 14px;
+    gap: 8px;
     flex-wrap: wrap;
   }
   .general-proxy-segments span {

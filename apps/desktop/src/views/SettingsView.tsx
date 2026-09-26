@@ -26,6 +26,7 @@ import {
   SettingsToggle,
 } from "../components/SettingsControls";
 import type { SettingsSectionId } from "../components/SettingsSidebar";
+import { SettingsPath } from "../components/SettingsPath";
 import {
   deleteAgentSessions,
   type DeleteAgentSessionsResult,
@@ -455,9 +456,9 @@ function ArchivedSettings({
                 description={
                   <div className="settings-archive-meta">
                     {entry.cwd && (
-                      <span title={entry.cwd}>
+                      <span>
                         <Folder size={13} aria-hidden="true" />
-                        {entry.cwd}
+                        <SettingsPath path={entry.cwd} />
                       </span>
                     )}
                     <time dateTime={entry.archivedAt || undefined}>

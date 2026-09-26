@@ -6,6 +6,9 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const stylesheet = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8");
+const generalSettingsStyles = readFileSync(
+  resolve(process.cwd(), "src/components/GeneralSettings.css"), "utf8",
+);
 const radiusSectionMarker = "/* Unified rectangular UI corners */";
 const radiusSection = stylesheet.slice(
   stylesheet.indexOf(radiusSectionMarker) + radiusSectionMarker.length,
@@ -77,11 +80,49 @@ describe("外观设置排版", () => {
     expect(appearanceStyles).not.toMatch(/font-size:\s*(?:18|20|28|32)px/);
     expect(appearanceStyles).not.toMatch(/min-height:\s*114px/);
     expect(appearanceStyles).toMatch(
-      /\.appearance-theme-card strong\s*\{[^}]*font-size:\s*var\(--app-ui-font-size\);/s,
+      /\.appearance-theme-card strong\s*\{[^}]*font-size:\s*var\(--settings-label-size\);/s,
     );
     expect(appearanceStyles).toMatch(
-      /\.appearance-theme-actions button\s*\{[^}]*font-size:\s*var\(--app-ui-font-size\);/s,
+      /\.appearance-theme-actions button\s*\{[^}]*font-size:\s*var\(--settings-label-size\);/s,
     );
+  });
+});
+
+describe("设置页统一排版", () => {
+  it("标题与辅助文字使用共享字号，并跟随用户字体偏好", () => {
+    expect(stylesheet).toContain("--settings-label-size: max(12px, calc(var(--app-ui-font-size) - 1px));");
+    expect(stylesheet).toContain("--settings-caption-size: max(11px, calc(var(--app-ui-font-size) - 2px));");
+    expect(stylesheet).toMatch(/\.settings-row-title\s*\{[^}]*font-size:\s*var\(--settings-label-size\);/s);
+    expect(stylesheet).toMatch(/\.settings-row-description\s*\{[^}]*font-size:\s*var\(--settings-caption-size\);/s);
+    expect(generalSettingsStyles).toMatch(/\.general-setting-label\s*\{[^}]*font-size:\s*var\(--settings-label-size\);/s);
+    expect(generalSettingsStyles).toMatch(/\.general-system-section > h2\s*\{[^}]*font-size:\s*var\(--settings-label-size\);/s);
+  });
+
+  it("常规项与共享设置行使用同一密度尺度", () => {
+    for (const [source, selector] of [
+      [stylesheet, ".settings-row"],
+      [generalSettingsStyles, ".general-setting-row"],
+    ]) {
+      const body = source.slice(source.indexOf(`\n${selector} {`)).split("}")[0];
+      expect(body).toContain("min-height: var(--settings-row-height);");
+      expect(body).toContain("padding: var(--settings-row-padding);");
+    }
+    expect(stylesheet).toContain("--settings-row-height: 56px;");
+    expect(stylesheet).toMatch(/:root\[data-interface-density="compact"\] \.settings-main\s*\{[^}]*--settings-row-height:\s*48px;/s);
+    expect(generalSettingsStyles).not.toContain(".general-system-settings .settings-toggle");
+  });
+
+  it("设置与提示词卡片保留统一边框圆角，不再被重置为无边框列表", () => {
+    expect(stylesheet).toMatch(/\.settings-card,\s*\.prompt-editor\s*\{[^}]*border:\s*1px solid var\(--line\);[^}]*border-radius:\s*var\(--radius-ui\);[^}]*background:\s*var\(--surface\);/s);
+    expect(generalSettingsStyles).toMatch(/\.general-setting-row\s*\{[^}]*border:\s*1px solid var\(--line\);[^}]*border-radius:\s*var\(--radius-ui\);[^}]*background:\s*var\(--surface\);/s);
+    expect(stylesheet).not.toContain(".settings-card,\n.ecosystem-list");
+    expect(stylesheet).not.toContain(".settings-main-shortcuts .settings-card");
+  });
+
+  it("长路径省略显示，保存状态不被挤压，编辑器保留焦点提示", () => {
+    expect(stylesheet).toMatch(/\.settings-path\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s);
+    expect(stylesheet).toMatch(/\.prompt-editor-status\s*\{[^}]*flex-shrink:\s*0;/s);
+    expect(stylesheet).toMatch(/\.prompt-editor textarea:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--focus\);/s);
   });
 });
 

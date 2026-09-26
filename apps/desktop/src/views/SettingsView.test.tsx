@@ -414,7 +414,7 @@ describe("SettingsView", () => {
       JSON.stringify({
         saved: {
           title: "等待恢复",
-          cwd: "C:\\projects\\alpha",
+          cwd: String.raw`\\?\C:\projects\alpha`,
           archivedAt: "2026-08-23T08:30:00.000Z",
         },
         remove: {
@@ -447,6 +447,11 @@ describe("SettingsView", () => {
     );
 
     expect(screen.getByText("等待恢复")).toBeInTheDocument();
+    expect(screen.getByText(String.raw`C:\projects\alpha`)).toHaveAttribute(
+      "title", String.raw`C:\projects\alpha`,
+    );
+    expect(JSON.parse(window.localStorage.getItem("pix.threads.archivedMeta")!).saved.cwd)
+      .toBe(String.raw`\\?\C:\projects\alpha`);
     fireEvent.change(screen.getByRole("searchbox", { name: "搜索已归档会话" }), {
       target: { value: "等待恢复" },
     });

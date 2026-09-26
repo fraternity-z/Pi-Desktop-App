@@ -2,6 +2,7 @@ import { LoaderCircle, RefreshCw, RotateCcw, Save } from "lucide-react";
 
 import type { PromptKind } from "../ipc/settings";
 import { usePromptDocument } from "../stores/usePromptDocument";
+import { SettingsPath } from "./SettingsPath";
 
 export function PersonalizationSettings() {
   return (
@@ -85,10 +86,11 @@ function PromptEditor({
         onChange={(event) => controller.setDraft(event.target.value)}
       />
       <div className="prompt-editor-footer settings-row-description">
-        <span id={`prompt-${kind}-path`}>
-          {document?.path ?? `~/.pi/agent/${kind === "system" ? "SYSTEM.md" : "APPEND_SYSTEM.md"}`}
-        </span>
-        <span>
+        <SettingsPath
+          id={`prompt-${kind}-path`}
+          path={document?.path ?? `~/.pi/agent/${kind === "system" ? "SYSTEM.md" : "APPEND_SYSTEM.md"}`}
+        />
+        <span className="prompt-editor-status">
           {busy ? "处理中" : dirty ? "未保存" : document?.content == null ? "未设置" : "已保存"}
         </span>
       </div>

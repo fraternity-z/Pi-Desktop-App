@@ -172,7 +172,10 @@ export function StartupOverlay({
       aria-label="PI Desktop 启动界面"
       tabIndex={-1}
     >
+      <div className="startup-orbit startup-orbit-one" aria-hidden="true" />
+      <div className="startup-orbit startup-orbit-two" aria-hidden="true" />
       <div className="startup-overlay-content">
+        <p className="startup-kicker">PI WORKSPACE · SECURE LOCAL RUNTIME</p>
         <div className="startup-brand">
           <div className="startup-brand-emblem" aria-hidden="true">
             <span className="startup-brand-icon">

@@ -3,6 +3,8 @@ import { useId, type CSSProperties } from "react";
 import { STARTUP_WORDMARK } from "../assets/startup-wordmark";
 import wordmarkLicense from "../assets/startup-wordmark-LICENSE.txt?raw";
 
+// Keep the signature animation expressive without holding the workspace behind it.
+const STARTUP_ANIMATION_SCALE = 0.2;
 const FINAL_LETTER_FINISH = Math.max(...STARTUP_WORDMARK.letters.map((letter) => letter.finish));
 
 interface StartupWordmarkProps {
@@ -52,8 +54,8 @@ export function StartupWordmark({ playing = false, complete = false, onFinished 
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     style={{
-                      "--stroke-delay": `${stroke.delay}ms`,
-                      "--stroke-duration": `${stroke.duration}ms`,
+                      "--stroke-delay": `${Math.round(stroke.delay * STARTUP_ANIMATION_SCALE)}ms`,
+                      "--stroke-duration": `${Math.max(70, Math.round(stroke.duration * STARTUP_ANIMATION_SCALE))}ms`,
                     } as CSSProperties}
                   />
                 ))}
@@ -71,8 +73,8 @@ export function StartupWordmark({ playing = false, complete = false, onFinished 
                   height={top - bottom + 4}
                   fill="white"
                   style={{
-                    "--stroke-delay": `${letter.finish}ms`,
-                    "--stroke-duration": "40ms",
+                    "--stroke-delay": `${Math.round(letter.finish * STARTUP_ANIMATION_SCALE)}ms`,
+                    "--stroke-duration": "36ms",
                   } as CSSProperties}
                 />
               </mask>

@@ -6,9 +6,54 @@
     <meta name="theme-color" content="#f7f7f6" />
     <link rel="icon" href="data:," />
     <title>Pi Desktop</title>
+    <style>
+      :root { color-scheme: light; background: #f7f7f7; }
+      @media (prefers-color-scheme: dark) { :root { color-scheme: dark; background: #171717; } }
+      html, body { margin: 0; min-width: 320px; min-height: 100%; }
+      body { min-height: 100vh; overflow: hidden; }
+      #root { min-height: 100vh; }
+      .boot-splash {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+        background: radial-gradient(circle at 50% 42%, rgb(40 123 104 / 12%), transparent 32%), #f7f7f7;
+        color: #287b68;
+        font: 600 12px/1.5 Inter, ui-sans-serif, system-ui, sans-serif;
+        letter-spacing: .16em;
+        text-transform: uppercase;
+      }
+      @media (prefers-color-scheme: dark) {
+        .boot-splash { background: radial-gradient(circle at 50% 42%, rgb(120 213 185 / 13%), transparent 32%), #171717; color: #78d5b9; }
+      }
+      .boot-splash::before {
+        position: absolute;
+        width: 180px;
+        height: 180px;
+        border: 1px solid currentColor;
+        border-radius: 50%;
+        opacity: .15;
+        content: "";
+        animation: boot-ring 1.8s ease-out infinite;
+      }
+      .boot-splash-mark { position: relative; display: grid; gap: 12px; justify-items: center; animation: boot-enter .45s ease-out both; }
+      .boot-splash-mark strong { font-size: 18px; letter-spacing: .08em; }
+      .boot-splash-mark span { opacity: .7; }
+      @keyframes boot-enter { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
+      @keyframes boot-ring { from { opacity: .2; transform: scale(.72); } to { opacity: 0; transform: scale(1.35); } }
+      @media (prefers-reduced-motion: reduce) { .boot-splash *, .boot-splash::before { animation: none !important; } }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="boot-splash" role="status" aria-label="正在启动 PI Desktop">
+        <div class="boot-splash-mark">
+          <strong>PI Desktop</strong>
+          <span>Preparing workspace</span>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

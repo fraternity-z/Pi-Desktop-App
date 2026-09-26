@@ -62,6 +62,15 @@ describe("统一矩形圆角", () => {
   });
 });
 
+describe("对话输入区项目栏", () => {
+  it("在项目选择行和输入框之间保留单条分割线", () => {
+    expect(stylesheet).toMatch(
+      /\.composer-project-bar\s*\{[^}]*border-bottom:\s*1px solid[^}]*\}/s,
+    );
+    expect(stylesheet).toMatch(/\.composer-frame\s*\{[^}]*border-top:\s*0;/s);
+  });
+});
+
 describe("外观设置排版", () => {
   it("沿用共享设置尺度并保留桌面设置顶栏", () => {
     expect(stylesheet).not.toContain(".settings-main-appearance .settings-topbar");

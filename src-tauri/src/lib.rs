@@ -217,6 +217,8 @@ pub fn run() {
             commands::runtime::agent_delete_sessions,
             commands::runtime::agent_open_session,
             commands::runtime::agent_list_models,
+            commands::providers::agent_provider_settings,
+            commands::providers::agent_open_provider_login,
             commands::runtime::agent_list_packages,
             commands::runtime::agent_install_package,
             commands::runtime::agent_set_package_enabled,

@@ -7,6 +7,7 @@ import {
   type OutboundFrame,
 } from "./protocol.js";
 import { RuntimeError, type SessionRuntime } from "./session-runtime.js";
+import { ProviderSettingsError } from "./provider-config.js";
 
 export class BridgeServer {
   private sequence = 0;
@@ -43,6 +44,30 @@ export class BridgeServer {
       let data: unknown;
 
       switch (request.op) {
+        case "provider.list":
+          data = await this.providers().snapshot(request.refresh);
+          break;
+        case "provider.login.start":
+          data = await this.providers().startLogin(request.provider);
+          break;
+        case "provider.login.status":
+          data = this.providers().status(request.loginId);
+          break;
+        case "provider.login.reply":
+          data = this.providers().reply(request.loginId, request.promptId, request.value);
+          break;
+        case "provider.login.cancel":
+          data = this.providers().cancel(request.loginId);
+          break;
+        case "provider.logout":
+          await this.providers().logout(request.provider);
+          break;
+        case "provider.model.save":
+          await this.providers().saveModel(request.input);
+          break;
+        case "model.default.set":
+          await this.providers().setDefault(request.provider, request.modelId);
+          break;
         case "ping":
           data = { pong: true };
           break;
@@ -158,7 +183,7 @@ export class BridgeServer {
   }
 
   private failureResponse(id: string, error: unknown): BridgeResponse {
-    if (error instanceof ProtocolError || error instanceof RuntimeError) {
+    if (error instanceof ProtocolError || error instanceof RuntimeError || error instanceof ProviderSettingsError) {
       return {
         v: PROTOCOL_VERSION,
         kind: "response",
@@ -175,5 +200,10 @@ export class BridgeServer {
       ok: false,
       error: { code: "INTERNAL_ERROR", message: "Bridge 处理请求失败" },
     };
+  }
+
+  private providers() {
+    if (!this.runtime.providerSettings) throw new ProviderSettingsError("PROVIDER_SETTINGS_UNSUPPORTED", "当前运行时不支持提供商设置");
+    return this.runtime.providerSettings;
   }
 }

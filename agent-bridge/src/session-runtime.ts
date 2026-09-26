@@ -2,6 +2,8 @@ import { existsSync } from "node:fs";
 import { readFile, realpath, stat, unlink } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative, win32 } from "node:path";
 import { readPackageVersion } from "./package-version.js";
+import { ProviderSettingsService, type OfficialModelSettings, type OfficialProviderRuntime } from "./provider-settings.js";
+import { ProviderSettingsError } from "./provider-config.js";
 
 import {
   MAX_COMMANDS,
@@ -44,7 +46,7 @@ export interface PiModelLike {
   readonly thinkingLevelMap?: ThinkingLevelMap;
 }
 
-export interface PiModelRuntimeLike {
+export interface PiModelRuntimeLike extends OfficialProviderRuntime {
   getAvailable?(): Promise<PiModelLike[]>;
   getModels?(): PiModelLike[];
   getModel(provider: string, id: string): PiModelLike | undefined;
@@ -80,7 +82,7 @@ export interface ResourceSummary {
   source?: string;
 }
 
-interface PiSettingsManagerLike {
+interface PiSettingsManagerLike extends OfficialModelSettings {
   getGlobalSettings(): { packages?: unknown[] };
   getProjectSettings(): { packages?: unknown[] };
   setPackages(packages: unknown[]): void;
@@ -342,6 +344,7 @@ export interface RuntimeEvent {
 }
 
 export interface SessionRuntime {
+  readonly providerSettings?: ProviderSettingsService;
   configureRequestHeaders(settings: RequestHeaderSettings): RequestHeaderSettings;
   createSession(cwd: string): Promise<CreatedAgentSession>;
   listSessions(): Promise<AgentSessionSummary[]>;
@@ -954,6 +957,7 @@ function detectImageMimeType(bytes: Buffer): PiImageContent["mimeType"] | undefi
 }
 
 export class PiSessionRuntime implements SessionRuntime {
+  readonly providerSettings: ProviderSettingsService;
   private readonly listeners = new Set<(event: RuntimeEvent) => void>();
   private modelRuntimePromise: Promise<PiModelRuntimeLike> | undefined;
   private readonly sessions = new Map<string, ManagedSession>();
@@ -966,7 +970,12 @@ export class PiSessionRuntime implements SessionRuntime {
     private readonly agentDir: string,
     private readonly sessionFiles: SessionFileDependencies = DEFAULT_SESSION_FILE_DEPENDENCIES,
     private readonly diagnostics: PerformanceDiagnosticSink = () => undefined,
-  ) {}
+  ) {
+    this.providerSettings = new ProviderSettingsService(agentDir, () => this.getModelRuntime(), () => {
+      if (!this.sdk.SettingsManager) throw new ProviderSettingsError("PROVIDER_SETTINGS_UNSUPPORTED", "当前 Pi SDK 缺少设置管理接口");
+      return this.sdk.SettingsManager.create(agentDir, agentDir, { projectTrusted: false });
+    });
+  }
 
   warmUp(): void {
     this.ensureOpen();
@@ -1482,6 +1491,7 @@ export class PiSessionRuntime implements SessionRuntime {
       return;
     }
     this.closed = true;
+    this.providerSettings.close();
     const managedSessions = [...this.sessions.values()];
     this.sessions.clear();
     for (const managed of managedSessions) {

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MODEL_SETTINGS_CHANGED } from "../ipc/providers";
 
 import {
   abortAgent,
@@ -167,6 +168,7 @@ export function useChatSession(): ChatSessionState {
   const [projections, setProjections] = useState<Record<string, SessionProjection>>({});
   const [catalogSessions, setCatalogSessions] = useState<AgentSessionSummary[]>([]);
   const [models, setModels] = useState<AgentModel[]>([]);
+  const modelCatalogVersion = useRef(0);
   const [workspaceState, setWorkspaceState] = useState<WorkspaceState>(EMPTY_WORKSPACE_STATE);
   const [navigationPending, setNavigationPending] = useState(false);
   const [configuringSessionId, setConfiguringSessionId] = useState<string | null>(null);
@@ -408,9 +410,10 @@ export function useChatSession(): ChatSessionState {
         }
 
         if (requestId !== catalogRequestId.current) return;
+        const modelVersion = ++modelCatalogVersion.current;
         try {
           const nextModels = await listAgentModels();
-          if (requestId === catalogRequestId.current) setModels(nextModels);
+          if (requestId === catalogRequestId.current && modelVersion === modelCatalogVersion.current) setModels(nextModels);
         } catch (error) {
           if (requestId !== catalogRequestId.current) return;
           setCatalogPhase("error");
@@ -419,6 +422,20 @@ export function useChatSession(): ChatSessionState {
       })();
     });
   }, [applySessionCatalog, installSession]);
+
+  useEffect(() => {
+    let live = true;
+    const refreshModels = () => {
+      const version = ++modelCatalogVersion.current;
+      void listAgentModels().then((next) => {
+        if (live && version === modelCatalogVersion.current) setModels(next);
+      }).catch((error) => {
+        if (live && version === modelCatalogVersion.current) setCatalogError(formatError(error));
+      });
+    };
+    window.addEventListener(MODEL_SETTINGS_CHANGED, refreshModels);
+    return () => { live = false; window.removeEventListener(MODEL_SETTINGS_CHANGED, refreshModels); };
+  }, []);
 
   const reconnectActiveSession = useCallback(async (): Promise<boolean> => {
     const sessionId = activeSessionIdRef.current;

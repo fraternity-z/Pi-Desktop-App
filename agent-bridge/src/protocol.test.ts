@@ -316,6 +316,7 @@ describe("outbound frames", () => {
         "abort",
         "extensions",
         "models",
+        "provider-settings",
         "session-history",
         "session-configuration",
         "tool-status",

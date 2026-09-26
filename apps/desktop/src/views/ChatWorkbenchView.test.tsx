@@ -496,7 +496,8 @@ describe("ChatWorkbenchView", () => {
         "running",
       ),
     );
-    expect(container.querySelector(".timeline-tool-icon .spin")).not.toBeNull();
+    expect(container.querySelector(".timeline-tool-icon .lucide-file-text")).not.toBeNull();
+    expect(container.querySelector(".timeline-tool .timeline-tool-progress.spin")).not.toBeNull();
     act(() => {
       emitAgentEvent?.(agentEvent("thinking.delta", { delta: "分析项目" }, 2));
       emitAgentEvent?.(agentEvent("message.delta", { delta: "完成" }, 3));
@@ -512,8 +513,8 @@ describe("ChatWorkbenchView", () => {
 
     expect(await screen.findByText("完成检查")).toBeInTheDocument();
     expect(screen.getByText("分析项目")).toBeVisible();
-    expect(screen.getByText("read_file")).toBeVisible();
-    expect(screen.getByText("bash")).toBeVisible();
+    expect(screen.getByText("读取了")).toBeVisible();
+    expect(screen.getByText("运行失败")).toBeVisible();
     expect(screen.getAllByText("已完成").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("失败").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();

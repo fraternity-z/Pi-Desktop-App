@@ -441,6 +441,11 @@ impl BridgeRuntime {
         self.with_supervisor(|supervisor| supervisor.list_models())
     }
 
+    pub fn provider_settings(&self, request: super::providers::ProviderRequest) -> Result<serde_json::Value, AppError> {
+        request.validate()?;
+        self.with_supervisor(|supervisor| supervisor.provider_settings(&request))
+    }
+
     pub fn list_packages(&self, cwd: String) -> Result<Vec<PackageSummary>, AppError> {
         let cwd = canonical_workspace(Path::new(cwd.trim()))?;
         self.with_supervisor(|supervisor| supervisor.list_packages(&cwd))

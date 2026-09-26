@@ -1,4 +1,5 @@
 import { extname, isAbsolute, win32 } from "node:path";
+import { boundedText, validateProviderId, validateProviderModel, type ProviderModelInput } from "./provider-config.js";
 
 import {
   REQUEST_HEADER_CLIENTS,
@@ -32,6 +33,14 @@ export const BRIDGE_OPERATIONS = [
   "ping",
   "health",
   "model.list",
+  "provider.list",
+  "provider.login.start",
+  "provider.login.status",
+  "provider.login.reply",
+  "provider.login.cancel",
+  "provider.logout",
+  "provider.model.save",
+  "model.default.set",
   "package.list",
   "package.install",
   "package.set-enabled",
@@ -59,6 +68,7 @@ export const BRIDGE_CAPABILITIES = [
   "abort",
   "extensions",
   "models",
+  "provider-settings",
   "session-history",
   "session-configuration",
   "tool-status",
@@ -99,6 +109,12 @@ interface RequestBase {
 }
 
 export type BridgeRequest =
+  | (RequestBase & { op: "provider.list"; refresh: boolean })
+  | (RequestBase & { op: "provider.login.start" | "provider.logout"; provider: string })
+  | (RequestBase & { op: "provider.login.status" | "provider.login.cancel"; loginId: string })
+  | (RequestBase & { op: "provider.login.reply"; loginId: string; promptId: string; value: string })
+  | (RequestBase & { op: "provider.model.save"; input: ProviderModelInput })
+  | (RequestBase & { op: "model.default.set"; provider: string; modelId: string })
   | (RequestBase & { op: "ping" | "health" | "model.list" | "session.list" | "shutdown" })
   | (RequestBase & { op: "package.list" | "package.check-updates" | "resource.list"; cwd: string })
   | (RequestBase & { op: "command.list"; sessionId: string })
@@ -398,6 +414,21 @@ export function parseRequest(line: string): BridgeRequest {
   }
 
   switch (value.op as BridgeOperation) {
+    case "provider.list":
+      if (value.refresh !== undefined && typeof value.refresh !== "boolean") throw new ProtocolError("INVALID_REQUEST", "refresh 必须为布尔值");
+      return { v: PROTOCOL_VERSION, id, op: "provider.list", refresh: value.refresh === true };
+    case "provider.login.start":
+    case "provider.logout":
+      return { v: PROTOCOL_VERSION, id, op: value.op as "provider.login.start" | "provider.logout", provider: validateProviderId(value.provider) };
+    case "provider.login.status":
+    case "provider.login.cancel":
+      return { v: PROTOCOL_VERSION, id, op: value.op as "provider.login.status" | "provider.login.cancel", loginId: boundedText(value.loginId, 128, "登录 ID") };
+    case "provider.login.reply":
+      return { v: PROTOCOL_VERSION, id, op: "provider.login.reply", loginId: boundedText(value.loginId, 128, "登录 ID"), promptId: boundedText(value.promptId, 128, "提示 ID"), value: boundedText(value.value, 8192, "登录输入") };
+    case "provider.model.save":
+      return { v: PROTOCOL_VERSION, id, op: "provider.model.save", input: validateProviderModel(value.input) };
+    case "model.default.set":
+      return { v: PROTOCOL_VERSION, id, op: "model.default.set", provider: validateProviderId(value.provider), modelId: boundedText(value.modelId, 256, "模型 ID") };
     case "ping":
     case "health":
     case "model.list":

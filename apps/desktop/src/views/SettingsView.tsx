@@ -13,6 +13,7 @@ import {
 import { useMemo, useState } from "react";
 
 import { AgentConfigurationSettings } from "../components/AgentConfigurationSettings";
+import { ModelProviderSettings } from "../components/ModelProviderSettings";
 import { AppearanceSettings } from "../components/AppearanceSettings";
 import { PersonalizationSettings } from "../components/PersonalizationSettings";
 import { KeyboardShortcutSettings } from "../components/KeyboardShortcutSettings";
@@ -123,7 +124,10 @@ export function SettingsView({
           <h1 className="settings-page-title">{SECTION_TITLES[section]}</h1>
           {section === "personalization" && <PersonalizationSettings />}
           {section === "shortcuts" && shortcuts && <KeyboardShortcutSettings controller={shortcuts} />}
-          {section === "configuration" && <AgentConfigurationSettings tools={toolPermissions} />}
+          {section === "configuration" && <>
+            <ModelProviderSettings />
+            <AgentConfigurationSettings tools={toolPermissions} />
+          </>}
           {(section === "general" || section === "proxy") && (
             <>
               <GeneralSettings preferences={preferences} onChange={onPreferencesChange} />

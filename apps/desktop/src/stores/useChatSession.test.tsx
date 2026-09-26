@@ -23,6 +23,7 @@ import {
   removeRecentWorkspace,
 } from "../ipc/workspace";
 import { useChatSession } from "./useChatSession";
+import { MODEL_SETTINGS_CHANGED } from "../ipc/providers";
 
 vi.mock("../ipc/agent", () => ({
   abortAgent: vi.fn(),
@@ -171,6 +172,26 @@ describe("useChatSession", () => {
         emit = handler;
         return unlisten;
       });
+  });
+
+  it("刷新提供商模型目录不切换已有会话，并忽略迟到的目录结果", async () => {
+    const { result, unmount } = renderHook(() => useChatSession());
+    await act(() => result.current.loadCatalogs());
+    await waitFor(() => expect(result.current.models).toHaveLength(1));
+    let resolve!: (models: Awaited<ReturnType<typeof listAgentModels>>) => void;
+    vi.mocked(listAgentModels).mockReturnValueOnce(new Promise((r) => { resolve = r; }));
+    act(() => window.dispatchEvent(new Event(MODEL_SETTINGS_CHANGED)));
+    const updated = [{ provider: "new-provider", id: "new", name: "New model", reasoning: false }];
+    vi.mocked(listAgentModels).mockResolvedValueOnce(updated);
+    act(() => window.dispatchEvent(new Event(MODEL_SETTINGS_CHANGED)));
+    await waitFor(() => expect(result.current.models).toEqual(updated));
+    await act(async () => { resolve([]); });
+    expect(result.current.models).toEqual(updated);
+    expect(configureAgentSession).not.toHaveBeenCalled();
+    const calls = vi.mocked(listAgentModels).mock.calls.length;
+    unmount();
+    act(() => window.dispatchEvent(new Event(MODEL_SETTINGS_CHANGED)));
+    expect(listAgentModels).toHaveBeenCalledTimes(calls);
   });
 
   it("创建项目草稿时先登记工作区，并在首次发送时实体化", async () => {

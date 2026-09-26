@@ -404,6 +404,12 @@ impl BridgeSupervisor {
         })
     }
 
+    pub fn provider_settings(&self, request: &super::providers::ProviderRequest) -> Result<Value, AppError> {
+        let fields = request.fields()?;
+        let data = self.request(request.operation(), fields, DEFAULT_SESSION_INITIALIZATION_TIMEOUT)?;
+        request.decode(data)
+    }
+
     pub fn list_packages(&self, cwd: &Path) -> Result<Vec<PackageSummary>, AppError> {
         self.typed_list_request(
             "package.list",

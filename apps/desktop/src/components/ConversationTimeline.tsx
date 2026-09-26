@@ -1,13 +1,15 @@
 import {
   Check,
-  CheckCircle2,
   ChevronRight,
-  Circle,
   CircleX,
   Copy,
+  FileText,
+  Globe,
   LoaderCircle,
-  Square,
-  Wrench,
+  Pencil,
+  Search,
+  SquareTerminal,
+  Waypoints,
 } from "lucide-react";
 import {
   Fragment,
@@ -26,6 +28,8 @@ import type {
 } from "../stores/useChatSession";
 import { useStreamingText } from "../stores/useStreamingText";
 import { MarkdownContent } from "./MarkdownContent";
+import { ToolDiffPreview } from "./ToolDiffPreview";
+import { buildToolDiffPreview, toolActionLabel, toolGroupSummary, toolKind, type ToolKind } from "./toolActivityModel";
 
 interface ConversationTimelineProps {
   messages: ChatMessage[];
@@ -455,46 +459,49 @@ const TurnCopyAction = memo(function TurnCopyAction({ text }: { text: string }) 
 
 const ToolGroup = memo(function ToolGroup({ messages }: { messages: ChatMessage[] }) {
   const [open, setOpen] = useState(messages.length === 1);
+  const [hasOpened, setHasOpened] = useState(messages.length === 1);
   const single = messages.length === 1;
   const running = messages.some((message) => message.status === "running");
   const pending = messages.some((message) => !message.status || message.status === "pending");
-  const failed = messages.some((message) => message.status === "failed");
   const cancelled = messages.some((message) => message.status === "cancelled");
-  const names = [...new Set(messages.map((message) => message.toolName?.trim()).filter(Boolean))] as string[];
-  const status = running ? "running" : failed ? "failed" : pending ? "pending" : cancelled ? "cancelled" : "completed";
-  const summary = toolGroupLabel(names, messages.length, status);
+  const status = running ? "running" : pending ? "pending" : cancelled ? "cancelled" : "completed";
+  const summary = toolGroupSummary(messages, status);
 
   return (
     <section className="timeline-tool-group" data-tool-count={messages.length} data-single={single || undefined}>
       <details
         open={single || open}
-        onToggle={(event) => setOpen(event.currentTarget.open)}
+        onToggle={(event) => {
+          setOpen(event.currentTarget.open);
+          if (event.currentTarget.open) setHasOpened(true);
+        }}
         data-status={status}
-        aria-busy={running}
+        aria-busy={running || pending}
       >
         <summary
           className="timeline-tool-group-summary"
           hidden={single}
+          aria-expanded={single || open}
           onClick={(event) => {
             event.preventDefault();
+            setHasOpened(true);
             setOpen((current) => !current);
           }}
         >
           <span className="timeline-tool-group-icon" aria-hidden="true">
-            <ToolGroupIcon running={running} failed={failed} cancelled={cancelled} />
+            <ToolIcon kind={toolKind(messages[0]?.toolName)} />
           </span>
           <span className="timeline-tool-group-summary-text" title={summary}>
             {summary}
           </span>
-          <span className="timeline-tool-group-chevron" aria-hidden="true" />
+          <ChevronRight className="timeline-tool-group-chevron" size={14} aria-hidden="true" />
+          {running && <LoaderCircle className="timeline-tool-progress spin" size={12} aria-label="执行中" />}
         </summary>
-        {(single || open) && (
-          <div className="timeline-tool-group-body">
+        {(single || open || hasOpened) && <div className="timeline-tool-group-body" hidden={!single && !open}>
             {messages.map((message) => (
               <ToolDetailRow key={message.id} message={message} />
             ))}
-          </div>
-        )}
+        </div>}
       </details>
     </section>
   );
@@ -503,33 +510,42 @@ const ToolGroup = memo(function ToolGroup({ messages }: { messages: ChatMessage[
 function ToolDetailRow({ message }: { message: ChatMessage }) {
   const status = message.status ?? "pending";
   const [open, setOpen] = useState(false);
+  const kind = toolKind(message.toolName);
+  const diff = useMemo(() => buildToolDiffPreview(message), [message.toolName, message.toolInput, message.status]);
   const legacyOutput = message.content.trim()
     ? ({ text: message.content, format: "text", truncated: false } satisfies ToolDisplayValue)
     : undefined;
   const output = message.toolOutput ?? legacyOutput;
   const hasDetails = Boolean(message.toolInput || output);
   const inputSummary = toolDisplaySummary(message.toolInput);
+  const fileAction = kind === "edit" || kind === "write" || kind === "read";
+  const fullTarget = diff?.path ?? inputSummary;
+  const target = fileAction && fullTarget ? fullTarget.split(/[\\/]/).pop() || fullTarget : fullTarget;
+  const action = toolActionLabel(kind, status);
   const summary = (
     <>
       <span className="timeline-tool-icon" aria-hidden="true">
-        <ToolIcon status={status} />
+        <ToolIcon kind={kind} />
       </span>
       <span className="timeline-tool-copy">
         <span className="timeline-tool-heading">
-          <strong className="timeline-tool-name" title={message.toolName ?? "tool"}>
-            {message.toolName ?? "tool"}
-          </strong>
-          {inputSummary && (
-            <span className="timeline-tool-summary" title={inputSummary}>
-              {inputSummary}
+          <span className="timeline-tool-name" title={message.toolName ?? "tool"}>
+            {action}{kind === "integration" ? " " + (message.toolName ?? "工具") : ""}
+          </span>
+          {target && (
+            <span className="timeline-tool-summary" data-file={fileAction || undefined} title={fullTarget ?? undefined}>
+              {target}
             </span>
           )}
         </span>
-        <small className="timeline-tool-status" aria-live="polite">
+        {diff?.stats && <span className="timeline-tool-change-count" aria-label={`新增 ${diff.stats.additions} 行，删除 ${diff.stats.deletions} 行`}>+{diff.stats.additions} -{diff.stats.deletions}</span>}
+        <small className="timeline-tool-status" data-quiet={status === "completed" || status === "running" || status === "pending" || undefined} aria-live="polite">
           {toolStatusLabel(status)}
         </small>
       </span>
-      {hasDetails && <span className="timeline-tool-chevron" aria-hidden="true" />}
+      {hasDetails && <ChevronRight className="timeline-tool-chevron" size={14} aria-hidden="true" />}
+      {status === "running" && <LoaderCircle className="timeline-tool-progress spin" size={12} aria-hidden="true" />}
+      {status === "pending" && <span className="timeline-tool-pending-dot" aria-hidden="true" />}
     </>
   );
 
@@ -554,6 +570,7 @@ function ToolDetailRow({ message }: { message: ChatMessage }) {
       onToggle={(event) => setOpen(event.currentTarget.open)}
     >
       <summary
+        aria-expanded={open}
         onClick={(event) => {
           event.preventDefault();
           setOpen((current) => !current);
@@ -567,8 +584,22 @@ function ToolDetailRow({ message }: { message: ChatMessage }) {
           role="region"
           aria-label={(message.toolName ?? "tool") + " 调用详情"}
         >
-          {message.toolInput && <ToolPayloadPanel label="调用参数" payload={message.toolInput} />}
-          {output && <ToolPayloadPanel label="执行结果" payload={output} />}
+          {diff ? (
+            <>
+              <ToolDiffPreview preview={diff} />
+              <details className="timeline-tool-raw">
+                <summary>查看调用参数与结果</summary>
+                {message.toolInput && <ToolPayloadPanel label="调用参数" payload={message.toolInput} />}
+                {output && <ToolPayloadPanel label="执行结果" payload={output} />}
+              </details>
+            </>
+          ) : (
+            <>
+              {(kind === "edit" || kind === "write") && <p className="timeline-tool-diff-note">未提供完整变更片段，显示原始调用详情。</p>}
+              {message.toolInput && <ToolPayloadPanel label="调用参数" payload={message.toolInput} />}
+              {output && <ToolPayloadPanel label="执行结果" payload={output} />}
+            </>
+          )}
         </div>
       )}
     </details>
@@ -665,28 +696,9 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function ToolGroupIcon({
-  running,
-  failed,
-  cancelled,
-}: {
-  running: boolean;
-  failed: boolean;
-  cancelled: boolean;
-}) {
-  if (running) return <LoaderCircle className="spin" size={14} />;
-  if (failed) return <CircleX size={14} />;
-  if (cancelled) return <Square size={13} />;
-  return <Wrench size={14} />;
-}
-
-function ToolIcon({ status }: { status: TimelineStatus }) {
-  if (status === "pending") return <Circle size={14} />;
-  if (status === "running") return <LoaderCircle className="spin" size={14} />;
-  if (status === "failed") return <CircleX size={14} />;
-  if (status === "cancelled") return <Square size={13} />;
-  if (status === "completed") return <CheckCircle2 size={14} />;
-  return <Wrench size={14} />;
+function ToolIcon({ kind }: { kind: ToolKind }) {
+  const Icon = { command: SquareTerminal, read: FileText, edit: Pencil, write: Pencil, search: Search, fetch: Globe, integration: Waypoints }[kind];
+  return <Icon size={16} strokeWidth={1.5} />;
 }
 
 function toolStatusLabel(status: TimelineStatus): string {
@@ -697,11 +709,6 @@ function toolStatusLabel(status: TimelineStatus): string {
     failed: "失败",
     cancelled: "已停止",
   }[status];
-}
-
-function toolGroupLabel(names: string[], count: number, status: TimelineStatus): string {
-  const prefix = { pending: "等待执行", running: "正在运行", completed: "已运行", failed: "执行失败", cancelled: "已停止" }[status];
-  return prefix + " " + count + " 个工具 · " + names.join("、");
 }
 
 function groupTimelineMessages(messages: ChatMessage[]): TimelineGroup[] {

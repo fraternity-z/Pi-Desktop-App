@@ -73,14 +73,14 @@ describe("ConversationTimeline", () => {
   });
 
   it.each([
-    ["pending", "等待执行"], ["running", "正在运行"],
-    ["completed", "已运行"], ["failed", "执行失败"], ["cancelled", "已停止"],
-  ] as const)("工具组准确呈现 %s 状态", (status, label) => {
+    ["pending", "等待读取文件"], ["running", "正在读取文件"],
+    ["completed", "读取了文件"], ["failed", "读取了文件"], ["cancelled", "已停止读取文件"],
+  ] as const)("工具组在 %s 状态下概括动作，不汇总失败", (status, label) => {
     render(<ConversationTimeline messages={[
       { id: "one", role: "tool", toolName: "read", content: "", status },
       { id: "two", role: "tool", toolName: "read", content: "", status },
     ]} streaming={false} />);
-    expect(screen.getByText(label + " 2 个工具 · read")).toBeVisible();
+    expect(screen.getByText(label)).toBeVisible();
   });
 
   it("工具之后没有最终回复时，不把此前的进度说明移到时间线末尾", async () => {
@@ -117,7 +117,7 @@ describe("ConversationTimeline", () => {
     expect(screen.getByText("本次任务没有返回文本。")).toBeInTheDocument();
     expect(screen.queryByText("思考过程")).not.toBeInTheDocument();
     expect(screen.getByText("正在分析依赖")).toBeVisible();
-    const toolGroup = screen.getByText("正在运行 5 个工具 · list、read、search、build、test").closest("details");
+    const toolGroup = screen.getByText("正在读取文件、正在搜索内容、正在调用build、正在调用test").closest("details");
     expect(toolGroup).not.toBeNull();
     expect(toolGroup).not.toHaveAttribute("open");
     fireEvent.click(toolGroup!.querySelector("summary")!);
@@ -267,7 +267,7 @@ describe("ConversationTimeline", () => {
     const group = container.querySelector(".timeline-tool-group details") as HTMLDetailsElement;
     expect(group).toHaveAttribute("aria-busy", "true");
     expect(group.querySelector("summary")).not.toBeVisible();
-    expect(screen.getByText("read")).toBeVisible();
+    expect(screen.getByText("正在读取")).toBeVisible();
     expect(group).toHaveAttribute("open");
     const tool = container.querySelector(".timeline-tool") as HTMLDetailsElement;
     fireEvent.click(tool.querySelector("summary")!);
@@ -316,7 +316,7 @@ describe("ConversationTimeline", () => {
     expect(screen.getByRole("region", { name: "read 调用详情" })).toBeInTheDocument();
     expect(screen.getByText("调用参数")).toBeInTheDocument();
     expect(screen.getByText("执行结果")).toBeInTheDocument();
-    expect(screen.getByText("C:\\work\\README.md")).toBeInTheDocument();
+    expect(screen.getByTitle("C:\\work\\README.md")).toHaveTextContent("README.md");
     expect(screen.getByText("读取完成")).toBeInTheDocument();
     expect(screen.getByText("已截断")).toBeInTheDocument();
     expect(screen.queryByText("tool-1")).not.toBeInTheDocument();
@@ -532,7 +532,7 @@ describe("ConversationTimeline", () => {
     expect(summary).toHaveAccessibleName("用时 2秒，展开处理过程");
     expect(screen.getByText("最终结论")).toBeVisible();
     expect(screen.queryByText("正在检查相关模块")).not.toBeInTheDocument();
-    expect(screen.queryByText("read")).not.toBeInTheDocument();
+    expect(screen.queryByText("读取了")).not.toBeInTheDocument();
     expect(screen.queryByText("中间系统状态")).not.toBeInTheDocument();
     expect(process.querySelector(".markdown-content")).not.toBeInTheDocument();
 
@@ -541,7 +541,7 @@ describe("ConversationTimeline", () => {
     expect(summary).toHaveAttribute("aria-expanded", "true");
     expect(summary).toHaveAccessibleName("用时 2秒，折叠处理过程");
     expect(screen.getByText("正在检查相关模块")).toBeVisible();
-    expect(screen.getByText("read")).toBeVisible();
+    expect(screen.getByText("读取了")).toBeVisible();
     expect(screen.getByText("中间系统状态")).toBeVisible();
 
     const tool = container.querySelector("details.timeline-tool")!;

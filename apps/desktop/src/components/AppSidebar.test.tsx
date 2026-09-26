@@ -95,8 +95,12 @@ describe("AppSidebar", () => {
     expect(await screen.findByText("检查类型错误")).toBeInTheDocument();
     expect(screen.getByTitle("C:\\projects\\alpha")).toHaveAttribute("aria-current", "page");
     expect(screen.getByLabelText("正在运行")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "折叠alpha" }).querySelector("svg"))
+      .toHaveClass("lucide-folder-open");
     fireEvent.click(screen.getByRole("button", { name: "折叠alpha" }));
     expect(screen.queryByText("检查类型错误")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "展开alpha" }).querySelector("svg"))
+      .toHaveClass("lucide-folder");
     fireEvent.click(screen.getByRole("button", { name: "展开alpha" }));
     fireEvent.click(await screen.findByTitle("检查类型错误"));
     expect(props.onSelectSession).toHaveBeenCalledWith(savedSession);

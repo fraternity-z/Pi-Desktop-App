@@ -4654,10 +4654,11 @@ body {
   display: grid;
   min-width: 0;
   height: 36px;
-  grid-template-columns: 22px minmax(0, 1fr) 28px;
+  grid-template-columns: minmax(0, 1fr) 28px;
   align-items: center;
   border-radius: 6px;
   background: transparent;
+  cursor: pointer;
 }
 
 .app-sidebar:not(.settings-sidebar) .project-row:hover,
@@ -4667,11 +4668,6 @@ body {
 
 .app-sidebar:not(.settings-sidebar) .project-row[data-active="true"] {
   background: var(--pix-rail-selected);
-}
-
-.app-sidebar:not(.settings-sidebar) .project-toggle {
-  width: 22px;
-  color: #858585;
 }
 
 .app-sidebar:not(.settings-sidebar) .project-select {
@@ -4684,7 +4680,6 @@ body {
   border: 0;
   background: transparent;
   color: #343434;
-  cursor: pointer;
   text-align: left;
 }
 
@@ -8698,5 +8693,135 @@ samp,
     width: 100%;
     justify-content: center;
     margin-left: 0;
+  }
+}
+
+/* Codex-style conversation transcript: spacious assistant prose, compact activity rows,
+   and a softly surfaced user message. Keep the existing semantic structure and states. */
+.message-stream,
+.composer-dock {
+  width: min(736px, calc(100% - 64px));
+}
+
+.message-stream {
+  padding-top: 29px;
+  padding-bottom: 38px;
+}
+
+.timeline-turn + .timeline-turn {
+  margin-top: 34px;
+}
+
+.timeline-user {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 22px;
+}
+
+.message-stream .timeline-assistant {
+  margin-bottom: 18px;
+}
+
+.user-message-bubble {
+  max-width: min(70%, 680px);
+  padding: 14px 20px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--user-bubble);
+  line-height: 1.6;
+}
+
+.assistant-message-content {
+  font-size: calc(var(--app-ui-font-size) + 2px);
+  line-height: 1.68;
+}
+
+.assistant-message-content .markdown-content p,
+.assistant-message-content .markdown-content ul,
+.assistant-message-content .markdown-content ol,
+.assistant-message-content .markdown-content blockquote,
+.assistant-message-content .markdown-content table {
+  margin-bottom: 14px;
+}
+
+.message-stream .assistant-message-content .markdown-content > p {
+  margin-bottom: 18px;
+}
+
+.assistant-message-content .markdown-content li + li {
+  margin-top: 5px;
+}
+
+.assistant-message-content .markdown-content code {
+  padding: 2px 6px;
+  border-radius: 5px;
+}
+
+.conversation-run-timer {
+  min-height: 27px;
+  padding-bottom: 7px;
+  border-bottom-color: color-mix(in srgb, var(--line) 78%, transparent);
+  color: var(--muted);
+  font-size: calc(var(--app-ui-font-size) + 1px);
+}
+
+.conversation-process-body {
+  margin: 11px 0 19px;
+}
+
+.message-stream .timeline-tool-group,
+.message-stream .timeline-reasoning,
+.message-stream .timeline-thinking-inline {
+  margin-bottom: 16px;
+}
+
+.message-stream .timeline-tool-group-summary,
+.message-stream .timeline-tool > summary,
+.message-stream .timeline-tool:not(details),
+.message-stream .timeline-reasoning > summary,
+.message-stream .timeline-thinking-inline {
+  min-height: 24px;
+  font-size: calc(var(--app-ui-font-size) + 1px);
+  line-height: 1.55;
+}
+
+.message-stream .timeline-tool-group-summary,
+.message-stream .timeline-tool > summary,
+.message-stream .timeline-tool:not(details),
+.message-stream .timeline-reasoning > summary {
+  color: var(--muted);
+}
+
+.message-stream .timeline-tool-group-summary:hover,
+.message-stream .timeline-tool-group-summary:focus-visible,
+.message-stream .timeline-tool > summary:hover,
+.message-stream .timeline-tool > summary:focus-visible,
+.message-stream .timeline-reasoning > summary:hover,
+.message-stream .timeline-reasoning > summary:focus-visible {
+  color: var(--text);
+}
+
+.message-stream .timeline-tool-failed .timeline-tool-status,
+.message-stream .timeline-tool-group:has([data-status="failed"]) .timeline-tool-group-summary {
+  color: var(--danger);
+}
+
+.message-stream .timeline-tool-panel {
+  margin-top: 6px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-left: 2px solid color-mix(in srgb, var(--line-strong) 70%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 76%, transparent);
+}
+
+@media (max-width: 640px) {
+  .message-stream,
+  .composer-dock {
+    width: calc(100% - 28px);
+  }
+
+  .user-message-bubble {
+    max-width: 88%;
   }
 }

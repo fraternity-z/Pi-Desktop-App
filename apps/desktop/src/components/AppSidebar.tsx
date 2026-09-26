@@ -10,6 +10,7 @@ import {
   ExternalLink,
   Folder,
   FolderGit2,
+  FolderOpen,
   FolderPlus,
   Layers3,
   List,
@@ -446,38 +447,35 @@ export function AppSidebar(props: AppSidebarProps) {
         <div
           className="project-row"
           data-active={samePath(project.cwd, activeCwd) || undefined}
+          role="button"
+          tabIndex={0}
+          aria-label={`${expanded ? "折叠" : "展开"}${project.name}`}
+          aria-expanded={expanded}
+          onClick={() => sidebar.toggleExpandedProject(project.cwd)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            sidebar.toggleExpandedProject(project.cwd);
+          }}
           onContextMenu={(event) => openContextMenu(event, { kind: "project", cwd: project.cwd })}
         >
-          <button
-            className="project-toggle"
-            type="button"
-            aria-label={`${expanded ? "折叠" : "展开"}${project.name}`}
-            aria-expanded={expanded}
-            onClick={() => sidebar.toggleExpandedProject(project.cwd)}
-          >
-            {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          </button>
-          <button
+          <div
             className="project-select"
-            type="button"
-            disabled={switchingDisabled}
             aria-current={samePath(project.cwd, activeCwd) ? "page" : undefined}
             title={project.cwd}
-            onClick={() => {
-              const recent = projectSessions[0] ?? project.sessions[0];
-              if (recent) chooseSession(recent);
-              else onNewSession(project.cwd);
-            }}
           >
-            <Folder size={16} />
+            {expanded ? <FolderOpen size={16} /> : <Folder size={16} />}
             <span>{project.name}</span>
-          </button>
+          </div>
           <button
             className="sidebar-row-menu"
             type="button"
             aria-label={`${project.name}更多操作`}
             title="更多"
-            onClick={(event) => openMenuFromButton(event, { kind: "project", cwd: project.cwd })}
+            onClick={(event) => {
+              event.stopPropagation();
+              openMenuFromButton(event, { kind: "project", cwd: project.cwd });
+            }}
           >
             <Ellipsis size={15} />
           </button>

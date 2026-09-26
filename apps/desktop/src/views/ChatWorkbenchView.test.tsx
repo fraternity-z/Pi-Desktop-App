@@ -1265,7 +1265,53 @@ describe("ChatWorkbenchView", () => {
     expect(image).toHaveAttribute("src", "data:image/png;base64,AA==");
   });
 
-  it("从侧栏进入插件与资源视图并保持数据计数同步", async () => {
+  it("后台加载尚未完成时进入插件页面不会丢失资源计数", async () => {
+    let releaseResources!: (value: Awaited<ReturnType<typeof listAgentResources>>) => void;
+    vi.mocked(listAgentResources).mockReturnValueOnce(new Promise((resolve) => { releaseResources = resolve; }));
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    finishStartupWriting();
+    await waitFor(() => expect(listAgentResources).toHaveBeenCalledOnce());
+    expect(screen.queryByRole("dialog", { name: "PI Desktop 启动界面" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "资源" })).toHaveTextContent("…");
+    fireEvent.click(screen.getByRole("button", { name: "插件" }));
+    expect(await screen.findByRole("heading", { name: "插件" })).toBeInTheDocument();
+    expect(listAgentPackages).toHaveBeenCalledOnce();
+    await act(async () => {
+      releaseResources([{ kind: "skill", name: "review", path: "C:/agent/skills/review/SKILL.md" }]);
+    });
+    await waitFor(() => expect(listAgentPackages).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: "资源" })).toHaveTextContent("1");
+    expect(listAgentResources).toHaveBeenCalledOnce();
+  });
+
+  it("后台目录失败不会遮挡首页，进入管理页可以重试", async () => {
+    vi.mocked(listAgentResources).mockRejectedValueOnce(new Error("unavailable"));
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    finishStartupWriting();
+    await waitFor(() => expect(screen.getByRole("button", { name: "资源" })).toHaveTextContent("—"));
+    expect(screen.queryByRole("dialog", { name: "PI Desktop 启动界面" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "新建会话" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "资源" }));
+    await waitFor(() => expect(listAgentResources).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: "资源" })).toHaveTextContent("0");
+  });
+
+  it("进入不同工作区会重新预加载当前工作区的目录", async () => {
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    finishStartupWriting();
+    await waitFor(() => expect(listAgentResources).toHaveBeenCalledOnce());
+    expect(listAgentResources).toHaveBeenCalledWith(String.raw`C:\Users\me\Documents\Pix\conversations`);
+    await addProject("C:/work");
+    await waitFor(() => expect(listAgentResources).toHaveBeenCalledWith("C:/work"));
+    expect(listAgentPackages).toHaveBeenCalledWith("C:/work");
+    expect(listAgentResources).toHaveBeenCalledTimes(2);
+    expect(checkAgentPackageUpdates).not.toHaveBeenCalled();
+  });
+
+  it("进入首页即后台加载计数，打开插件与资源视图仍可刷新", async () => {
     vi.mocked(listAgentPackages).mockResolvedValue([
       {
         source: "npm:@example/pi-extension",
@@ -1287,22 +1333,32 @@ describe("ChatWorkbenchView", () => {
     await screen.findByRole("status", { name: "状态正常" });
     expect(listAgentPackages).not.toHaveBeenCalled();
     expect(listAgentResources).not.toHaveBeenCalled();
+    finishStartupWriting();
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "PI Desktop 启动界面" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: "资源" })).toHaveTextContent("1"));
+    expect(screen.getByRole("button", { name: "插件" })).toHaveTextContent("1");
+    expect(screen.getByRole("heading", { name: "会话工作台" })).toBeInTheDocument();
+    expect(listAgentPackages).toHaveBeenCalledOnce();
+    expect(listAgentResources).toHaveBeenCalledOnce();
+    expect(checkAgentPackageUpdates).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "插件" }));
     expect(await screen.findByRole("heading", { name: "插件" })).toBeInTheDocument();
     expect(await screen.findByText("@example/pi-extension")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "插件" })).toHaveTextContent("1");
-    expect(listAgentPackages).toHaveBeenCalledOnce();
-    expect(listAgentResources).not.toHaveBeenCalled();
+    expect(listAgentPackages).toHaveBeenCalledTimes(2);
+    expect(listAgentResources).toHaveBeenCalledOnce();
 
     fireEvent.click(screen.getByRole("button", { name: "资源" }));
     expect(await screen.findByRole("heading", { name: "资源" })).toBeInTheDocument();
     expect(await screen.findByText("项目检查")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "资源" })).toHaveTextContent("1");
-    expect(listAgentResources).toHaveBeenCalledOnce();
+    expect(listAgentResources).toHaveBeenCalledTimes(2);
 
     fireEvent.click(screen.getByRole("button", { name: "返回对话" }));
     expect(screen.getByRole("heading", { name: "会话工作台" })).toBeInTheDocument();
+    expect(listAgentPackages).toHaveBeenCalledTimes(2);
+    expect(listAgentResources).toHaveBeenCalledTimes(2);
   });
 
   it("从侧栏进入设置、切换分类、保存偏好并返回工作台", async () => {

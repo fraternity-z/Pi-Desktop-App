@@ -8,7 +8,8 @@ describe("SessionLoading", () => {
     const { container } = render(<SessionLoading />);
     expect(screen.getByRole("status", { name: "正在切换会话" })).toHaveAttribute("aria-live", "polite");
     expect(container.firstChild).toHaveAttribute("aria-busy", "true");
-    expect(container.querySelector(".conversation-loading-skeleton")).toHaveAttribute("aria-hidden", "true");
+    expect(container.querySelector(".conversation-loading-orbit")).toHaveAttribute("aria-hidden", "true");
+    expect(container.querySelector(".conversation-loading-skeleton")).not.toBeInTheDocument();
     expect(container.querySelectorAll("button, a, input, [tabindex]")).toHaveLength(0);
   });
 });

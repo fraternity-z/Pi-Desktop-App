@@ -57,9 +57,13 @@ export function useAgentEcosystem() {
     }
   }, []);
 
-  const refresh = useCallback(async (cwd: string, catalog: EcosystemCatalog) => {
+  const refresh = useCallback(async (cwd: string, catalog: EcosystemCatalog | "all") => {
     const workspace = normalizeWorkspace(cwd);
     const request = ++requestSequence.current;
+    if (activeWorkspace.current !== workspace) {
+      setPackages([]);
+      setResources([]);
+    }
     activeWorkspace.current = workspace;
     operationSequence.current += 1;
     setOperation(null);
@@ -70,13 +74,19 @@ export function useAgentEcosystem() {
     try {
       let nextPackages: AgentPackageSummary[] | null = null;
       let nextResources: AgentResourceSummary[] | null = null;
-      if (catalog === "packages") nextPackages = await listAgentPackages(cwd);
+      if (catalog === "all") {
+        [nextPackages, nextResources] = await Promise.all([
+          listAgentPackages(cwd),
+          listAgentResources(cwd),
+        ]);
+      } else if (catalog === "packages") nextPackages = await listAgentPackages(cwd);
       else nextResources = await listAgentResources(cwd);
       if (request !== requestSequence.current || activeWorkspace.current !== workspace) return false;
       if (nextPackages) setPackages(nextPackages);
       if (nextResources) setResources(nextResources);
       setPhase("ready");
-      if (nextPackages?.length) await checkUpdates(cwd);
+      // Home preloading reads local inventories only; update checks belong to the package page.
+      if (catalog === "packages" && nextPackages?.length) await checkUpdates(cwd);
       return true;
     } catch (cause) {
       if (request !== requestSequence.current || activeWorkspace.current !== workspace) return false;
@@ -84,7 +94,9 @@ export function useAgentEcosystem() {
       setError(
         formatEcosystemError(
           cause,
-          catalog === "packages"
+          catalog === "all"
+            ? "ECOSYSTEM_LIST_FAILED: 无法读取插件与资源"
+            : catalog === "packages"
             ? "PACKAGE_LIST_FAILED: 无法读取插件"
             : "RESOURCE_LIST_FAILED: 无法读取资源",
         ),

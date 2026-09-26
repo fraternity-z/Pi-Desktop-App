@@ -11,3 +11,4 @@ src-tauri/resources/pi-bridge/pi-runtime/
 .ccw/
 .workflow/
 output/
+.playwright-cli/

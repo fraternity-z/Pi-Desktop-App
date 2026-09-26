@@ -50,6 +50,63 @@ describe("useAgentEcosystem", () => {
     expect(agentIpc.listAgentPackages).toHaveBeenCalledOnce();
   });
 
+  it("首页并行预加载两个目录，不触发联网检查更新", async () => {
+    let releasePackages!: (value: Awaited<ReturnType<typeof agentIpc.listAgentPackages>>) => void;
+    vi.mocked(agentIpc.listAgentPackages).mockReturnValueOnce(new Promise((resolve) => { releasePackages = resolve; }));
+    vi.mocked(agentIpc.listAgentResources).mockResolvedValue([
+      { kind: "skill", name: "review", path: "C:/agent/skills/review/SKILL.md" },
+    ]);
+    const { result } = renderHook(() => useAgentEcosystem());
+    let loading!: Promise<boolean>;
+    act(() => { loading = result.current.refresh("C:/work", "all"); });
+    expect(result.current.phase).toBe("loading");
+    expect(agentIpc.listAgentPackages).toHaveBeenCalledWith("C:/work");
+    expect(agentIpc.listAgentResources).toHaveBeenCalledWith("C:/work");
+    await act(async () => {
+      releasePackages([{ source: "npm:pi-test", scope: "global", kind: "npm", filtered: false, enabled: true }]);
+      expect(await loading).toBe(true);
+    });
+    expect(result.current.phase).toBe("ready");
+    expect(result.current.packages).toHaveLength(1);
+    expect(result.current.resources).toHaveLength(1);
+    expect(agentIpc.checkAgentPackageUpdates).not.toHaveBeenCalled();
+  });
+
+  it("工作区切换后清空旧计数，忽略过期的后台结果", async () => {
+    const oldPackage = { source: "npm:old", scope: "global", kind: "npm", filtered: false, enabled: true } as const;
+    vi.mocked(agentIpc.listAgentPackages).mockResolvedValue([oldPackage]);
+    vi.mocked(agentIpc.listAgentResources).mockResolvedValue([{ kind: "skill", name: "old", path: "C:/old/SKILL.md" }]);
+    const { result } = renderHook(() => useAgentEcosystem());
+    await act(() => result.current.refresh("C:/old", "all"));
+    let releasePackages!: (value: Awaited<ReturnType<typeof agentIpc.listAgentPackages>>) => void;
+    vi.mocked(agentIpc.listAgentPackages).mockReturnValueOnce(new Promise((resolve) => { releasePackages = resolve; }));
+    let stale!: Promise<boolean>;
+    act(() => { stale = result.current.refresh("C:/pending", "all"); });
+    expect(result.current.packages).toEqual([]);
+    expect(result.current.resources).toEqual([]);
+    vi.mocked(agentIpc.listAgentPackages).mockResolvedValue([]);
+    vi.mocked(agentIpc.listAgentResources).mockResolvedValue([]);
+    await act(() => result.current.refresh("C:/new", "all"));
+    await act(async () => { releasePackages([oldPackage]); expect(await stale).toBe(false); });
+    expect(result.current.phase).toBe("ready");
+    expect(result.current.packages).toEqual([]);
+    expect(result.current.resources).toEqual([]);
+  });
+
+  it.each(["packages", "resources"] as const)("后台 %s 读取失败时公开稳定错误且可重试", async (catalog) => {
+    vi.mocked(agentIpc.listAgentPackages).mockResolvedValue([]);
+    vi.mocked(agentIpc.listAgentResources).mockResolvedValue([]);
+    const failed = catalog === "packages" ? agentIpc.listAgentPackages : agentIpc.listAgentResources;
+    vi.mocked(failed).mockRejectedValueOnce(new Error("private diagnostic"));
+    const { result } = renderHook(() => useAgentEcosystem());
+    await act(async () => { expect(await result.current.refresh("C:/work", "all")).toBe(false); });
+    expect(result.current.phase).toBe("error");
+    expect(result.current.error).toBe("ECOSYSTEM_LIST_FAILED: 无法读取插件与资源");
+    await act(async () => { expect(await result.current.refresh("C:/work", "all")).toBe(true); });
+    expect(result.current.phase).toBe("ready");
+    expect(result.current.error).toBeNull();
+  });
+
   it("插件变更不重复刷新资源并公开稳定错误", async () => {
     vi.mocked(agentIpc.installAgentPackage).mockResolvedValue([]);
     vi.mocked(agentIpc.listAgentResources).mockResolvedValue([]);

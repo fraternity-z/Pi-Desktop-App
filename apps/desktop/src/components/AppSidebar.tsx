@@ -652,7 +652,7 @@ export function AppSidebar(props: AppSidebarProps) {
         >
           <Package size={17} />
           <span>插件</span>
-          <small>{ecosystemPhase === "loading" ? "…" : packageCount}</small>
+          <small>{ecosystemPhase === "idle" || ecosystemPhase === "loading" ? "…" : ecosystemPhase === "error" ? "—" : packageCount}</small>
         </button>
         <button
           type="button"
@@ -663,7 +663,7 @@ export function AppSidebar(props: AppSidebarProps) {
         >
           <Layers3 size={17} />
           <span>资源</span>
-          <small>{ecosystemPhase === "loading" ? "…" : resourceCount}</small>
+          <small>{ecosystemPhase === "idle" || ecosystemPhase === "loading" ? "…" : ecosystemPhase === "error" ? "—" : resourceCount}</small>
         </button>
       </nav>
 

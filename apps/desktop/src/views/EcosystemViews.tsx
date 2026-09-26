@@ -10,7 +10,6 @@ import {
   RefreshCw,
   Search,
   Trash2,
-  Upload,
 } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 
@@ -270,18 +269,21 @@ export function PackageManagerView({
                         <span aria-hidden="true" />
                       </label>
                       <button
-                        className="icon-button"
+                        className="icon-button package-update-button"
                         type="button"
                         aria-label={`更新${packageDisplayName(item.source)}`}
-                        title="更新"
+                        aria-busy={itemBusy && ecosystem.operation?.startsWith("update:") || undefined}
+                        data-update-available={updateSources.has(`${item.scope}:${item.source}`) || undefined}
+                        title={item.kind === "local" ? "本地插件无需更新" : "更新插件"}
                         disabled={busy || item.kind === "local"}
                         onClick={() => void ecosystem.updatePackage(cwd, item.source)}
                       >
-                        {itemBusy && ecosystem.operation?.startsWith("update:") ? (
-                          <LoaderCircle className="spin" size={15} />
-                        ) : (
-                          <Upload size={15} />
-                        )}
+                        <RefreshCw
+                          className={itemBusy && ecosystem.operation?.startsWith("update:") ? "spin" : undefined}
+                          size={16}
+                          strokeWidth={1.8}
+                          aria-hidden="true"
+                        />
                       </button>
                       <button
                         className="icon-button"

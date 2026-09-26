@@ -2935,43 +2935,49 @@ body {
 }
 
 .conversation-loading-content {
-  width: min(440px, 100%);
+  display: grid;
+  justify-items: center;
+  gap: 16px;
   min-width: 0;
-  animation: session-loading-reveal 180ms 120ms ease-out both;
+  animation: session-loading-reveal 240ms 160ms ease-out both;
 }
 
-.conversation-loading-skeleton {
-  display: grid;
-  gap: 26px;
-  margin-top: 32px;
+.conversation-loading-orbit {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  color: var(--focus);
 }
 
-.conversation-loading-prompt {
-  width: 42%;
-  height: 32px;
-  justify-self: end;
-  border-radius: var(--radius-ui);
-  background: color-mix(in srgb, var(--muted) 9%, transparent);
+.conversation-loading-orbit > span {
+  position: absolute;
+  inset: 0;
+  border: 1.5px solid color-mix(in srgb, currentColor 16%, transparent);
+  border-radius: 50%;
 }
 
-.conversation-loading-response {
-  display: grid;
-  gap: 10px;
+.conversation-loading-orbit > span:first-child {
+  border-top-color: currentColor;
+  border-right-color: color-mix(in srgb, currentColor 48%, transparent);
+  animation: spin 1.2s linear infinite;
 }
 
-.conversation-loading-response > span {
-  width: 88%;
-  height: 7px;
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--muted) 10%, transparent);
+.conversation-loading-orbit > span:last-child {
+  inset: 13px;
+  border: 0;
+  background: currentColor;
+  animation: session-loading-breathe 1.8s ease-in-out infinite;
 }
 
-.conversation-loading-response > span:nth-child(2) {
-  width: 100%;
+.conversation-loading-label {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
-.conversation-loading-response > span:nth-child(3) {
-  width: 62%;
+@keyframes session-loading-breathe {
+  0%, 100% { opacity: 0.4; transform: scale(0.75); }
+  50% { opacity: 0.85; transform: scale(1); }
 }
 
 @keyframes session-loading-reveal {
@@ -2979,9 +2985,31 @@ body {
   to { opacity: 1; }
 }
 
+.thread-body:not([data-session-loading="true"]) {
+  animation: session-content-reveal 200ms ease-out;
+}
+
+:root[data-reduce-motion="true"] .conversation-loading-content,
+:root[data-reduce-motion="true"] .conversation-loading-orbit > span,
+:root[data-reduce-motion="true"] .thread-body:not([data-session-loading="true"]),
+:root[data-reduce-motion="true"] .package-update-button svg {
+  animation: none;
+  transition: none;
+}
+
+@keyframes session-content-reveal {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .conversation-loading-content {
+  .conversation-loading-content,
+  .conversation-loading-orbit > span:first-child,
+  .conversation-loading-orbit > span:last-child,
+  .package-update-button svg,
+  .thread-body:not([data-session-loading="true"]) {
     animation: none;
+    transition: none;
   }
 }
 
@@ -5823,6 +5851,25 @@ body {
 .resource-row .icon-button:not(:disabled):hover {
   background: #f2f2f2;
   color: #252525;
+}
+
+.package-update-button svg {
+  transition: transform 220ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .package-update-button svg {
+    transition: none;
+  }
+}
+
+.package-update-button:not(:disabled):hover svg {
+  transform: rotate(45deg);
+}
+
+.package-row .package-update-button[data-update-available="true"] {
+  color: var(--focus);
+  background: color-mix(in srgb, var(--focus) 8%, transparent);
 }
 
 .compact-switch {

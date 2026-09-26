@@ -1,18 +1,12 @@
-import { LoadingIndicator } from "./LoadingIndicator";
-
 export function SessionLoading() {
   return (
     <div className="conversation-loading" aria-busy="true">
-      <div className="conversation-loading-content">
-        <LoadingIndicator label="正在切换会话" />
-        <div className="conversation-loading-skeleton" aria-hidden="true">
-          <div className="conversation-loading-prompt" />
-          <div className="conversation-loading-response">
-            <span />
-            <span />
-            <span />
-          </div>
-        </div>
+      <div className="conversation-loading-content" role="status" aria-live="polite" aria-label="正在切换会话">
+        <span className="conversation-loading-orbit" aria-hidden="true">
+          <span />
+          <span />
+        </span>
+        <span className="conversation-loading-label">正在切换会话</span>
       </div>
     </div>
   );

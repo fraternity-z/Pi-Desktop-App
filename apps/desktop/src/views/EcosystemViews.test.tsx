@@ -60,6 +60,21 @@ function packageProps(ecosystem: EcosystemController) {
 }
 
 describe("EcosystemViews", () => {
+  it("更新中保持循环箭头并禁用重复操作", () => {
+    const props = packageProps(controller({ operation: "update:npm:pi-test" }));
+    const { rerender } = render(<PackageManagerView {...props} />);
+    const button = screen.getByRole("button", { name: "更新pi-test" });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-busy", "true");
+    expect(button.querySelector("svg")).toHaveClass("spin");
+    fireEvent.click(button);
+    expect(props.ecosystem.updatePackage).not.toHaveBeenCalled();
+    rerender(<PackageManagerView {...props} ecosystem={controller()} />);
+    expect(button).toBeEnabled();
+    expect(button).not.toHaveAttribute("aria-busy");
+    expect(button.querySelector("svg")).not.toHaveClass("spin");
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     Object.defineProperty(navigator, "clipboard", {
@@ -98,7 +113,10 @@ describe("EcosystemViews", () => {
     expect(ecosystem.checkUpdates).toHaveBeenCalledWith("C:\\work");
     expect(ecosystem.refresh).toHaveBeenCalledWith("C:\\work", "packages");
     expect(screen.getByText("可更新")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "更新pi-test-0" })).toHaveAttribute("data-update-available", "true");
+    expect(screen.getByRole("button", { name: "更新pi-test-0" }).querySelector(".lucide-refresh-cw")).toHaveAttribute("aria-hidden", "true");
     expect(screen.getByRole("button", { name: "更新pi-test-1" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "更新pi-test-1" })).toHaveAttribute("title", "本地插件无需更新");
 
     fireEvent.click(screen.getByRole("checkbox", { name: "停用pi-test-0" }));
     expect(ecosystem.setPackageEnabled).toHaveBeenCalledWith(

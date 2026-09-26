@@ -154,6 +154,8 @@ export function ChatWorkbenchView() {
   const projectDialogTrigger = useRef<HTMLElement | null>(null);
   const rightPanelTrigger = useRef<HTMLButtonElement | null>(null);
   const ecosystemRequestKey = useRef("");
+  const ecosystemWorkspace = useRef("");
+  const ecosystemPreload = useRef<Promise<boolean> | null>(null);
   const [atConversationBottom, setAtConversationBottom] = useState(true);
   const hasSession = session.sessionId !== null;
   const rightPanelEnabled =
@@ -364,16 +366,33 @@ export function ChatWorkbenchView() {
   }, [eventChannelReady, runtimeReady, session.sessionId]);
 
   useEffect(() => {
+    if (!runtimeReady || !eventChannelReady) {
+      ecosystemRequestKey.current = "";
+      ecosystemWorkspace.current = "";
+      ecosystemPreload.current = null;
+      return;
+    }
+    if (startupOverlayVisible || !managementCwd) return;
+    const workspace = normalizeComparablePath(managementCwd);
+    if (ecosystemWorkspace.current !== workspace) {
+      ecosystemWorkspace.current = workspace;
+      ecosystemRequestKey.current = `${activeView}:${workspace}`;
+      ecosystemPreload.current = ecosystem.refresh(managementCwd, "all");
+      return;
+    }
     if (activeView !== "packages" && activeView !== "resources") {
       ecosystemRequestKey.current = "";
       return;
     }
-    if (!runtimeReady || !eventChannelReady || !managementCwd) return;
-    const requestKey = `${activeView}:${normalizeComparablePath(managementCwd)}`;
+    const requestKey = `${activeView}:${workspace}`;
     if (ecosystemRequestKey.current === requestKey) return;
     ecosystemRequestKey.current = requestKey;
-    void ecosystem.refresh(managementCwd, activeView);
-  }, [activeView, ecosystem.refresh, eventChannelReady, managementCwd, runtimeReady]);
+    let cancelled = false;
+    void Promise.resolve(ecosystemPreload.current).then(() => {
+      if (!cancelled) void ecosystem.refresh(managementCwd, activeView);
+    });
+    return () => { cancelled = true; };
+  }, [activeView, ecosystem.refresh, eventChannelReady, managementCwd, runtimeReady, startupOverlayVisible]);
 
   useEffect(() => {
     if (!session.cwd) {
@@ -1116,7 +1135,7 @@ export function ChatWorkbenchView() {
             }}
           >
             <div className="thread-content-column-stack">
-              <div ref={conversationBody} className={`thread-body${hasSession && session.messages.length > 0 ? "" : " thread-body-empty"}`}>
+              <div ref={conversationBody} data-session-loading={session.phase === "creating" || undefined} className={`thread-body${hasSession && session.messages.length > 0 ? "" : " thread-body-empty"}`}>
                 {session.phase === "creating" ? (
                   <SessionLoading />
                 ) : !hasSession ? (

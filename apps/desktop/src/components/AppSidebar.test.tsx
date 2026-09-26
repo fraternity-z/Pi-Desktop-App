@@ -78,6 +78,17 @@ function sidebarProps(overrides: Partial<SidebarProps> = {}): SidebarProps {
 }
 
 describe("AppSidebar", () => {
+  it.each([
+    ["idle", "…"],
+    ["loading", "…"],
+    ["error", "—"],
+    ["ready", "0"],
+  ] as const)("目录状态为 %s 时不把未知数量显示为零", (ecosystemPhase, count) => {
+    render(<AppSidebar {...sidebarProps({ ecosystemPhase, packageCount: 0, resourceCount: 0 })} />);
+    expect(screen.getByRole("button", { name: "插件" }).querySelector("small")).toHaveTextContent(count);
+    expect(screen.getByRole("button", { name: "资源" }).querySelector("small")).toHaveTextContent(count);
+  });
+
   beforeEach(() => {
     window.localStorage.clear();
   });

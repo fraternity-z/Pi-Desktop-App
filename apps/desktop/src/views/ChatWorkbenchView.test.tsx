@@ -27,7 +27,7 @@ import {
   type AgentSession,
   updateAgentPackage,
 } from "../ipc/agent";
-import { selectProjectDirectory } from "../ipc/project";
+import { selectAttachmentFiles, selectProjectDirectory } from "../ipc/project";
 import {
   gitCommit,
   gitCreateBranch,
@@ -125,7 +125,7 @@ vi.mock("../ipc/agent", () => ({
     ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(value),
   updateAgentPackage: vi.fn(),
 }));
-vi.mock("../ipc/project", () => ({ selectProjectDirectory: vi.fn() }));
+vi.mock("../ipc/project", () => ({ selectProjectDirectory: vi.fn(), selectAttachmentFiles: vi.fn(), selectAttachmentDirectory: vi.fn() }));
 vi.mock("../ipc/sessionReview", () => ({ listSessionReviews: vi.fn(), getSessionReview: vi.fn(), rollbackSessionReview: vi.fn() }));
 vi.mock("../ipc/proxy", async (original) => ({ ...await original<typeof import("../ipc/proxy")>(), getProxySettings: vi.fn() }));
 vi.mock("../ipc/git", () => ({
@@ -218,6 +218,7 @@ describe("ChatWorkbenchView", () => {
 
   beforeEach(() => {
     window.localStorage.clear();
+    vi.mocked(selectAttachmentFiles).mockReset().mockResolvedValue([]);
     vi.mocked(getProxySettings).mockReset().mockResolvedValue(DEFAULT_PROXY_SETTINGS);
     emitAgentEvent = undefined;
     emitRuntimeStatus = undefined;
@@ -356,6 +357,123 @@ describe("ChatWorkbenchView", () => {
         agentHandlers.add(handler);
         return () => { agentHandlers.delete(handler); unlisten(); };
       });
+  });
+
+  it("浮空草稿切换工作区保留文字附件，首次发送才固定最终工作区", async () => {
+    vi.mocked(selectAttachmentFiles).mockResolvedValue(["C:/notes.txt"]);
+    vi.mocked(createAgentSession).mockImplementation(async (cwd) => ({ ...defaultSession, cwd }));
+    vi.mocked(rememberWorkspace).mockImplementation(async (cwd) => ({
+      recentWorkspaces: ["C:/alpha", "C:/beta"],
+      lastWorkspace: cwd,
+      conversationHome: "C:/conversations",
+    }));
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    await addProject("C:/alpha");
+    fireEvent.change(await screen.findByLabelText("发送给 Pi 的消息"), { target: { value: "尚未发送的内容" } });
+    fireEvent.click(screen.getByRole("button", { name: "添加文件或文件夹" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "添加文件本地" }));
+    await screen.findByTitle("C:/notes.txt");
+    fireEvent.click(screen.getByRole("button", { name: "选择项目" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /beta/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "选择项目" })).toHaveTextContent("beta"));
+    fireEvent.click(screen.getByRole("button", { name: "选择项目" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /alpha/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "选择项目" })).toHaveTextContent("alpha"));
+    expect(screen.getByLabelText("发送给 Pi 的消息")).toHaveValue("尚未发送的内容");
+    expect(screen.getByTitle("C:/notes.txt")).toBeInTheDocument();
+    expect(createAgentSession).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(promptAgent).toHaveBeenCalled());
+    expect(createAgentSession).toHaveBeenCalledTimes(1);
+    expect(createAgentSession).toHaveBeenCalledWith("C:/alpha");
+    expect(vi.mocked(promptAgent).mock.calls[0]?.[1]).toContain("尚未发送的内容");
+    expect(vi.mocked(promptAgent).mock.calls[0]?.[1]).toContain("C:/notes.txt");
+    expect(screen.queryByRole("button", { name: "选择项目" })).not.toBeInTheDocument();
+  });
+
+  it.each([false, true])("草稿离开再返回保留输入，迟到图片仅归还来源（先返回：%s）", async (returnBeforeSave) => {
+    vi.mocked(listAgentSessions).mockResolvedValue([{
+      id: "saved", path: "C:/sessions/saved.jsonl", cwd: defaultSession.cwd, name: "历史会话",
+      created: "2026-09-27T08:00:00.000Z", modified: "2026-09-27T08:00:00.000Z", messageCount: 1, firstMessage: "saved prompt",
+    }]);
+    let finishImage!: (path: string) => void;
+    vi.mocked(saveClipboardImage).mockReturnValueOnce(new Promise((resolve) => { finishImage = resolve; }));
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+    const composer = await screen.findByLabelText("发送给 Pi 的消息");
+    fireEvent.change(composer, { target: { value: "保留我的草稿" } });
+    const image = new File([new Uint8Array([1])], "paste.png", { type: "image/png" });
+    fireEvent.paste(composer, { clipboardData: { items: [{ kind: "file", type: "image/png", getAsFile: () => image }] } });
+    await waitFor(() => expect(saveClipboardImage).toHaveBeenCalledWith(image));
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    fireEvent.click(await screen.findByTitle("历史会话"));
+    await screen.findByText("saved prompt");
+    expect(screen.getByLabelText("发送给 Pi 的消息")).toHaveValue("");
+    fireEvent.change(screen.getByLabelText("发送给 Pi 的消息"), { target: { value: "历史输入" } });
+    if (returnBeforeSave) fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+    await act(async () => finishImage("C:/cache/draft.png"));
+    if (!returnBeforeSave) {
+      expect(screen.queryByTitle("C:/cache/draft.png")).not.toBeInTheDocument();
+      expect(screen.getByLabelText("发送给 Pi 的消息")).toHaveValue("历史输入");
+      fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+    }
+    await waitFor(() => expect(screen.getByLabelText("发送给 Pi 的消息")).toHaveValue("保留我的草稿"));
+    expect(screen.getByRole("button", { name: "选择项目" })).toHaveTextContent("未绑定项目");
+    expect(screen.getByTitle("C:/cache/draft.png")).toBeInTheDocument();
+    expect(createAgentSession).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(promptAgent).toHaveBeenCalledWith("s-1", "保留我的草稿", undefined, defaultToolNames, ["C:/cache/draft.png"]));
+    fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+    await waitFor(() => expect(screen.getByLabelText("发送给 Pi 的消息")).toHaveValue(""));
+    expect(screen.queryByTitle("C:/cache/draft.png")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTitle("历史会话"));
+    await waitFor(() => expect(screen.getByLabelText("发送给 Pi 的消息")).toHaveValue("历史输入"));
+  });
+
+  it("草稿选择模型和思考强度仅保存意图，发送时才创建并应用配置", async () => {
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+    fireEvent.click(screen.getByRole("button", { name: "模型与思考强度" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "草稿思考强度" }), { target: { value: "high" } });
+    fireEvent.click(screen.getByRole("button", { name: "选择模型" }));
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: "GPT" }));
+    expect(createAgentSession).not.toHaveBeenCalled();
+    expect(configureAgentSession).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "模型与思考强度" })).toHaveTextContent("GPT高");
+    fireEvent.change(screen.getByLabelText("发送给 Pi 的消息"), { target: { value: "按草稿配置发送" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(promptAgent).toHaveBeenCalled());
+    expect(createAgentSession).toHaveBeenCalledOnce();
+    expect(configureAgentSession).toHaveBeenCalledWith("s-1", { model: { provider: "openai", id: "gpt" }, thinkingLevel: "high" });
+  });
+
+  it.each(["create", "prompt"])("首次 %s 失败保留文字图片，重试不会丢失输入", async (failure) => {
+    vi.mocked(promptAgent).mockResolvedValue(1);
+    if (failure === "create") vi.mocked(createAgentSession).mockRejectedValueOnce({ code: "CREATE_FAILED", message: "创建失败" });
+    else vi.mocked(promptAgent).mockRejectedValueOnce({ code: "PROMPT_FAILED", message: "发送失败" });
+    vi.mocked(saveClipboardImage).mockResolvedValue("C:/cache/retry.png");
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    await addProject("C:/work");
+    const composer = await screen.findByLabelText("发送给 Pi 的消息");
+    fireEvent.change(composer, { target: { value: "失败后重试" } });
+    const image = new File([new Uint8Array([1])], "retry.png", { type: "image/png" });
+    fireEvent.paste(composer, { clipboardData: { items: [{ kind: "file", type: "image/png", getAsFile: () => image }] } });
+    await screen.findByTitle("C:/cache/retry.png");
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await screen.findAllByText(failure === "create" ? "CREATE_FAILED: 创建失败" : "PROMPT_FAILED: 发送失败");
+    await waitFor(() => expect(screen.getByLabelText("发送给 Pi 的消息")).toHaveValue("失败后重试"));
+    expect(screen.getByTitle("C:/cache/retry.png")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(promptAgent).toHaveBeenCalledTimes(failure === "create" ? 1 : 2));
+    expect(promptAgent).toHaveBeenLastCalledWith("s-1", "失败后重试", undefined, defaultToolNames, ["C:/cache/retry.png"]);
+    expect(createAgentSession).toHaveBeenCalledTimes(failure === "create" ? 2 : 1);
+    fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+    await waitFor(() => expect(screen.getByLabelText("发送给 Pi 的消息")).toHaveValue(""));
+    expect(screen.queryByTitle("C:/cache/retry.png")).not.toBeInTheDocument();
   });
 
   it("会话快捷键聚焦输入并打开文件，弹窗期间不触发导航", async () => {

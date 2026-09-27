@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Form
 import { AppSidebar, threadTitle } from "../components/AppSidebar";
 import { WorkspaceFilesPanel } from "../components/WorkspaceFilesPanel";
 import { ChatComposer } from "../components/ChatComposer";
+import { useComposerInput } from "../components/useComposerInput";
 import { CommandPalette } from "../components/CommandPalette";
 import {
   MAX_COMPOSER_ATTACHMENTS,
@@ -128,7 +129,28 @@ export function ChatWorkbenchView() {
   const requestHeaders = useRequestHeaderSettings();
   const { preferences, updatePreferences } = useAppPreferences();
   const notifications = useDesktopNotifications(preferences, updatePreferences);
-  const [draft, setDraft] = useState("");
+  const composerInput = useComposerInput(session.sessionId, session.lifecycle);
+  const { draft, attachments, pastedImagePaths, attachmentError, update: updateComposer } = composerInput;
+  const composerTools = session.configuration?.availableTools ?? [];
+  const composerToolNames = composerInput.permission.mode === "default"
+    ? session.configuration?.defaultToolNames ?? []
+    : composerInput.permission.toolNames;
+  const selectedComposerTools = composerTools.map((tool) => tool.name).filter((name) => composerToolNames.includes(name));
+  const composerPermissions = {
+    mode: composerInput.permission.mode,
+    availableTools: composerTools,
+    selectedToolNames: selectedComposerTools,
+    defaultToolNames: session.configuration?.defaultToolNames ?? [],
+    promptToolNames: composerInput.permission.mode === "default" ? undefined : composerInput.permission.toolNames,
+    useDefaultTools: () => {
+      toolPermissions.useDefaultTools();
+      updateComposer((current) => ({ ...current, permission: { schemaVersion: 1, mode: "default", toolNames: [] } }));
+    },
+    setCustomTools: (toolNames: string[]) => {
+      toolPermissions.setCustomTools(toolNames);
+      updateComposer((current) => ({ ...current, permission: { schemaVersion: 1, mode: "custom", toolNames } }));
+    },
+  };
   const [sidebarOpen, setSidebarOpen] = useState(() => !isNarrowViewport());
   const [sidebarWidth, setSidebarWidth] = useState(readSidebarWidth);
   const [activeView, setActiveView] = useState<"chat" | "settings" | "packages" | "resources">(
@@ -139,9 +161,6 @@ export function ChatWorkbenchView() {
   const [projectPath, setProjectPath] = useState("");
   const [projectSelectionError, setProjectSelectionError] = useState<string | null>(null);
   const [selectingProject, setSelectingProject] = useState(false);
-  const [attachments, setAttachments] = useState<string[]>([]);
-  const [pastedImagePaths, setPastedImagePaths] = useState<string[]>([]);
-  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [slashCommands, setSlashCommands] = useState<AgentSlashCommand[]>([]);
   const [slashCommandsPhase, setSlashCommandsPhase] = useState<
     "idle" | "loading" | "ready" | "error"
@@ -205,6 +224,7 @@ export function ChatWorkbenchView() {
     (session.phase === "ready" || session.phase === "streaming") &&
     eventChannelReady &&
     !session.configuring &&
+    composerInput.pendingAttachments === 0 &&
     (draft.trim().length > 0 || attachments.length > 0);
   const lastMessage = session.messages.at(-1);
   const conversationRevision = `${session.messages.length}:${lastMessage?.id ?? ""}:${lastMessage?.content.length ?? 0}:${lastMessage?.status ?? ""}`;
@@ -466,7 +486,6 @@ export function ChatWorkbenchView() {
       return;
     }
     if (await session.createSession(projectPath)) {
-      resetComposerInput();
       setProjectPath("");
       setProjectSelectionError(null);
       setProjectDialogOpen(false);
@@ -515,21 +534,19 @@ export function ChatWorkbenchView() {
       return;
     }
     if (await session.createSession(cwd)) {
-      resetComposerInput();
       closeSidebarAfterNavigation();
     }
   }
 
-  async function createConversation() {
-    if (await session.createConversation()) {
-      resetComposerInput();
+  async function createConversation(initialCwd?: string) {
+    if (await session.createConversation(initialCwd)) {
       closeSidebarAfterNavigation();
     }
   }
 
   async function openSession(selected: SessionListItem) {
+    if (session.phase !== "creating") composerInput.beginNavigation();
     if (await session.openSession(selected)) {
-      resetComposerInput();
       closeSidebarAfterNavigation();
     }
   }
@@ -598,19 +615,18 @@ export function ChatWorkbenchView() {
     }
     shouldStickToBottom.current = true;
     setAtConversationBottom(true);
-    setDraft("");
-    setAttachments([]);
-    setPastedImagePaths([]);
-    setAttachmentError(null);
+    composerInput.beginSubmission();
+    resetComposerInput();
     void session
-      .sendPrompt(prompt, behavior, toolPermissions.promptToolNames, attachedPaths, imagePaths)
+      .sendPrompt(prompt, behavior, composerPermissions.promptToolNames, attachedPaths, imagePaths)
       .then((sent) => {
         if (!sent) {
-          setDraft((current) => current || prompt);
-          setAttachments((current) =>
-            normalizeAttachedPaths([...attachedPaths, ...imagePaths, ...current]),
-          );
-          setPastedImagePaths((current) => normalizeAttachedPaths([...imagePaths, ...current]));
+          updateComposer((current) => ({
+            ...current,
+            draft: current.draft || prompt,
+            attachments: normalizeAttachedPaths([...attachedPaths, ...imagePaths, ...current.attachments]),
+            pastedImagePaths: normalizeAttachedPaths([...imagePaths, ...current.pastedImagePaths]),
+          }));
         }
       });
   }
@@ -686,70 +702,70 @@ export function ChatWorkbenchView() {
   }
 
   function resetComposerInput() {
-    setDraft("");
-    setAttachments([]);
-    setPastedImagePaths([]);
-    setAttachmentError(null);
+    updateComposer((current) => ({ ...current, draft: "", attachments: [], pastedImagePaths: [], attachmentError: null }));
   }
 
   const addAttachments = useCallback(
     (paths: string[]) => {
-      const next = normalizeAttachedPaths([...attachments, ...paths]);
-      setAttachments(next);
-      setAttachmentError(
-        attachments.length + paths.length > MAX_COMPOSER_ATTACHMENTS
+      updateComposer((current) => ({
+        ...current, attachments: normalizeAttachedPaths([...current.attachments, ...paths]),
+        attachmentError: current.attachments.length + paths.length > MAX_COMPOSER_ATTACHMENTS
           ? `最多可添加 ${MAX_COMPOSER_ATTACHMENTS} 个附件`
           : null,
-      );
+      }));
     },
-    [attachments],
+    [updateComposer],
   );
 
   const addPastedImages = useCallback(
     async (files: File[]) => {
-      const available = MAX_COMPOSER_ATTACHMENTS - attachments.length;
+      const available = MAX_COMPOSER_ATTACHMENTS - composerInput.read().attachments.length;
       if (available <= 0) {
-        setAttachmentError(`最多可添加 ${MAX_COMPOSER_ATTACHMENTS} 个附件`);
+        updateComposer((current) => ({ ...current, attachmentError: `最多可添加 ${MAX_COMPOSER_ATTACHMENTS} 个附件` }));
         return;
       }
       const selected = files.slice(0, available);
       const saved: string[] = [];
+      updateComposer((current) => ({ ...current, pendingAttachments: current.pendingAttachments + 1 }));
       try {
         for (const file of selected) {
           saved.push(await saveClipboardImage(file));
         }
-        addAttachments(saved);
-        setPastedImagePaths((current) => normalizeAttachedPaths([...current, ...saved]));
-        if (selected.length < files.length) {
-          setAttachmentError(`最多可添加 ${MAX_COMPOSER_ATTACHMENTS} 个附件`);
-        }
+        updateComposer((current) => ({ ...current, attachmentError: selected.length < files.length || current.attachments.length + saved.length > MAX_COMPOSER_ATTACHMENTS ? `最多可添加 ${MAX_COMPOSER_ATTACHMENTS} 个附件` : null }));
       } catch (error) {
-        if (saved.length > 0) {
-          addAttachments(saved);
-          setPastedImagePaths((current) => normalizeAttachedPaths([...current, ...saved]));
-        }
-        setAttachmentError(formatAttachmentError(error));
+        updateComposer((current) => ({ ...current, attachmentError: formatAttachmentError(error) }));
+      } finally {
+        updateComposer((current) => {
+          const next = normalizeAttachedPaths([...current.attachments, ...saved]);
+          return { ...current, attachments: next, pastedImagePaths: normalizeAttachedPaths([...current.pastedImagePaths, ...saved]).filter((path) => next.includes(path)), pendingAttachments: current.pendingAttachments - 1 };
+        });
       }
     },
-    [addAttachments, attachments.length],
+    [composerInput.read, updateComposer],
   );
 
   const addFiles = useCallback(async () => {
+    updateComposer((current) => ({ ...current, pendingAttachments: current.pendingAttachments + 1 }));
     try {
       addAttachments(await selectAttachmentFiles());
     } catch (error) {
-      setAttachmentError(formatProjectSelectionError(error));
+      updateComposer((current) => ({ ...current, attachmentError: formatProjectSelectionError(error) }));
+    } finally {
+      updateComposer((current) => ({ ...current, pendingAttachments: current.pendingAttachments - 1 }));
     }
-  }, [addAttachments]);
+  }, [addAttachments, updateComposer]);
 
   const addFolder = useCallback(async () => {
+    updateComposer((current) => ({ ...current, pendingAttachments: current.pendingAttachments + 1 }));
     try {
       const path = await selectAttachmentDirectory();
       if (path) addAttachments([path]);
     } catch (error) {
-      setAttachmentError(formatProjectSelectionError(error));
+      updateComposer((current) => ({ ...current, attachmentError: formatProjectSelectionError(error) }));
+    } finally {
+      updateComposer((current) => ({ ...current, pendingAttachments: current.pendingAttachments - 1 }));
     }
-  }, [addAttachments]);
+  }, [addAttachments, updateComposer]);
 
   const searchComposerPaths = useCallback(
     (query: string) =>
@@ -889,7 +905,7 @@ export function ChatWorkbenchView() {
     if (shortcutDisabled[action]) return;
     switch (action) {
       case "commands": setCommandPaletteOpen(true); break;
-      case "newSession": setActiveView("chat"); void (session.cwd ? createSession(session.cwd) : createConversation()); break;
+      case "newSession": setActiveView("chat"); void createConversation(session.cwd || undefined); break;
       case "packages": openEcosystem("packages"); break;
       case "resources": openEcosystem("resources"); break;
       case "settings": openSettings(); break;
@@ -950,9 +966,7 @@ export function ChatWorkbenchView() {
           phase={session.phase}
           runtime={runtime}
           onAddProject={openProjectDialog}
-          onNewConversation={(cwd) =>
-            cwd ? void createSession(cwd) : void createConversation()
-          }
+          onNewConversation={(cwd) => void createConversation(cwd)}
           onNewSession={(cwd) => void createSession(cwd)}
           onRemoveWorkspace={(cwd) => void removeWorkspace(cwd)}
           onDeleteSession={(sessionId) => session.deleteSessions([sessionId])}
@@ -986,7 +1000,7 @@ export function ChatWorkbenchView() {
           preferences={preferences}
           notifications={notifications}
           requestHeaders={requestHeaders}
-          toolPermissions={toolPermissions}
+          toolPermissions={hasSession ? composerPermissions : toolPermissions}
           shortcuts={shortcuts}
           runtime={runtime}
           eventConnection={session.eventConnection}
@@ -1145,17 +1159,20 @@ export function ChatWorkbenchView() {
 
               {hasSession && (
                 <ChatComposer
+                  sessionKey={session.sessionId ?? ""}
                   workspaceName={workspaceName}
                   workspacePath={session.cwd}
                   recentWorkspaces={session.recentWorkspaces}
                   branchName={gitBranches.branchName}
                   branchControl={gitBranches}
-                  showProjectBar={session.messages.length === 0 && session.phase !== "creating"}
+                  showProjectBar={session.lifecycle === "draft" && session.phase !== "creating"}
                   draft={draft}
                   phase={session.phase}
                   eventConnection={session.eventConnection}
                   models={session.models}
                   configuration={session.configuration}
+                  draftConfiguration={session.draftConfiguration}
+                  isDraft={session.lifecycle === "draft"}
                   displayThinkingLevel={session.displayThinkingLevel}
                   configuring={session.configuring}
                   catalogPhase={session.catalogPhase}
@@ -1166,15 +1183,15 @@ export function ChatWorkbenchView() {
                   canSend={canSend}
                   queuedMessages={session.queuedMessages}
                   queuePaused={session.queuePaused}
-                  permissionMode={toolPermissions.mode}
-                  availableTools={toolPermissions.availableTools}
-                  selectedToolNames={toolPermissions.selectedToolNames}
-                  defaultToolNames={toolPermissions.defaultToolNames}
+                  permissionMode={composerInput.permission.mode}
+                  availableTools={composerTools}
+                  selectedToolNames={selectedComposerTools}
+                  defaultToolNames={session.configuration?.defaultToolNames ?? []}
                   slashCommands={slashCommands as ComposerCommand[]}
                   slashCommandsPhase={slashCommandsPhase}
                   slashCommandsError={slashCommandsError}
-                  onDraftChange={setDraft}
-                  onProjectChange={(cwd) => void createSession(cwd)}
+                  onDraftChange={(value) => updateComposer((current) => ({ ...current, draft: value }))}
+                  onProjectChange={(cwd) => void session.changeDraftWorkspace(cwd)}
                   onAddProject={openProjectDialog}
                   onAddFiles={() => void addFiles()}
                   onAddFolder={() => void addFolder()}
@@ -1182,16 +1199,14 @@ export function ChatWorkbenchView() {
                   onSearchWorkspacePaths={searchComposerPaths}
                   onAttachPath={(path) => addAttachments([path])}
                   onRemoveAttachment={(path) => {
-                    setAttachments((current) => current.filter((item) => item !== path));
-                    setPastedImagePaths((current) => current.filter((item) => item !== path));
-                    setAttachmentError(null);
+                    updateComposer((current) => ({ ...current, attachments: current.attachments.filter((item) => item !== path), pastedImagePaths: current.pastedImagePaths.filter((item) => item !== path), attachmentError: null }));
                   }}
                   onRetryModels={() => void reloadCatalogs()}
                   onPrepareConfiguration={session.prepareConfiguration}
                   onModelChange={(provider, id) => void session.updateModel(provider, id)}
                   onThinkingLevelChange={(level) => void session.updateThinkingLevel(level)}
-                  onUseDefaultTools={toolPermissions.useDefaultTools}
-                  onToolSelectionChange={toolPermissions.setCustomTools}
+                  onUseDefaultTools={composerPermissions.useDefaultTools}
+                  onToolSelectionChange={composerPermissions.setCustomTools}
                   onSend={sendPrompt}
                   onClearQueue={() => void session.clearQueue()}
                   onAbort={() => void session.abort()}

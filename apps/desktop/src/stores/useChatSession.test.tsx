@@ -22,7 +22,7 @@ import {
   rememberWorkspace,
   removeRecentWorkspace,
 } from "../ipc/workspace";
-import { useChatSession } from "./useChatSession";
+import { useChatSession, type ChatSessionState, type SessionListItem } from "./useChatSession";
 import { MODEL_SETTINGS_CHANGED } from "../ipc/providers";
 
 vi.mock("../ipc/agent", () => ({
@@ -208,9 +208,8 @@ describe("useChatSession", () => {
     expect(result.current.cwd).toBe("C:\\work");
     expect(result.current.sessionPath).toBeNull();
     expect(result.current.configuration).toBeNull();
-    expect(result.current.sessions).toEqual([
-      expect.objectContaining({ id: expect.stringMatching(/^draft:/), lifecycle: "draft", path: null }),
-    ]);
+    expect(result.current.sessions).toEqual([]);
+    expect(result.current.lifecycle).toBe("draft");
     expect(createAgentSession).not.toHaveBeenCalled();
     expect(rememberWorkspace).toHaveBeenCalledOnce();
     expect(rememberWorkspace).toHaveBeenCalledWith("C:\\work");
@@ -291,7 +290,7 @@ describe("useChatSession", () => {
     const { result } = renderHook(() => useChatSession());
     await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
     await act(() => result.current.createSession("C:/alpha"));
-    const draft = result.current.sessions[0]!;
+    const draft = activeDraftItem(result.current);
     let resolve!: (workspace: Awaited<ReturnType<typeof rememberWorkspace>>) => void;
     let reject!: (error: Error) => void;
     vi.mocked(rememberWorkspace).mockReturnValueOnce(new Promise((done, fail) => { resolve = done; reject = fail; }));
@@ -323,16 +322,16 @@ describe("useChatSession", () => {
     await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
 
     await act(() => result.current.createSession("C:\\projects\\alpha"));
-    await act(() => result.current.prepareConfiguration());
+    await act(() => result.current.sendPrompt("materialize"));
     await act(() => result.current.createSession("D:\\projects\\beta"));
-    await act(() => result.current.prepareConfiguration());
+    await act(() => result.current.sendPrompt("materialize"));
 
     expect(createAgentSession).toHaveBeenNthCalledWith(1, "C:\\projects\\alpha");
     expect(createAgentSession).toHaveBeenNthCalledWith(2, "D:\\projects\\beta");
     expect(result.current.cwd).toBe("D:\\projects\\beta");
   });
 
-  it("可在发送前实体化草稿，使模型和思考配置立即可交互", async () => {
+  it("打开配置只加载模型目录，明确选择的配置在首次发送前应用", async () => {
     const { result } = renderHook(() => useChatSession());
     await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
     await act(() => result.current.createSession("C:\\work"));
@@ -343,16 +342,27 @@ describe("useChatSession", () => {
     });
 
     expect(prepared).toBe(true);
-    expect(createAgentSession).toHaveBeenCalledWith("C:\\work");
+    expect(createAgentSession).not.toHaveBeenCalled();
     expect(promptAgent).not.toHaveBeenCalled();
-    expect(result.current.configuration?.model?.name).toBe("GPT");
+    expect(result.current.configuration).toBeNull();
+    expect(result.current.models[0]?.name).toBe("GPT");
     await act(() => result.current.updateModel("openai", "gpt"));
+    await act(() => result.current.updateThinkingLevel("high"));
+    expect(result.current.draftConfiguration).toEqual({
+      model: { provider: "openai", id: "gpt" }, thinkingLevel: "high",
+    });
+    expect(result.current.displayThinkingLevel).toBe("high");
+    expect(configureAgentSession).not.toHaveBeenCalled();
+    expect(createAgentSession).not.toHaveBeenCalled();
+    await act(() => result.current.sendPrompt("configured"));
     expect(configureAgentSession).toHaveBeenCalledWith("s-1", {
       model: { provider: "openai", id: "gpt" },
+      thinkingLevel: "high",
     });
+    expect(vi.mocked(configureAgentSession).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(promptAgent).mock.invocationCallOrder[0]!);
   });
 
-  it("新草稿立即沿用最近确认的思考强度且保持按需实体化", async () => {
+  it("新草稿不将其他会话的思考强度当作未知 SDK 默认值", async () => {
     vi.mocked(createAgentSession).mockResolvedValueOnce(
       agentSession({
         configuration: {
@@ -368,13 +378,13 @@ describe("useChatSession", () => {
     const { result } = renderHook(() => useChatSession());
     await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
     await act(() => result.current.createSession("C:\\work"));
-    await act(() => result.current.prepareConfiguration());
+    await act(() => result.current.sendPrompt("materialize"));
     expect(result.current.displayThinkingLevel).toBe("max");
 
     await act(() => result.current.createConversation());
 
     expect(result.current.configuration).toBeNull();
-    expect(result.current.displayThinkingLevel).toBe("max");
+    expect(result.current.displayThinkingLevel).toBeNull();
     expect(createAgentSession).toHaveBeenCalledTimes(1);
   });
 
@@ -476,7 +486,7 @@ describe("useChatSession", () => {
     const { result } = renderHook(() => useChatSession());
     await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
     await act(() => result.current.createSession("C:\\work"));
-    await act(() => result.current.prepareConfiguration());
+    await act(() => result.current.sendPrompt("materialize"));
     expect(result.current.contextUsage).toEqual({
       tokens: 1_024,
       contextWindow: 8_192,
@@ -555,6 +565,254 @@ describe("useChatSession", () => {
     });
     expect(promptAgent).toHaveBeenCalledOnce();
     expect(promptAgent).toHaveBeenCalledWith("s-1", "first", undefined, defaultToolNames);
+  });
+
+  it("返回新建入口恢复同一草稿，首发消耗后再次新建空草稿", async () => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:/alpha"));
+    const draftId = result.current.sessionId;
+    await act(() => result.current.updateModel("openai", "gpt"));
+    await act(() => result.current.updateThinkingLevel("high"));
+    await act(() => result.current.openSession({ ...savedSummary, lifecycle: "persisted" }));
+    expect(result.current.sessionId).toBe("saved");
+    await act(() => result.current.createConversation());
+    expect(result.current.sessionId).toBe(draftId);
+    expect(result.current.cwd).toBe("C:/alpha");
+    expect(result.current.draftConfiguration).toEqual({
+      model: { provider: "openai", id: "gpt" }, thinkingLevel: "high",
+    });
+    expect(createAgentSession).not.toHaveBeenCalled();
+    expect(result.current.sessions.some((session) => session.id === draftId)).toBe(false);
+    await act(() => result.current.sendPrompt("consume"));
+    await act(() => result.current.createConversation());
+    expect(result.current.sessionId).not.toBe(draftId);
+    expect(result.current.lifecycle).toBe("draft");
+    expect(result.current.cwd).toBe("");
+    expect(result.current.draftConfiguration).toBeNull();
+    expect(result.current.messages).toEqual([]);
+    expect(createAgentSession).toHaveBeenCalledOnce();
+  });
+
+  it("项目新建入口恢复保留草稿并只更改工作区", async () => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createConversation());
+    const draftId = result.current.sessionId;
+    await act(() => result.current.updateThinkingLevel("high"));
+    await act(() => result.current.openSession({ ...savedSummary, lifecycle: "persisted" }));
+    await act(() => result.current.createSession("D:/beta"));
+    expect(result.current.sessionId).toBe(draftId);
+    expect(result.current.cwd).toBe("D:/beta");
+    expect(result.current.draftConfiguration).toEqual({ thinkingLevel: "high" });
+    expect(result.current.sessions.some((session) => session.lifecycle === "draft")).toBe(false);
+    expect(createAgentSession).not.toHaveBeenCalled();
+  });
+
+  it("草稿切换工作区保持 ID，首次发送才固定最终工作区", async () => {
+    vi.mocked(createAgentSession).mockImplementation(async (cwd) => agentSession({ cwd }));
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:/alpha"));
+    const draftId = result.current.sessionId;
+    await act(() => result.current.updateModel("openai", "gpt"));
+    await act(async () => { expect(await result.current.changeDraftWorkspace("D:/beta")).toBe(true); });
+    expect(result.current.sessionId).toBe(draftId);
+    expect(result.current.cwd).toBe("D:/beta");
+    expect(result.current.draftConfiguration?.model?.id).toBe("gpt");
+    expect(result.current.sessions).toEqual([]);
+    expect(createAgentSession).not.toHaveBeenCalled();
+    await act(() => result.current.sendPrompt("first"));
+    expect(createAgentSession).toHaveBeenCalledExactlyOnceWith("D:/beta");
+    expect(result.current.lifecycle).toBe("live");
+    expect(result.current.sessions[0]?.cwd).toBe("D:/beta");
+    await act(async () => { expect(await result.current.changeDraftWorkspace("C:/alpha")).toBe(false); });
+    expect(result.current.cwd).toBe("D:/beta");
+  });
+
+  it.each([false, true])("工作区选择乱序完成不会覆盖最近选择（旧请求失败：%s）", async (fails) => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createConversation());
+    const draftId = result.current.sessionId;
+    let resolve!: (value: Awaited<ReturnType<typeof rememberWorkspace>>) => void;
+    let reject!: (error: Error) => void;
+    vi.mocked(rememberWorkspace).mockReturnValueOnce(new Promise((done, fail) => { resolve = done; reject = fail; }));
+    let older!: Promise<boolean>;
+    act(() => { older = result.current.changeDraftWorkspace("C:/alpha"); });
+    await act(async () => { expect(await result.current.sendPrompt("blocked")).toBe(false); });
+    expect(createAgentSession).not.toHaveBeenCalled();
+    await act(async () => { expect(await result.current.changeDraftWorkspace("D:/beta")).toBe(true); });
+    await act(async () => {
+      if (fails) reject(new Error("old workspace failure"));
+      else resolve({ recentWorkspaces: ["C:/alpha"], lastWorkspace: "C:/alpha", conversationHome: "C:/conversations" });
+      expect(await older).toBe(false);
+    });
+    expect(result.current.sessionId).toBe(draftId);
+    expect(result.current.cwd).toBe("D:/beta");
+    expect(result.current.recentWorkspaces).toEqual(["D:/beta"]);
+    expect(result.current.error).toBeNull();
+    expect(result.current.phase).toBe("ready");
+  });
+
+  it("切回未绑定对话使迟到的项目选择失效", async () => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:/alpha"));
+    const draftId = result.current.sessionId;
+    let resolve!: (value: Awaited<ReturnType<typeof rememberWorkspace>>) => void;
+    vi.mocked(rememberWorkspace).mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+    let older!: Promise<boolean>;
+    act(() => { older = result.current.changeDraftWorkspace("D:/beta"); });
+    await act(async () => { expect(await result.current.changeDraftWorkspace("")).toBe(true); });
+    await act(async () => {
+      resolve({ recentWorkspaces: ["D:/beta"], lastWorkspace: "D:/beta", conversationHome: "C:/conversations" });
+      expect(await older).toBe(false);
+    });
+    expect(result.current.sessionId).toBe(draftId);
+    expect(result.current.cwd).toBe("");
+    expect(ensureConversationWorkspace).not.toHaveBeenCalled();
+    await act(() => result.current.sendPrompt("unbound"));
+    expect(ensureConversationWorkspace).toHaveBeenCalledOnce();
+  });
+
+  it("工作区选择失败保持草稿并允许重试", async () => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:/alpha"));
+    const draftId = result.current.sessionId;
+    vi.mocked(rememberWorkspace).mockRejectedValueOnce(new Error("workspace unavailable"));
+    await act(async () => { expect(await result.current.changeDraftWorkspace("D:/beta")).toBe(false); });
+    expect(result.current.cwd).toBe("C:/alpha");
+    expect(result.current.error).toBe("workspace unavailable");
+    await act(async () => { expect(await result.current.changeDraftWorkspace("D:/beta")).toBe(true); });
+    expect(result.current.sessionId).toBe(draftId);
+    expect(result.current.error).toBeNull();
+    expect(createAgentSession).not.toHaveBeenCalled();
+  });
+
+  it("首次创建期间拒绝工作区和配置变更以及同步重复发送", async () => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:/alpha"));
+    await act(() => result.current.updateThinkingLevel("high"));
+    let resolve!: (session: AgentSession) => void;
+    vi.mocked(createAgentSession).mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+    let first!: Promise<boolean>;
+    let duplicate!: Promise<boolean>;
+    act(() => { first = result.current.sendPrompt("first"); duplicate = result.current.sendPrompt("duplicate"); });
+    await waitFor(() => expect(createAgentSession).toHaveBeenCalledOnce());
+    await act(async () => {
+      expect(await duplicate).toBe(false);
+      expect(await result.current.changeDraftWorkspace("D:/beta")).toBe(false);
+      expect(await result.current.prepareConfiguration()).toBe(false);
+      await result.current.updateThinkingLevel("off");
+    });
+    expect(result.current.draftConfiguration?.thinkingLevel).toBe("high");
+    await act(async () => { resolve(agentSession({ cwd: "C:/alpha" })); expect(await first).toBe(true); });
+    expect(configureAgentSession).toHaveBeenCalledExactlyOnceWith("s-1", { thinkingLevel: "high" });
+    expect(promptAgent).toHaveBeenCalledOnce();
+  });
+
+  it.each(["workspace", "create"])("首发 %s 失败保持草稿，可重试且不丢配置", async (stage) => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createConversation());
+    const draftId = result.current.sessionId;
+    await act(() => result.current.updateThinkingLevel("high"));
+    if (stage === "workspace") vi.mocked(rememberWorkspace).mockRejectedValueOnce(new Error("workspace failed"));
+    else vi.mocked(createAgentSession).mockRejectedValueOnce(new Error("create failed"));
+    await act(async () => { expect(await result.current.sendPrompt("first")).toBe(false); });
+    expect(result.current.sessionId).toBe(draftId);
+    expect(result.current.lifecycle).toBe("draft");
+    expect(result.current.sessions).toEqual([]);
+    expect(result.current.error).toBe(`${stage} failed`);
+    expect(promptAgent).not.toHaveBeenCalled();
+    if (stage === "workspace") expect(createAgentSession).not.toHaveBeenCalled();
+    await act(async () => { expect(await result.current.sendPrompt("retry")).toBe(true); });
+    expect(result.current.lifecycle).toBe("live");
+    expect(configureAgentSession).toHaveBeenCalledWith("s-1", { thinkingLevel: "high" });
+    expect(promptAgent).toHaveBeenCalledOnce();
+  });
+
+  it("首发配置失败保留真实会话并重试配置，不重建或静默发送默认模型", async () => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createConversation());
+    await act(() => result.current.updateModel("selected", "chosen"));
+    vi.mocked(configureAgentSession).mockRejectedValueOnce(new Error("configuration failed"));
+    await act(async () => { expect(await result.current.sendPrompt("first")).toBe(false); });
+    expect(result.current.lifecycle).toBe("live");
+    expect(result.current.sessionId).toBe("s-1");
+    expect(result.current.error).toBe("configuration failed");
+    expect(result.current.messages).toEqual([]);
+    expect(promptAgent).not.toHaveBeenCalled();
+    await act(async () => { expect(await result.current.sendPrompt("retry")).toBe(true); });
+    expect(createAgentSession).toHaveBeenCalledOnce();
+    expect(configureAgentSession).toHaveBeenCalledTimes(2);
+    expect(configureAgentSession).toHaveBeenLastCalledWith("s-1", { model: { provider: "selected", id: "chosen" } });
+    expect(promptAgent).toHaveBeenCalledOnce();
+  });
+
+  it("后台配置先完成时，当前会话保持配置中状态", async () => {
+    const secondSummary = { ...savedSummary, id: "second", path: "C:/sessions/second.jsonl" };
+    vi.mocked(listAgentSessions).mockResolvedValueOnce([savedSummary, secondSummary]);
+    vi.mocked(openAgentSession)
+      .mockResolvedValueOnce(agentSession({ sessionId: "saved", sessionPath: savedSummary.path }))
+      .mockResolvedValueOnce(agentSession({ sessionId: "second", sessionPath: secondSummary.path }));
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.loadCatalogs());
+    let finishFirst!: (configuration: AgentSession["configuration"]) => void;
+    let finishSecond!: (configuration: AgentSession["configuration"]) => void;
+    vi.mocked(configureAgentSession)
+      .mockReturnValueOnce(new Promise((resolve) => { finishFirst = resolve; }))
+      .mockReturnValueOnce(new Promise((resolve) => { finishSecond = resolve; }));
+    await act(() => result.current.openSession(result.current.sessions.find((session) => session.id === "saved")!));
+    let first!: Promise<void>;
+    act(() => { first = result.current.updateThinkingLevel("high"); });
+    await act(() => result.current.openSession(result.current.sessions.find((session) => session.id === "second")!));
+    let second!: Promise<void>;
+    act(() => { second = result.current.updateThinkingLevel("low"); });
+    expect(result.current.configuring).toBe(true);
+    await act(async () => { finishFirst(agentSession().configuration); await first; });
+    expect(result.current.sessionId).toBe("second");
+    expect(result.current.configuring).toBe(true);
+    await act(async () => { finishSecond(agentSession().configuration); await second; });
+    expect(result.current.configuring).toBe(false);
+  });
+
+  it("首发配置应用期间拒绝重复发送和配置变更", async () => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createConversation());
+    await act(() => result.current.updateThinkingLevel("high"));
+    let resolve!: (configuration: AgentSession["configuration"]) => void;
+    vi.mocked(configureAgentSession).mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+    let sending!: Promise<boolean>;
+    act(() => { sending = result.current.sendPrompt("first"); });
+    await waitFor(() => expect(result.current.configuring).toBe(true));
+    await act(async () => {
+      expect(await result.current.sendPrompt("duplicate")).toBe(false);
+      await result.current.updateModel("other", "other");
+    });
+    expect(configureAgentSession).toHaveBeenCalledOnce();
+    expect(promptAgent).not.toHaveBeenCalled();
+    await act(async () => { resolve(agentSession().configuration); expect(await sending).toBe(true); });
+    expect(promptAgent).toHaveBeenCalledOnce();
+  });
+
+  it("prompt 失败后的重试沿用真实会话且不再次创建", async () => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createConversation());
+    vi.mocked(promptAgent).mockRejectedValueOnce(new Error("prompt failed"));
+    await act(async () => { expect(await result.current.sendPrompt("first")).toBe(false); });
+    expect(result.current.error).toBe("prompt failed");
+    expect(result.current.lifecycle).toBe("live");
+    await act(async () => { expect(await result.current.sendPrompt("retry")).toBe(true); });
+    expect(createAgentSession).toHaveBeenCalledOnce();
+    expect(promptAgent).toHaveBeenCalledTimes(2);
   });
 
   it("目录确认落盘后将活动会话升级为单一正式条目并复用投影", async () => {
@@ -1419,7 +1677,7 @@ describe("useChatSession", () => {
     const running = result.current.sessions.find((session) => session.id === "s-1")!;
 
     await act(() => result.current.createSession("C:\\other"));
-    const draft = result.current.sessions.find((session) => session.lifecycle === "draft")!;
+    const draft = activeDraftItem(result.current);
     expect(result.current.sessionId).toBe(draft.id);
     expect(createAgentSession).toHaveBeenCalledTimes(1);
     expect(result.current.runningSessionIds).toContain("s-1");
@@ -1567,7 +1825,7 @@ describe("useChatSession", () => {
     await act(() => result.current.loadCatalogs());
 
     await act(() => result.current.createConversation());
-    const draft = result.current.sessions.find((session) => session.lifecycle === "draft")!;
+    const draft = activeDraftItem(result.current);
     expect(draft).toEqual(expect.objectContaining({ path: null, cwd: "" }));
     expect(createAgentSession).not.toHaveBeenCalled();
     expect(ensureConversationWorkspace).not.toHaveBeenCalled();
@@ -1669,9 +1927,8 @@ describe("useChatSession", () => {
     await act(() => result.current.createConversation());
     expect(result.current.cwd).toBe("");
     expect(result.current.sessionPath).toBeNull();
-    expect(result.current.sessions[0]).toEqual(
-      expect.objectContaining({ lifecycle: "draft", cwd: "", path: null }),
-    );
+    expect(result.current.lifecycle).toBe("draft");
+    expect(result.current.sessions).toEqual([]);
     expect(ensureConversationWorkspace).not.toHaveBeenCalled();
     expect(createAgentSession).not.toHaveBeenCalled();
     expect(rememberWorkspace).not.toHaveBeenCalled();
@@ -1716,6 +1973,12 @@ describe("useChatSession", () => {
     );
   });
 });
+
+function activeDraftItem(state: ChatSessionState): SessionListItem {
+  expect(state.lifecycle).toBe("draft");
+  expect(state.sessions.some((session) => session.id === state.sessionId)).toBe(false);
+  return { ...savedSummary, id: state.sessionId!, path: null, cwd: state.cwd, lifecycle: "draft" };
+}
 
 function event(
   name: AgentEvent["name"],

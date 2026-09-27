@@ -70,6 +70,10 @@ export type ChatPhase = "idle" | "creating" | "ready" | "streaming";
 export type AgentEventConnection = "connecting" | "ready" | "error";
 export type CatalogPhase = "idle" | "loading" | "ready" | "error";
 export type SessionLifecycle = "draft" | "live" | "persisted";
+export interface DraftConfiguration {
+  model?: Pick<AgentModel, "provider" | "id">;
+  thinkingLevel?: ThinkingLevel;
+}
 
 export interface SessionTimerState {
   startedAt: number | null;
@@ -88,6 +92,7 @@ interface SessionProjection {
   cwd: string;
   messages: ChatMessage[];
   configuration: SessionConfiguration | null;
+  pendingConfiguration: DraftConfiguration | null;
   lifecycle: SessionLifecycle;
   createdAt: string;
   modifiedAt: string;
@@ -105,6 +110,8 @@ interface SessionProjection {
 
 export interface ChatSessionState {
   phase: ChatPhase;
+  lifecycle: SessionLifecycle | null;
+  draftConfiguration: DraftConfiguration | null;
   sessionId: string | null;
   sessionPath: string | null;
   cwd: string;
@@ -130,7 +137,8 @@ export interface ChatSessionState {
   reconnectActiveSession: () => Promise<boolean>;
   cancelAutoRestore: () => void;
   createSession: (cwd: string) => Promise<boolean>;
-  createConversation: () => Promise<boolean>;
+  createConversation: (initialCwd?: string) => Promise<boolean>;
+  changeDraftWorkspace: (cwd: string) => Promise<boolean>;
   openSession: (session: SessionListItem) => Promise<boolean>;
   removeWorkspace: (cwd: string) => Promise<void>;
   deleteSessions: (sessionIds: string[]) => Promise<DeleteAgentSessionsResult>;
@@ -187,6 +195,9 @@ export function useChatSession(): ChatSessionState {
   const sessionNavigationId = useRef(0);
   const promptRequests = useRef(new Map<string, number>());
   const materializingDrafts = useRef(new Set<string>());
+  const pendingWorkspaceSelections = useRef(new Map<string, number>());
+  const configuringSessions = useRef(new Set<string>());
+  const preparingPrompts = useRef(new Set<string>());
   const reconnectingSessionId = useRef<string | null>(null);
   const draftSequence = useRef(1);
   const restoreAttempted = useRef(false);
@@ -223,9 +234,10 @@ export function useChatSession(): ChatSessionState {
       lifecycle: Exclude<SessionLifecycle, "draft">,
       replacedSessionId: string | undefined,
       navigationId: number,
+      workspaceRegistered = false,
     ) => {
       if (navigationId !== sessionNavigationId.current) return null;
-      const workspace = session.cwd ? await rememberWorkspace(session.cwd) : null;
+      const workspace = session.cwd && !workspaceRegistered ? await rememberWorkspace(session.cwd) : null;
       if (navigationId !== sessionNavigationId.current) return null;
       if (workspace) setWorkspaceState(workspace);
       const replaced = replacedSessionId ? projectionsRef.current[replacedSessionId] : undefined;
@@ -566,7 +578,7 @@ export function useChatSession(): ChatSessionState {
         setGlobalError("WORKSPACE_PATH_INVALID: 请输入绝对工作区路径");
         return false;
       }
-      if (navigationPending) return false;
+      if (navigationPending || materializingDrafts.current.size > 0) return false;
       const navigationId = ++sessionNavigationId.current;
       setNavigationPending(true);
       setGlobalError(null);
@@ -576,7 +588,10 @@ export function useChatSession(): ChatSessionState {
         setWorkspaceState(workspace);
         const canonicalCwd =
           workspace.recentWorkspaces.find((path) => samePath(path, requestedCwd)) ?? requestedCwd;
-        const draft = createDraftProjection(`draft:${draftSequence.current++}`, canonicalCwd);
+        const retained = Object.values(projectionsRef.current).find((projection) => projection.lifecycle === "draft");
+        const draft = retained
+          ? { ...retained, cwd: canonicalCwd, error: null }
+          : createDraftProjection(`draft:${draftSequence.current++}`, canonicalCwd);
         commitProjections((current) => ({ ...current, [draft.sessionId]: draft }));
         activeSessionIdRef.current = draft.sessionId;
         setActiveSessionId(draft.sessionId);
@@ -591,20 +606,55 @@ export function useChatSession(): ChatSessionState {
     [cancelAutoRestore, commitProjections, eventConnection, navigationPending],
   );
 
-  const createConversation = useCallback(async () => {
+  const createConversation = useCallback(async (initialCwd?: string) => {
     cancelAutoRestore();
-    if (eventConnection !== "ready" || navigationPending) return false;
+    if (eventConnection !== "ready" || navigationPending || materializingDrafts.current.size > 0) return false;
+    const retained = Object.values(projectionsRef.current).find((projection) => projection.lifecycle === "draft");
+    if (!retained && initialCwd) return createSession(initialCwd);
     sessionNavigationId.current += 1;
     setGlobalError(null);
-    const draft = createDraftProjection(`draft:${draftSequence.current++}`, "");
+    const draft = retained ?? createDraftProjection(`draft:${draftSequence.current++}`, "");
     commitProjections((current) => ({ ...current, [draft.sessionId]: draft }));
     activeSessionIdRef.current = draft.sessionId;
     setActiveSessionId(draft.sessionId);
     return true;
-  }, [cancelAutoRestore, commitProjections, eventConnection, navigationPending]);
+  }, [cancelAutoRestore, commitProjections, createSession, eventConnection, navigationPending]);
+
+  const changeDraftWorkspace = useCallback(async (cwd: string): Promise<boolean> => {
+    const sessionId = activeSessionIdRef.current;
+    const draft = sessionId ? projectionsRef.current[sessionId] : undefined;
+    if (!sessionId || draft?.lifecycle !== "draft" || materializingDrafts.current.has(sessionId)) return false;
+    cancelAutoRestore();
+    const requestId = ++sessionNavigationId.current;
+    pendingWorkspaceSelections.current.set(sessionId, requestId);
+    setNavigationPending(true);
+    setGlobalError(null);
+    commitProjections((current) => updateProjectionError(current, sessionId, null));
+    try {
+      const requestedCwd = cwd.trim();
+      const workspace = requestedCwd ? await rememberWorkspace(requestedCwd) : null;
+      if (requestId !== sessionNavigationId.current || activeSessionIdRef.current !== sessionId) return false;
+      const canonicalCwd = workspace?.recentWorkspaces.find((path) => samePath(path, requestedCwd)) ?? requestedCwd;
+      if (workspace) setWorkspaceState(workspace);
+      commitProjections((current) => ({
+        ...current,
+        [sessionId]: { ...current[sessionId]!, cwd: canonicalCwd, error: null },
+      }));
+      return true;
+    } catch (error) {
+      if (requestId === sessionNavigationId.current) {
+        commitProjections((current) => updateProjectionError(current, sessionId, formatError(error)));
+      }
+      return false;
+    } finally {
+      if (pendingWorkspaceSelections.current.get(sessionId) === requestId) pendingWorkspaceSelections.current.delete(sessionId);
+      if (requestId === sessionNavigationId.current) setNavigationPending(false);
+    }
+  }, [cancelAutoRestore, commitProjections]);
 
   const openSession = useCallback(
     async (session: SessionListItem) => {
+      if (materializingDrafts.current.size > 0) return false;
       cancelAutoRestore();
       const projection =
         projectionsRef.current[session.id] ??
@@ -710,14 +760,17 @@ export function useChatSession(): ChatSessionState {
       const draft = projectionsRef.current[draftSessionId];
       if (!draft) return null;
       if (draft.lifecycle !== "draft") return draft;
-      if (materializingDrafts.current.has(draftSessionId)) return null;
+      if (materializingDrafts.current.has(draftSessionId) || pendingWorkspaceSelections.current.has(draftSessionId)) return null;
       materializingDrafts.current.add(draftSessionId);
       const navigationId = ++sessionNavigationId.current;
       setNavigationPending(true);
       commitProjections((current) => updateProjectionError(current, draftSessionId, null));
       try {
         const cwd = draft.cwd || (await ensureConversationWorkspace());
-        return await installSession(await createAgentSession(cwd), "live", draftSessionId, navigationId);
+        const workspace = await rememberWorkspace(cwd);
+        if (navigationId !== sessionNavigationId.current) return null;
+        setWorkspaceState(workspace);
+        return await installSession(await createAgentSession(cwd), "live", draftSessionId, navigationId, true);
       } catch (error) {
         commitProjections((current) =>
           updateProjectionError(current, draftSessionId, formatError(error)),
@@ -736,47 +789,67 @@ export function useChatSession(): ChatSessionState {
     const projection = sessionId ? projectionsRef.current[sessionId] : undefined;
     if (!sessionId || !projection || eventConnection !== "ready") return false;
     if (projection.lifecycle !== "draft") return projection.configuration !== null;
-    return Boolean((await materializeDraft(sessionId))?.configuration);
-  }, [eventConnection, materializeDraft]);
+    if (materializingDrafts.current.has(sessionId)) return false;
+    const version = ++modelCatalogVersion.current;
+    try {
+      const catalog = await listAgentModels();
+      if (version === modelCatalogVersion.current) setModels(catalog);
+      return true;
+    } catch (error) {
+      if (version === modelCatalogVersion.current) setCatalogError(formatError(error));
+      return false;
+    }
+  }, [eventConnection]);
 
   const updateConfiguration = useCallback(
     async (update: {
       model?: Pick<AgentModel, "provider" | "id">;
       thinkingLevel?: ThinkingLevel;
     }) => {
-      let sessionId = activeSessionIdRef.current;
-      let projection: SessionProjection | null | undefined = sessionId
+      const sessionId = activeSessionIdRef.current;
+      const projection = sessionId
         ? projectionsRef.current[sessionId]
         : undefined;
-      if (sessionId && projection?.lifecycle === "draft") {
-        projection = await materializeDraft(sessionId);
-        sessionId = projection?.sessionId ?? null;
-      }
       if (
         !sessionId ||
         !projection ||
         projection.phase !== "ready" ||
-        configuringSessionId
+        configuringSessions.current.has(sessionId) ||
+        materializingDrafts.current.size > 0 ||
+        preparingPrompts.current.has(sessionId)
       ) {
         return;
       }
+      const pendingConfiguration = { ...projection.pendingConfiguration, ...update };
+      if (projection.lifecycle === "draft") {
+        commitProjections((current) => ({
+          ...current,
+          [sessionId]: { ...current[sessionId]!, pendingConfiguration, error: null },
+        }));
+        return;
+      }
+      configuringSessions.current.add(sessionId);
       setConfiguringSessionId(sessionId);
-      commitProjections((current) => updateProjectionError(current, sessionId, null));
+      commitProjections((current) => ({
+        ...current,
+        [sessionId]: { ...current[sessionId]!, pendingConfiguration, error: null },
+      }));
       try {
-        const configuration = await configureAgentSession(sessionId, update);
+        const configuration = await configureAgentSession(sessionId, pendingConfiguration);
         commitProjections((current) => {
           const currentProjection = current[sessionId];
           return currentProjection
-            ? { ...current, [sessionId]: { ...currentProjection, configuration } }
+            ? { ...current, [sessionId]: { ...currentProjection, configuration, pendingConfiguration: null } }
             : current;
         });
       } catch (error) {
         commitProjections((current) => updateProjectionError(current, sessionId, formatError(error)));
       } finally {
+        configuringSessions.current.delete(sessionId);
         setConfiguringSessionId(null);
       }
     },
-    [commitProjections, configuringSessionId, materializeDraft],
+    [commitProjections],
   );
 
   const updateModel = useCallback(
@@ -815,15 +888,42 @@ export function useChatSession(): ChatSessionState {
         !projection ||
         !content ||
         eventConnection !== "ready" ||
-        configuringSessionId === sessionId
+        materializingDrafts.current.size > 0 ||
+        configuringSessions.current.has(sessionId) ||
+        preparingPrompts.current.has(sessionId) ||
+        pendingWorkspaceSelections.current.has(sessionId)
       ) {
         return false;
       }
       const requestStartedAt = Date.now();
       if (projection.lifecycle === "draft") {
+        const draftId = sessionId;
+        preparingPrompts.current.add(draftId);
         projection = await materializeDraft(sessionId);
+        preparingPrompts.current.delete(draftId);
         if (!projection) return false;
         sessionId = projection.sessionId;
+      }
+      if (projection.pendingConfiguration) {
+        preparingPrompts.current.add(sessionId);
+        configuringSessions.current.add(sessionId);
+        setConfiguringSessionId(sessionId);
+        try {
+          const configuration = await configureAgentSession(sessionId, projection.pendingConfiguration);
+          commitProjections((current) => {
+            const existing = current[sessionId];
+            return existing ? { ...current, [sessionId]: { ...existing, configuration, pendingConfiguration: null, error: null } } : current;
+          });
+          projection = projectionsRef.current[sessionId];
+          if (!projection) return false;
+        } catch (error) {
+          commitProjections((current) => updateProjectionError(current, sessionId, formatError(error)));
+          return false;
+        } finally {
+          preparingPrompts.current.delete(sessionId);
+          configuringSessions.current.delete(sessionId);
+          setConfiguringSessionId(null);
+        }
       }
       const queued = projection.phase === "streaming";
       const streamingBehavior = queued ? (behavior ?? "steer") : undefined;
@@ -907,7 +1007,7 @@ export function useChatSession(): ChatSessionState {
         return false;
       }
     },
-    [commitProjections, configuringSessionId, eventConnection, materializeDraft, nextItemId],
+    [commitProjections, eventConnection, materializeDraft, nextItemId],
   );
 
   const clearQueue = useCallback(async () => {
@@ -997,10 +1097,14 @@ export function useChatSession(): ChatSessionState {
   const runningSessionIds = Object.values(projections)
     .filter((projection) => projection.phase === "streaming")
     .map((projection) => projection.sessionId);
-  const displayThinkingLevel = activeThinkingLevel ?? lastConfirmedThinkingLevel.current;
+  const displayThinkingLevel = active?.lifecycle === "draft"
+    ? active.pendingConfiguration?.thinkingLevel ?? null
+    : activeThinkingLevel ?? lastConfirmedThinkingLevel.current;
 
   return {
     phase,
+    lifecycle: active?.lifecycle ?? null,
+    draftConfiguration: active?.lifecycle === "draft" ? active.pendingConfiguration : null,
     sessionId: active?.sessionId ?? null,
     sessionPath: active?.sessionPath ?? null,
     cwd: active?.cwd ?? "",
@@ -1009,7 +1113,7 @@ export function useChatSession(): ChatSessionState {
     models,
     configuration: active?.configuration ?? null,
     displayThinkingLevel,
-    configuring: configuringSessionId === active?.sessionId,
+    configuring: configuringSessionId === active?.sessionId || Boolean(active && configuringSessions.current.has(active.sessionId)),
     catalogPhase,
     catalogError,
     error: active?.error ?? globalError,
@@ -1027,6 +1131,7 @@ export function useChatSession(): ChatSessionState {
     cancelAutoRestore,
     createSession,
     createConversation,
+    changeDraftWorkspace,
     openSession,
     removeWorkspace,
     deleteSessions,
@@ -1091,6 +1196,7 @@ function projectionFromSession(
     cwd: session.cwd,
     messages,
     configuration: readConfiguration(session.configuration) ?? emptyConfiguration(),
+    pendingConfiguration: replaced?.pendingConfiguration ?? null,
     lifecycle,
     createdAt: replaced?.createdAt ?? new Date().toISOString(),
     modifiedAt: new Date().toISOString(),
@@ -1115,6 +1221,7 @@ function createDraftProjection(sessionId: string, cwd: string): SessionProjectio
     cwd,
     messages: [],
     configuration: null,
+    pendingConfiguration: null,
     lifecycle: "draft",
     createdAt: now,
     modifiedAt: now,
@@ -1140,6 +1247,7 @@ function mergeSessionItems(
     lifecycle: "persisted",
   }));
   for (const projection of projections) {
+    if (projection.lifecycle === "draft") continue;
     const pathIndex = projection.sessionPath
       ? items.findIndex((session) => session.path && samePath(session.path, projection.sessionPath!))
       : -1;

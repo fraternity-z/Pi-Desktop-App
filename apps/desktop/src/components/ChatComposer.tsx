@@ -36,6 +36,7 @@ import {
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
+import { THINKING_LEVELS, isThinkingLevel } from "../ipc/agent";
 
 import type {
   AgentModel,
@@ -51,6 +52,7 @@ import type {
   AgentEventConnection,
   CatalogPhase,
   ChatPhase,
+  DraftConfiguration,
 } from "../stores/useChatSession";
 import type { ToolPermissionMode } from "../stores/useToolPermissions";
 import type { GitBranchesState } from "../stores/useGitBranches";
@@ -74,6 +76,7 @@ type ResourcePhase = "idle" | "loading" | "ready" | "error";
 type SlashCommandsPhase = "idle" | "loading" | "ready" | "error";
 
 interface ChatComposerProps {
+  sessionKey?: string;
   workspaceName: string;
   workspacePath?: string;
   recentWorkspaces?: string[];
@@ -85,6 +88,8 @@ interface ChatComposerProps {
   eventConnection: AgentEventConnection;
   models: AgentModel[];
   configuration: SessionConfiguration | null;
+  draftConfiguration?: DraftConfiguration | null;
+  isDraft?: boolean;
   displayThinkingLevel?: ThinkingLevel | null;
   configuring: boolean;
   catalogPhase?: CatalogPhase;
@@ -123,6 +128,7 @@ interface ChatComposerProps {
 }
 
 export function ChatComposer({
+  sessionKey = "",
   workspaceName,
   workspacePath = "",
   recentWorkspaces = [],
@@ -134,6 +140,8 @@ export function ChatComposer({
   eventConnection,
   models,
   configuration,
+  draftConfiguration = null,
+  isDraft = false,
   displayThinkingLevel = null,
   configuring,
   catalogPhase = "idle",
@@ -181,6 +189,8 @@ export function ChatComposer({
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const [openMenu, setOpenMenu] = useState<ComposerMenu | null>(null);
   const [configurationPreparation, setConfigurationPreparation] = useState<"idle" | "loading" | "error">("idle");
+  const configurationContext = useRef(sessionKey);
+  configurationContext.current = sessionKey;
   const [resourceResults, setResourceResults] = useState<WorkspacePathMatch[]>([]);
   const [resourcePhase, setResourcePhase] = useState<ResourcePhase>("idle");
   const [resourceError, setResourceError] = useState<string | null>(null);
@@ -190,9 +200,9 @@ export function ChatComposer({
   const [suggestionsDismissed, setSuggestionsDismissed] = useState(false);
   const streaming = phase === "streaming";
   const disabled = eventConnection !== "ready";
-  const modelDisabled = disabled || streaming || configuring;
+  const modelDisabled = disabled || streaming || configuring || phase === "creating";
   const permissionDisabled =
-    disabled || streaming || configuring || (availableTools.length === 0 && !onPrepareConfiguration);
+    disabled || streaming || configuring || phase === "creating" || (availableTools.length === 0 && !onPrepareConfiguration && !isDraft);
   const modelGroups = useMemo(() => groupModelsByProvider(models), [models]);
   const projectOptions = useMemo(
     () => uniquePaths([workspacePath, ...recentWorkspaces]),
@@ -220,8 +230,8 @@ export function ChatComposer({
     selectedToolNames.length,
     autoReviewSelected,
   );
-  const selectedModel = configuration?.model ?? models[0] ?? null;
-  const selectedThinkingLevel = configuration?.thinkingLevel ?? displayThinkingLevel;
+  const selectedModel = configuration?.model ?? models.find((model) => model.provider === draftConfiguration?.model?.provider && model.id === draftConfiguration.model.id) ?? null;
+  const selectedThinkingLevel = configuration?.thinkingLevel ?? draftConfiguration?.thinkingLevel ?? displayThinkingLevel;
   const commandCatalog = useMemo(
     () => buildComposerCommandCatalog(slashCommands),
     [slashCommands],
@@ -249,14 +259,22 @@ export function ChatComposer({
     openMenu === null && composerTrigger !== null && !suggestionsDismissed && !disabled;
 
   async function prepareThinkingConfiguration() {
+    const source = sessionKey;
     setConfigurationPreparation("loading");
     try {
       const ready = await onPrepareConfiguration?.();
-      setConfigurationPreparation(ready ? "idle" : "error");
+      if (configurationContext.current === source) setConfigurationPreparation(ready ? "idle" : "error");
     } catch {
-      setConfigurationPreparation("error");
+      if (configurationContext.current === source) setConfigurationPreparation("error");
     }
   }
+
+  useEffect(() => {
+    setOpenMenu(null);
+    setConfigurationPreparation("idle");
+    setSuggestionsDismissed(false);
+    setCaretPosition(draft.length);
+  }, [sessionKey]);
 
   useLayoutEffect(() => {
     if (composerFormRef.current) {
@@ -361,7 +379,7 @@ export function ChatComposer({
   useEffect(() => {
     if (
       (!showProjectBar && (openMenu === "project" || openMenu === "branch")) ||
-      ((streaming || phase === "creating") && openMenu === "branch") ||
+      ((streaming || phase === "creating") && (openMenu === "branch" || openMenu === "project")) ||
       ((disabled || streaming) &&
         (openMenu === "permission" || openMenu === "model" || openMenu === "thinking")) ||
       (configuring && openMenu === "permission")
@@ -519,6 +537,7 @@ export function ChatComposer({
               aria-expanded={openMenu === "project"}
               aria-controls={openMenu === "project" ? "composer-project-menu" : undefined}
               title={workspacePath || workspaceName}
+              disabled={disabled || streaming || phase === "creating"}
               onClick={() => setOpenMenu((current) => (current === "project" ? null : "project"))}
             >
               <Folder size={18} aria-hidden="true" />
@@ -788,7 +807,7 @@ export function ChatComposer({
                 onClick={() => {
                   const opening = openMenu !== "permission";
                   setOpenMenu(opening ? "permission" : null);
-                  if (opening && !configuration) void onPrepareConfiguration?.();
+                  if (opening && !configuration && !isDraft) void onPrepareConfiguration?.();
                 }}
               >
                 {permissionState.tone === "full" ? (
@@ -814,8 +833,7 @@ export function ChatComposer({
                 >
                   {!configuration && availableTools.length === 0 ? (
                     <p className="composer-menu-state">
-                      <LoaderCircle className="spin" size={15} aria-hidden="true" />
-                      正在读取权限
+                      {isDraft ? "发送后读取当前工作区的工具权限；现有权限选择会保留。" : "正在读取权限"}
                     </p>
                   ) : (
                     <>
@@ -897,7 +915,7 @@ export function ChatComposer({
                 ref={modelTriggerRef}
                 className="composer-picker-trigger composer-model-summary"
                 type="button"
-                disabled={disabled || streaming}
+                disabled={disabled || streaming || phase === "creating"}
                 aria-disabled={configuring || undefined}
                 aria-label="模型与思考强度"
                 aria-haspopup="dialog"
@@ -994,7 +1012,24 @@ export function ChatComposer({
                   ariaLabel="模型与思考强度设置"
                   defaultWidth={282}
                 >
-                  <ComposerThinkingControl
+                  {isDraft ? (
+                    <div className="composer-thinking-control">
+                      <button className="composer-model-card" type="button" aria-label="选择模型" disabled={modelDisabled} onClick={() => setOpenMenu("model")}>
+                        <strong>{selectedModel?.name ?? "选择模型"}</strong>
+                      </button>
+                      <label>思考强度
+                        <select aria-label="草稿思考强度" value={draftConfiguration?.thinkingLevel ?? ""} disabled={modelDisabled} onChange={(event) => {
+                          if (isThinkingLevel(event.target.value)) onThinkingLevelChange(event.target.value);
+                        }}>
+                          <option value="" disabled>使用模型默认值</option>
+                          {THINKING_LEVELS.map((level) => <option key={level} value={level}>{thinkingLevelLabel(level)}</option>)}
+                        </select>
+                      </label>
+                      <p className="composer-menu-state">发送时按模型支持范围应用思考强度。</p>
+                      {configurationPreparation === "loading" && <p role="status">正在加载模型</p>}
+                      {configurationPreparation === "error" && <p role="alert">无法读取模型，请关闭后重试</p>}
+                    </div>
+                  ) : <ComposerThinkingControl
                     modelName={selectedModel?.name ?? "选择模型"}
                     level={selectedThinkingLevel}
                     availableLevels={configuration?.availableThinkingLevels}
@@ -1004,7 +1039,7 @@ export function ChatComposer({
                     error={!configuration && configurationPreparation === "error" ? "无法读取思考强度，请关闭后重试" : null}
                     onSelectModel={() => setOpenMenu("model")}
                     onChange={onThinkingLevelChange}
-                  />
+                  />}
                 </AnchoredComposerMenu>
               )}
             </div>

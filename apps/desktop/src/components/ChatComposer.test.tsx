@@ -49,6 +49,25 @@ function modelPickerProps() {
 }
 
 describe("渐进式模型选择器", () => {
+  it("浮空草稿显示显式配置，权限未知时不提前读取会话", async () => {
+    const options = modelPickerProps();
+    const prepare = vi.fn(async () => true);
+    const { rerender } = render(<ChatComposer {...options} sessionKey="draft:1" isDraft
+      configuration={null} availableTools={[]} selectedToolNames={[]} defaultToolNames={[]}
+      draftConfiguration={{ model: { provider: "test", id: "second" }, thinkingLevel: "high" }}
+      onPrepareConfiguration={prepare} />);
+    expect(screen.getByRole("button", { name: "模型与思考强度" })).toHaveTextContent("Second高");
+    fireEvent.click(screen.getByRole("button", { name: "选择工具权限" }));
+    expect(screen.getByText(/发送后读取当前工作区的工具权限/)).toBeInTheDocument();
+    expect(prepare).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "模型与思考强度" }));
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+    fireEvent.change(screen.getByRole("combobox", { name: "草稿思考强度" }), { target: { value: "medium" } });
+    expect(options.onThinkingLevelChange).toHaveBeenCalledWith("medium");
+    rerender(<ChatComposer {...options} sessionKey="live:1" />);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
   it("点击摘要只展示滑杆，选中模型可使用方向键导航，选择后返回上层", () => {
     const options = modelPickerProps();
     render(<ChatComposer {...options} />);
@@ -269,8 +288,9 @@ describe("ChatComposer", () => {
       />,
     );
 
-    expect(screen.getByText("GPT")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "模型与思考强度" })).toHaveTextContent("选择模型");
     openModelMenu();
+    expect(screen.getByRole("menuitemradio", { name: "GPT" })).toHaveAttribute("aria-checked", "false");
     fireEvent.click(screen.getByRole("menuitemradio", { name: "GPT" }));
     expect(onModelChange).toHaveBeenCalledWith("openai", "gpt");
   });

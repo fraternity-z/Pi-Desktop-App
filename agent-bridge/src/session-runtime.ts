@@ -4,6 +4,7 @@ import { basename, extname, isAbsolute, join, relative, win32 } from "node:path"
 import { readPackageVersion } from "./package-version.js";
 import { ProviderSettingsService, type OfficialModelSettings, type OfficialProviderRuntime } from "./provider-settings.js";
 import { ProviderSettingsError } from "./provider-config.js";
+import { SessionReview, ReviewError, readReviewSummary, type ReviewExtensionFactory, type SessionReviewSummary, type SessionReviewDetail, type SessionReviewPage } from "./session-review.js";
 
 import {
   MAX_COMMANDS,
@@ -54,6 +55,8 @@ export interface PiModelRuntimeLike extends OfficialProviderRuntime {
 
 interface PiSessionManagerInstanceLike {
   getCwd?(): string;
+  getSessionId?(): string;
+  getBranch?(): unknown[];
 }
 
 export type PackageScope = "global" | "project";
@@ -218,7 +221,7 @@ export interface PiSdkLike {
     agentDir: string;
     extensionFactories: Array<{
       name: string;
-      factory: RequestHeaderExtensionFactory;
+      factory: RequestHeaderExtensionFactory | ReviewExtensionFactory;
       hidden: boolean;
     }>;
   }) => PiResourceLoaderLike;
@@ -256,6 +259,7 @@ export interface AgentMessageSummary {
   toolOutput?: ToolDisplayPayload;
   isError?: boolean;
   timestamp?: string;
+  review?: SessionReviewSummary;
 }
 
 export interface SessionConfiguration {
@@ -339,6 +343,7 @@ export interface RuntimeEvent {
     | "queue.updated"
     | "agent.settled"
     | "session.configurationChanged"
+    | "session.reviewChanged"
     | "session.usageChanged";
   data?: unknown;
 }
@@ -351,6 +356,9 @@ export interface SessionRuntime {
   deleteSessions(sessionIds: string[]): Promise<DeleteSessionsResult>;
   openSession(sessionPath: string): Promise<CreatedAgentSession>;
   readHistory?(sessionId: string, cursor: string): SessionHistoryPage;
+  listReviews?(sessionId: string, cwd: string, cursor?: string): Promise<SessionReviewPage>;
+  reviewDetail?(sessionId: string, cwd: string, reviewId: string): Promise<SessionReviewDetail>;
+  rollbackReview?(sessionId: string, cwd: string, reviewId: string): Promise<SessionReviewSummary>;
   listModels(): Promise<AgentModel[]>;
   listPackages(cwd: string): Promise<PackageSummary[]>;
   installPackage(cwd: string, source: string, scope: PackageScope): Promise<PackageSummary[]>;
@@ -406,6 +414,7 @@ interface ManagedSession {
   historySummaryMeta?: HistorySummaryMeta;
   historySnapshot?: { id: number; messages: unknown[] };
   historySnapshotId?: number;
+  review?: SessionReview;
 }
 
 interface HistorySummaryMeta {
@@ -962,6 +971,7 @@ export class PiSessionRuntime implements SessionRuntime {
   private modelRuntimePromise: Promise<PiModelRuntimeLike> | undefined;
   private readonly sessions = new Map<string, ManagedSession>();
   private readonly openingSessions = new Map<string, Promise<CreatedAgentSession>>();
+  private readonly reviewsByLoader = new WeakMap<PiResourceLoaderLike, SessionReview>();
   private requestHeaderSettings: RequestHeaderSettings = { ...DEFAULT_REQUEST_HEADER_SETTINGS };
   private closed = false;
 
@@ -1019,7 +1029,7 @@ export class PiSessionRuntime implements SessionRuntime {
               ...(resourceLoader ? { resourceLoader } : {}),
             }),
         );
-        return this.activateSession(result, cwd, resourceLoader, "session.create");
+        return this.activateSession(result, cwd, sessionManager, resourceLoader, "session.create");
       } catch (error) {
         throw mapRuntimeError(error, "SESSION_CREATE_FAILED", "无法创建 Pi 会话");
       }
@@ -1189,7 +1199,7 @@ export class PiSessionRuntime implements SessionRuntime {
               ...(resourceLoader ? { resourceLoader } : {}),
             }),
         );
-        return this.activateSession(result, cwd, resourceLoader, "session.open");
+        return this.activateSession(result, cwd, sessionManager, resourceLoader, "session.open");
       } catch (error) {
         throw mapRuntimeError(error, "SESSION_OPEN_FAILED", "无法打开所选 Pi 会话");
       }
@@ -1215,8 +1225,34 @@ export class PiSessionRuntime implements SessionRuntime {
       throw new RuntimeError("HISTORY_CURSOR_INVALID", "历史分页已失效，请重新打开会话");
     }
     const page = summarizeHistoryPage(snapshot.messages.slice(0, index! + 1), id!, part);
+    refreshReviewSummaries(page.messages, managed.review);
     if (page.nextHistoryCursor === null) managed.historySnapshot = undefined;
     return page;
+  }
+
+  private async requireReview(sessionId: string, cwd: string): Promise<SessionReview> {
+    this.ensureOpen();
+    const managed = this.requireSession(sessionId);
+    let requested: string; let actual: string;
+    try { [requested, actual] = await Promise.all([realpath(cwd), realpath(managed.cwd)]); }
+    catch { throw new RuntimeError("REVIEW_UNSAFE_PATH", "审查工作区不存在或不可访问"); }
+    if (normalizeRuntimePath(requested) !== normalizeRuntimePath(actual)) throw new RuntimeError("REVIEW_UNSAFE_PATH", "审查工作区与会话不匹配");
+    if (!managed.review) throw new RuntimeError("REVIEW_UNAVAILABLE", "当前 SDK 不支持会话文件审查");
+    return managed.review;
+  }
+
+  async listReviews(sessionId: string, cwd: string, cursor?: string): Promise<SessionReviewPage> {
+    return (await this.requireReview(sessionId, cwd)).list(cursor);
+  }
+
+  async reviewDetail(sessionId: string, cwd: string, reviewId: string): Promise<SessionReviewDetail> {
+    return (await this.requireReview(sessionId, cwd)).detail(reviewId);
+  }
+
+  async rollbackReview(sessionId: string, cwd: string, reviewId: string): Promise<SessionReviewSummary> {
+    const review = await this.requireReview(sessionId, cwd);
+    if (this.requireSession(sessionId).session.isStreaming) throw new RuntimeError("SESSION_BUSY", "请等待会话任务结束后再回滚");
+    return review.rollback(reviewId);
   }
 
   async listModels(): Promise<AgentModel[]> {
@@ -1539,6 +1575,9 @@ export class PiSessionRuntime implements SessionRuntime {
       }
       return undefined;
     }
+    const review = new SessionReview(cwd, (sessionId, summary) => {
+      for (const listener of this.listeners) listener({ sessionId, name: "session.reviewChanged", data: summary });
+    });
     const resourceLoader = new this.sdk.DefaultResourceLoader({
       cwd,
       agentDir: this.agentDir,
@@ -1548,11 +1587,13 @@ export class PiSessionRuntime implements SessionRuntime {
           hidden: true,
           factory: createRequestHeaderExtension(() => this.requestHeaderSettings),
         },
+        { name: "pi-desktop-file-review", hidden: true, factory: review.extension },
       ],
     });
     await measurePerformance(this.diagnostics, operation, "resource.reload", () =>
       resourceLoader.reload(),
     );
+    this.reviewsByLoader.set(resourceLoader, review);
     return resourceLoader;
   }
 
@@ -1591,6 +1632,7 @@ export class PiSessionRuntime implements SessionRuntime {
   private activateSession(
     result: { session: PiSessionLike; modelFallbackMessage?: string },
     cwd: string,
+    sessionManager: PiSessionManagerInstanceLike,
     resourceLoader?: PiResourceLoaderLike,
     operation?: "session.create" | "session.open",
   ): CreatedAgentSession {
@@ -1599,6 +1641,20 @@ export class PiSessionRuntime implements SessionRuntime {
       session.dispose();
       throw new RuntimeError("INVALID_SESSION", "Pi SDK 返回了无效或重复的会话 id");
     }
+
+    let review = resourceLoader ? this.reviewsByLoader.get(resourceLoader) : undefined;
+    if (review && typeof sessionManager.getSessionId === "function" && typeof sessionManager.getBranch === "function") {
+      try {
+        if (sessionManager.getSessionId() !== session.sessionId) throw new Error("Session manager identity mismatch");
+        review.initialize({
+          getSessionId: () => sessionManager.getSessionId!(),
+          getBranch: () => sessionManager.getBranch!(),
+        });
+      } catch {
+        session.dispose();
+        throw new RuntimeError("REVIEW_UNAVAILABLE", "无法恢复 Pi 会话审查记录");
+      }
+    } else { review = undefined; }
 
     let unsubscribe: () => void;
     try {
@@ -1621,6 +1677,7 @@ export class PiSessionRuntime implements SessionRuntime {
       contextUsageKey: JSON.stringify(contextUsage),
       historyRevision: 0,
       ...(resourceLoader ? { resourceLoader } : {}),
+      ...(review ? { review } : {}),
     };
     this.sessions.set(session.sessionId, managed);
 
@@ -1801,6 +1858,7 @@ function describeManagedSession(
   const page = summarizeHistoryPage(snapshot.messages, snapshot.id);
   managed.historySnapshot = page.nextHistoryCursor ? snapshot : undefined;
   const messages = page.messages;
+  refreshReviewSummaries(messages, managed.review);
   // The open/create response already paid for this projection. Reuse its small
   // metadata object when the next catalog refresh asks for the live summary.
   managed.historySummaryMeta = {
@@ -1825,6 +1883,12 @@ function describeManagedSession(
     streaming: managed.session.isStreaming,
     contextUsage: readContextUsage(managed.session),
   };
+}
+
+function refreshReviewSummaries(messages: AgentMessageSummary[], review?: SessionReview): void {
+  for (const message of messages) {
+    if (message.review) message.review = review?.summary(message.review.id) ?? message.review;
+  }
 }
 
 function toLiveSessionSummary(
@@ -1896,6 +1960,7 @@ function readToolEvent(
   toolName: string;
   input?: ToolDisplayPayload;
   output?: ToolDisplayPayload;
+  review?: SessionReviewSummary;
 } | null {
   const toolCallId = readBoundedText(event.toolCallId, MAX_TOOL_CALL_ID_CHARS);
   const toolName = readBoundedText(event.toolName, MAX_TOOL_NAME_CHARS);
@@ -1904,9 +1969,11 @@ function readToolEvent(
     detail === "input"
       ? projectToolDisplay(event.args ?? event.arguments ?? event.input)
       : projectToolOutput(event.result ?? event.output);
+  const result = event.result ?? event.output;
+  const review = isRecord(result) && isRecord(result.details) ? readReviewSummary(result.details.piDesktopReview) : undefined;
   return detail === "input"
     ? { toolCallId, toolName, ...(display ? { input: display } : {}) }
-    : { toolCallId, toolName, ...(display ? { output: display } : {}) };
+    : { toolCallId, toolName, ...(display ? { output: display } : {}), ...(review ? { review } : {}) };
 }
 
 function describeQueue(session: PiSessionLike): QueuedMessages {
@@ -2374,6 +2441,7 @@ function projectHistoryMessage(
     pendingTools.delete(toolCallId);
     const toolInput = pending ? projectToolDisplay(pending.input) : undefined;
     const toolOutput = projectToolOutput(message.content ?? message.result ?? message.output);
+    const review = isRecord(message.details) ? readReviewSummary(message.details.piDesktopReview) : undefined;
     return [
       {
         role: "tool",
@@ -2382,6 +2450,7 @@ function projectHistoryMessage(
         toolName,
         ...(toolInput ? { toolInput } : {}),
         ...(toolOutput ? { toolOutput } : {}),
+        ...(review ? { review } : {}),
         isError: message.isError === true,
         ...(timestamp ? { timestamp } : {}),
       },
@@ -2571,5 +2640,6 @@ function isMissingFileError(error: unknown): boolean {
 }
 
 function mapRuntimeError(error: unknown, code: string, message: string): RuntimeError {
+  if (error instanceof ReviewError) return new RuntimeError(error.code, error.message);
   return error instanceof RuntimeError ? error : new RuntimeError(code, message);
 }

@@ -28,6 +28,7 @@ export interface SplitDiffRow {
 }
 
 const WORD_DIFF_TOKEN_LIMIT = 360;
+const WORD_DIFF_CHARACTER_LIMIT = 8000;
 const CONTEXT_EDGE_LINES = 3;
 
 export function parseUnifiedDiff(diff: string): DiffLine[] {
@@ -160,13 +161,24 @@ export function buildSplitDiffRows(
 
 export function buildUnifiedWordSegments(
   lines: ReadonlyArray<DiffLine>,
+  visibleLines: ReadonlyArray<DiffLine> = lines,
 ): ReadonlyMap<DiffLine, ReadonlyArray<WordSegment>> {
   const segments = new Map<DiffLine, ReadonlyArray<WordSegment>>();
-  for (const row of buildSplitDiffRows(lines, true)) {
+  const visible = new Set(visibleLines);
+  const visiblePairs = buildSplitDiffRows(lines, false).filter((row) =>
+    (row.left && visible.has(row.left)) || (row.right && visible.has(row.right)),
+  );
+  for (const row of addSplitWordSegments(visiblePairs)) {
     if (row.left && row.leftSegments) segments.set(row.left, row.leftSegments);
     if (row.right && row.rightSegments) segments.set(row.right, row.rightSegments);
   }
   return segments;
+}
+
+export function addSplitWordSegments(rows: ReadonlyArray<SplitDiffRow>): SplitDiffRow[] {
+  return rows.map((row) => row.kind === "pair"
+    ? createSplitPair(row.left, row.right, true)
+    : row);
 }
 
 export function buildGitApplyCommand(patch: string): string {
@@ -206,6 +218,9 @@ function compareWords(
 ): { left: ReadonlyArray<WordSegment>; right: ReadonlyArray<WordSegment> } {
   if (!left) return { left: [], right: [{ text: right, changed: true }] };
   if (!right) return { left: [{ text: left, changed: true }], right: [] };
+  if (left.length > WORD_DIFF_CHARACTER_LIMIT || right.length > WORD_DIFF_CHARACTER_LIMIT) {
+    return compareByCommonEdges(left, right);
+  }
 
   const leftTokens = tokenize(left);
   const rightTokens = tokenize(right);

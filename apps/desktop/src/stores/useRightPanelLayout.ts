@@ -40,6 +40,7 @@ export interface RightPanelLayoutState {
   readonly diffStyle: RightPanelDiffStyle;
   readonly displayOptions: RightPanelDisplayOptions;
   readonly setWidth: (width: number) => void;
+  readonly commitWidth: (width: number) => void;
   readonly resetWidth: () => void;
   readonly setExpanded: (expanded: boolean) => void;
   readonly toggleExpanded: () => void;
@@ -118,13 +119,6 @@ export function useRightPanelLayout(): RightPanelLayoutState {
     return () => window.removeEventListener("resize", updateViewport);
   }, []);
   useEffect(() => setWidthState((current) => clampRightPanelWidth(current, maxWidth)), [maxWidth]);
-  const latestWidth = useRef(width);
-  latestWidth.current = width;
-  useEffect(() => {
-    const timer = window.setTimeout(() => saveStorage(RIGHT_PANEL_STORAGE_KEYS.width, String(width)), 150);
-    return () => window.clearTimeout(timer);
-  }, [width]);
-  useEffect(() => () => saveStorage(RIGHT_PANEL_STORAGE_KEYS.width, String(latestWidth.current)), []);
   useEffect(() => saveStorage(RIGHT_PANEL_STORAGE_KEYS.expanded, expanded ? "1" : "0"), [expanded]);
   useEffect(() => saveStorage(RIGHT_PANEL_STORAGE_KEYS.diffStyle, diffStyle), [diffStyle]);
   useEffect(() => saveStorage(RIGHT_PANEL_STORAGE_KEYS.displayOptions, JSON.stringify(displayOptions)), [displayOptions]);
@@ -133,7 +127,12 @@ export function useRightPanelLayout(): RightPanelLayoutState {
     const next = clampRightPanelWidth(value, maxWidth);
     return current === next ? current : next;
   }), [maxWidth]);
-  const resetWidth = useCallback(() => setWidth(RIGHT_PANEL_DEFAULT_WIDTH), [setWidth]);
+  const commitWidth = useCallback((value: number) => {
+    const next = clampRightPanelWidth(value, maxWidth);
+    setWidthState(next);
+    saveStorage(RIGHT_PANEL_STORAGE_KEYS.width, String(next));
+  }, [maxWidth]);
+  const resetWidth = useCallback(() => commitWidth(RIGHT_PANEL_DEFAULT_WIDTH), [commitWidth]);
   const setExpanded = useCallback((value: boolean) => setExpandedState(value), []);
   const toggleExpanded = useCallback(() => setExpandedState((value) => !value), []);
   const setDiffStyle = useCallback((value: RightPanelDiffStyle) => setDiffStyleState(value), []);
@@ -153,6 +152,7 @@ export function useRightPanelLayout(): RightPanelLayoutState {
     diffStyle,
     displayOptions,
     setWidth,
+    commitWidth,
     resetWidth,
     setExpanded,
     toggleExpanded,
@@ -160,11 +160,13 @@ export function useRightPanelLayout(): RightPanelLayoutState {
     toggleDiffStyle,
     setDisplayOption,
     toggleDisplayOption,
-  }), [width, maxWidth, expanded, diffStyle, displayOptions, setWidth, resetWidth, setExpanded, toggleExpanded, setDiffStyle, toggleDiffStyle, setDisplayOption, toggleDisplayOption]);
+  }), [width, maxWidth, expanded, diffStyle, displayOptions, setWidth, commitWidth, resetWidth, setExpanded, toggleExpanded, setDiffStyle, toggleDiffStyle, setDisplayOption, toggleDisplayOption]);
 }
 
-export function useRightPanelVisibility(enabled: boolean): RightPanelVisibilityState {
-  const [open, setOpen] = useState(false);
+export function useRightPanelVisibility(enabled: boolean, controlled?: { readonly key: string; readonly open: boolean; readonly setOpen: (open: boolean) => void }): RightPanelVisibilityState {
+  const [localOpen, setLocalOpen] = useState(false);
+  const open = controlled?.open ?? localOpen;
+  const setOpen = controlled?.setOpen ?? setLocalOpen;
   const [opening, setOpening] = useState(false);
   const [closing, setClosing] = useState(false);
   const openTimer = useRef<number | null>(null);
@@ -214,12 +216,12 @@ export function useRightPanelVisibility(enabled: boolean): RightPanelVisibilityS
     setClosing(false);
     if (!open) startOpenAnimation();
     setOpen(true);
-  }, [clearCloseTimer, enabled, open, startOpenAnimation]);
+  }, [clearCloseTimer, enabled, open, setOpen, startOpenAnimation]);
   const closePanel = useCallback(() => {
     if (!open && !closing) return;
     setOpen(false);
     startCloseAnimation();
-  }, [closing, open, startCloseAnimation]);
+  }, [closing, open, setOpen, startCloseAnimation]);
   const togglePanel = useCallback(() => {
     if (open) closePanel();
     else openPanel();
@@ -229,10 +231,16 @@ export function useRightPanelVisibility(enabled: boolean): RightPanelVisibilityS
     if (enabled) return;
     clearCloseTimer();
     clearOpenTimer();
-    setOpen(false);
+    if (!controlled) setLocalOpen(false);
     setClosing(false);
     setOpening(false);
-  }, [clearCloseTimer, clearOpenTimer, enabled]);
+  }, [clearCloseTimer, clearOpenTimer, enabled, controlled?.key]);
+  useEffect(() => {
+    clearCloseTimer();
+    clearOpenTimer();
+    setClosing(false);
+    setOpening(false);
+  }, [clearCloseTimer, clearOpenTimer, controlled?.key]);
   useEffect(() => () => {
     clearCloseTimer();
     clearOpenTimer();

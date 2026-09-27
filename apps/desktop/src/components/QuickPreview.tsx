@@ -1,5 +1,5 @@
 import { AlertTriangle, FileText, FolderOpen, LoaderCircle, Maximize2 } from "lucide-react";
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 
 import { decodeBase64Bytes, getImageMimeType } from "../stores/rightPanelFiles";
 import { MarkdownContent } from "./MarkdownContent";
@@ -43,6 +43,10 @@ export function QuickPreview(props: QuickPreviewProps): ReactElement {
   const [actionError, setActionError] = useState<string | null>(null);
   const extension = (props.target.extension ?? props.target.name.split(".").pop() ?? "").toLowerCase();
   const content = props.content ?? props.target.content ?? "";
+  const textPreview = useMemo(() => {
+    const lines = content.replace(/\r\n?/g, "\n").split("\n");
+    return { content: lines.slice(0, 5000).join("\n"), lineCount: lines.length };
+  }, [content]);
   const src = props.target.src ?? (
     props.dataBase64
       ? `data:${props.target.kind === "image" ? getImageMimeType(extension) : documentMimeType(extension)};base64,${props.dataBase64}`
@@ -107,7 +111,7 @@ export function QuickPreview(props: QuickPreviewProps): ReactElement {
   if (props.target.kind === "image" && src) {
     body = <div className="right-panel-preview-image-stage"><img src={src} alt={props.target.name} /></div>;
   } else if (props.target.kind === "markdown" || extension === "md" || extension === "markdown") {
-    body = <MarkdownContent className="right-panel-preview-markdown">{content}</MarkdownContent>;
+    body = <MarkdownContent className="right-panel-preview-markdown">{textPreview.content}</MarkdownContent>;
   } else if (extension === "pdf" && src) {
     body = (
       <object className="right-panel-preview-pdf" data={src} type="application/pdf" aria-label={`预览 ${props.target.name}`}>
@@ -117,7 +121,7 @@ export function QuickPreview(props: QuickPreviewProps): ReactElement {
   } else if (extension === "docx" && props.dataBase64) {
     body = <DocxPreview dataBase64={props.dataBase64} title={props.target.name} />;
   } else if (props.target.kind === "text" || ["txt", "csv"].includes(extension)) {
-    body = <pre className="right-panel-preview-text">{content}</pre>;
+    body = <pre className="right-panel-preview-text">{textPreview.content}</pre>;
   } else {
     body = (
       <DocumentFallback
@@ -144,6 +148,7 @@ export function QuickPreview(props: QuickPreviewProps): ReactElement {
           {actionError}
         </p>
       ) : null}
+      {textPreview.lineCount > 5000 && (props.target.kind === "text" || props.target.kind === "markdown") ? <p className="right-panel-content-state" role="status">仅预览前 5000 行，共 {textPreview.lineCount} 行。可在外部打开完整文件。</p> : null}
       {body}
     </section>
   );

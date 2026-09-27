@@ -8,7 +8,7 @@ import {
   MoreHorizontal,
   Trash2,
 } from "lucide-react";
-import { useMemo, useState, type ReactElement } from "react";
+import { useEffect, useMemo, useState, type ReactElement } from "react";
 
 import { HighlightedCodeLine } from "./CodeHighlight";
 import "./right-panel-content.css";
@@ -26,6 +26,7 @@ export interface CreateFileViewerComment {
 }
 
 type AsyncAction = () => void | Promise<void>;
+const PREVIEW_PAGE_LINES = 200;
 
 export interface FileViewerProps {
   readonly path: string;
@@ -61,11 +62,16 @@ export function FileViewer(props: FileViewerProps): ReactElement {
   const [draftText, setDraftText] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [page, setPage] = useState(0);
+  useEffect(() => { setPage(0); setDraftLine(null); }, [props.path, props.content]);
   const relativePath = useMemo(
     () => relativeFilePath(props.path, props.rootPath),
     [props.path, props.rootPath],
   );
   const lines = useMemo(() => splitFileContent(props.content), [props.content]);
+  const pageCount = Math.max(1, Math.ceil(lines.length / PREVIEW_PAGE_LINES));
+  const currentPage = Math.min(page, pageCount - 1);
+  const previewLines = useMemo(() => lines.slice(currentPage * PREVIEW_PAGE_LINES, (currentPage + 1) * PREVIEW_PAGE_LINES), [lines, currentPage]);
   const commentsByLine = useMemo(() => {
     const map = new Map<number, FileViewerComment[]>();
     for (const comment of props.comments ?? []) {
@@ -136,10 +142,17 @@ export function FileViewer(props: FileViewerProps): ReactElement {
       ) : props.error ? (
         <State icon={<AlertTriangle />} message={props.error} error retry={props.onRetry} />
       ) : (
+        <>
+        {pageCount > 1 ? <nav className="right-panel-file-pages" aria-label="源码分页">
+          <button type="button" className="secondary-button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>上一页</button>
+          <span role="status">共 {lines.length} 行</span>
+          <label>页 <input type="number" aria-label="源码页码" min={1} max={pageCount} value={currentPage + 1} onChange={(event) => { const value = event.currentTarget.valueAsNumber; if (Number.isFinite(value)) setPage(Math.max(0, Math.min(pageCount - 1, Math.floor(value) - 1))); }} /> / {pageCount}</label>
+          <button type="button" className="secondary-button" disabled={currentPage + 1 === pageCount} onClick={() => setPage(currentPage + 1)}>下一页</button>
+        </nav> : null}
         <pre className="right-panel-file-code">
           <code>
-            {lines.map((line, index) => {
-              const lineNumber = index + 1;
+            {previewLines.map((line, index) => {
+              const lineNumber = currentPage * PREVIEW_PAGE_LINES + index + 1;
               const editorOpen = draftLine === lineNumber;
               return (
                 <span className="right-panel-file-line-block" key={lineNumber}>
@@ -219,6 +232,7 @@ export function FileViewer(props: FileViewerProps): ReactElement {
             })}
           </code>
         </pre>
+        </>
       )}
     </section>
   );

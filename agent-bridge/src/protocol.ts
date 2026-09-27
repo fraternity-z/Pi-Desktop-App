@@ -55,6 +55,9 @@ export const BRIDGE_OPERATIONS = [
   "session.delete",
   "session.open",
   "session.history",
+  "session.review.list",
+  "session.review.detail",
+  "session.review.rollback",
   "session.configure",
   "prompt",
   "queue.clear",
@@ -70,6 +73,7 @@ export const BRIDGE_CAPABILITIES = [
   "models",
   "provider-settings",
   "session-history",
+  "session-file-review",
   "session-configuration",
   "tool-status",
   "tool-permissions",
@@ -137,6 +141,8 @@ export type BridgeRequest =
   | (RequestBase & { op: "session.delete"; sessionIds: string[] })
   | (RequestBase & { op: "session.open"; sessionPath: string })
   | (RequestBase & { op: "session.history"; sessionId: string; cursor: string })
+  | (RequestBase & { op: "session.review.list"; sessionId: string; cwd: string; cursor?: string })
+  | (RequestBase & { op: "session.review.detail" | "session.review.rollback"; sessionId: string; cwd: string; reviewId: string })
   | (RequestBase & {
       op: "session.configure";
       sessionId: string;
@@ -515,6 +521,17 @@ export function parseRequest(line: string): BridgeRequest {
         throw new ProtocolError("INVALID_REQUEST", "历史分页游标无效");
       }
       return { v: PROTOCOL_VERSION, id, op: "session.history", sessionId: requireSessionId(value), cursor };
+    }
+    case "session.review.list": {
+      const cursor = value.cursor === undefined ? undefined : requireString(value, "cursor", 36);
+      if (cursor && !/^[a-f0-9-]{36}$/.test(cursor)) throw new ProtocolError("INVALID_REQUEST", "审查分页游标无效");
+      return { v: PROTOCOL_VERSION, id, op: "session.review.list", sessionId: requireSessionId(value), cwd: requireAbsolutePath(value, "cwd"), ...(cursor ? { cursor } : {}) };
+    }
+    case "session.review.detail":
+    case "session.review.rollback": {
+      const reviewId = requireString(value, "reviewId", 36);
+      if (!/^[a-f0-9-]{36}$/.test(reviewId)) throw new ProtocolError("INVALID_REQUEST", "审查记录 id 无效");
+      return { v: PROTOCOL_VERSION, id, op: value.op as "session.review.detail" | "session.review.rollback", sessionId: requireSessionId(value), cwd: requireAbsolutePath(value, "cwd"), reviewId };
     }
     case "session.configure": {
       const model = readModelSelection(value);

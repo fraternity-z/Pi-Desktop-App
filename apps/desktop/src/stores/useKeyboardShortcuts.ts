@@ -11,7 +11,6 @@ export const SHORTCUT_ACTIONS = [
   { id: "theme", label: "切换主题", shortcut: "Ctrl+Shift+T" },
   { id: "runtime", label: "运行时面板", shortcut: "Ctrl+." },
   { id: "file", label: "打开文件", shortcut: "Ctrl+O" },
-  { id: "browser", label: "打开浏览器", shortcut: "Ctrl+T" },
 ] as const;
 
 export type ShortcutAction = (typeof SHORTCUT_ACTIONS)[number]["id"];

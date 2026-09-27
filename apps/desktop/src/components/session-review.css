@@ -1,0 +1,27 @@
+.review-scope-tabs { display: flex; gap: 4px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.review-scope-tabs button { border: 0; border-radius: 6px; padding: 6px 12px; background: transparent; color: inherit; cursor: pointer; }
+.review-scope-tabs button[aria-pressed="true"] { background: var(--surface); font-weight: 600; }
+.session-review { min-height: 0; padding: 12px; overflow: auto; font-size: 12px; }
+.session-review-toolbar, .session-change-actions, .session-change-pages { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.session-review-note { opacity: .65; line-height: 1.6; margin: 10px 0 14px; }
+.session-change-card { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
+.session-change-heading { display: flex; align-items: center; width: 100%; gap: 6px; padding: 10px; border: 0; background: transparent; color: inherit; cursor: pointer; text-align: left; }
+.session-change-heading > span[title] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.session-change-kind { font-weight: 600; opacity: .7; }
+.session-change-stats { white-space: nowrap; font-size: 11px; }
+.session-change-status { display: flex; justify-content: space-between; padding: 0 10px 8px; opacity: .65; font-size: 11px; }
+.session-change-body { border-top: 1px solid var(--line); }
+.session-change-actions, .session-change-pages, .session-change-confirm, .session-change-body > p, .session-change-body > [role="alert"] { padding: 8px; }
+.session-change-actions button { display: inline-flex; align-items: center; gap: 4px; }
+.session-change-body button, .session-review > button, .session-review [role="alert"] button { background: var(--surface); color: inherit; border: 1px solid var(--line); border-radius: 5px; padding: 4px 8px; cursor: pointer; }
+.session-change-body button:disabled { opacity: .4; cursor: default; }
+.session-change-confirm { background: #b9791518; }
+.session-change-confirm p { margin: 0 0 8px; line-height: 1.6; }
+.session-change-confirm button + button { margin-left: 8px; }
+.session-change-diff { overflow: auto; font: 11px/1.65 var(--font-mono, monospace); }
+.session-diff-line { display: flex; min-width: max-content; }
+.session-diff-line > span { width: 34px; flex: 0 0 34px; text-align: right; padding-right: 6px; opacity: .5; user-select: none; }
+.session-diff-line > code { white-space: pre; padding-right: 12px; }
+.session-diff-line.is-add { background: #22a06b18; }
+.session-diff-line.is-delete { background: #e5484d18; }
+.session-diff-line.is-meta { opacity: .6; }

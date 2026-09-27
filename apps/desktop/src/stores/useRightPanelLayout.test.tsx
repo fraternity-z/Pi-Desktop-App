@@ -45,6 +45,7 @@ describe("右侧面板布局", () => {
     vi.useFakeTimers();
     const { result } = renderHook(() => useRightPanelLayout());
     act(() => result.current.setWidth(340));
+    act(() => result.current.commitWidth(340));
     act(() => result.current.setExpanded(true));
     act(() => result.current.toggleDiffStyle());
     act(() => result.current.toggleDisplayOption("wordWrap"));
@@ -59,18 +60,20 @@ describe("右侧面板布局", () => {
     vi.useRealTimers();
   });
 
-  it("连续拖动延迟写入宽度，卸载时保存最终值", () => {
+  it("拖动暂停不写入宽度，仅在完成调整时保存最终值", () => {
     vi.useFakeTimers();
     const { result, unmount } = renderHook(() => useRightPanelLayout());
     act(() => result.current.setWidth(350));
     act(() => vi.advanceTimersByTime(100));
     act(() => result.current.setWidth(370));
     expect(window.localStorage.getItem(RIGHT_PANEL_STORAGE_KEYS.width)).toBeNull();
-    act(() => vi.advanceTimersByTime(150));
+    act(() => vi.advanceTimersByTime(1000));
+    expect(window.localStorage.getItem(RIGHT_PANEL_STORAGE_KEYS.width)).toBeNull();
+    act(() => result.current.commitWidth(370));
     expect(window.localStorage.getItem(RIGHT_PANEL_STORAGE_KEYS.width)).toBe("370");
     act(() => result.current.setWidth(390));
     unmount();
-    expect(window.localStorage.getItem(RIGHT_PANEL_STORAGE_KEYS.width)).toBe("390");
+    expect(window.localStorage.getItem(RIGHT_PANEL_STORAGE_KEYS.width)).toBe("370");
     vi.useRealTimers();
   });
 

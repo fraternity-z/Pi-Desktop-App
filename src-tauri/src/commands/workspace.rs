@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{BTreeMap, HashSet, VecDeque},
     ffi::OsString,
     fs::{self, OpenOptions},
     io::Write,
@@ -60,6 +60,144 @@ const MAX_WORKSPACE_FILE_BYTES: u64 = 512 * 1024;
 pub struct WorkspaceFileContent {
     pub data_base64: String,
     pub size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceEntry {
+    pub name: String,
+    pub relative_path: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceDirectoryPage {
+    pub entries: Vec<WorkspaceEntry>,
+    pub next_cursor: Option<String>,
+}
+
+#[tauri::command]
+pub async fn workspace_list_entries(
+    store: State<'_, WorkspaceStore>,
+    cwd: String,
+    directory: String,
+    cursor: Option<String>,
+    limit: usize,
+) -> Result<WorkspaceDirectoryPage, AppError> {
+    let root = PathBuf::from(store.authorize(&cwd)?);
+    tauri::async_runtime::spawn_blocking(move || {
+        list_workspace_entries(&root, &directory, cursor.as_deref(), limit)
+    })
+    .await
+    .map_err(|_| AppError::new("WORKSPACE_LIST_FAILED", "读取目录时任务异常终止"))?
+}
+
+fn list_workspace_entries(
+    root: &Path,
+    directory: &str,
+    cursor: Option<&str>,
+    limit: usize,
+) -> Result<WorkspaceDirectoryPage, AppError> {
+    if !(1..=200).contains(&limit)
+        || cursor.is_some_and(|value| value.len() > 4096 || value.chars().any(char::is_control))
+    {
+        return Err(AppError::new("WORKSPACE_LIST_INVALID", "目录分页参数无效"));
+    }
+    let relative = Path::new(directory);
+    if directory.len() > 4096 || directory.chars().any(char::is_control) || relative.components().any(|part| {
+        !matches!(part, std::path::Component::Normal(_) | std::path::Component::CurDir)
+            || matches!(part, std::path::Component::Normal(name) if name.to_string_lossy().eq_ignore_ascii_case(".git"))
+    }) {
+        return Err(AppError::new("WORKSPACE_LIST_PATH_INVALID", "只能列出工作区内的相对目录"));
+    }
+    // Authorized roots use ordinary Windows paths; canonicalize returns verbatim paths.
+    let root = normalize_process_path(root.to_path_buf());
+    let root = root.as_path();
+    reject_unsafe_workspace_path_components(root, relative)?;
+    let resolved = root
+        .join(relative)
+        .canonicalize()
+        .map(normalize_process_path)
+        .map_err(|_| AppError::new("WORKSPACE_LIST_NOT_FOUND", "目录不存在或无法访问"))?;
+    if !resolved.starts_with(root) || !resolved.is_dir() {
+        return Err(AppError::new(
+            "WORKSPACE_LIST_UNAUTHORIZED",
+            "只能列出已授权工作区内的目录",
+        ));
+    }
+    let entries = fs::read_dir(&resolved)
+        .map_err(|_| AppError::new("WORKSPACE_LIST_FAILED", "无法读取目录，请检查访问权限"))?;
+    // Keep only one page plus a look-ahead entry, even for large directories.
+    let mut page = BTreeMap::new();
+    for (index, entry) in entries.enumerate() {
+        if index >= 100_000 {
+            return Err(AppError::new(
+                "WORKSPACE_LIST_TOO_LARGE",
+                "目录超过 100000 个项目，请在系统文件管理器中打开",
+            ));
+        }
+        let entry =
+            entry.map_err(|_| AppError::new("WORKSPACE_LIST_FAILED", "无法读取目录项目"))?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case(".git") || name.chars().any(char::is_control) {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(entry.path())
+            .map_err(|_| AppError::new("WORKSPACE_LIST_FAILED", "目录已发生变化，请刷新重试"))?;
+        if workspace_metadata_is_link(&metadata) || (!metadata.is_dir() && !metadata.is_file()) {
+            continue;
+        }
+        let kind = if metadata.is_dir() { "folder" } else { "file" };
+        let key = format!("{}:{}", if metadata.is_dir() { 0 } else { 1 }, name);
+        if cursor.is_some_and(|after| key.as_str() <= after) {
+            continue;
+        }
+        let relative_path = entry
+            .path()
+            .strip_prefix(root)
+            .map_err(|_| AppError::new("WORKSPACE_LIST_UNAUTHORIZED", "目录项目不在工作区内"))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        page.insert(
+            key,
+            WorkspaceEntry {
+                name,
+                relative_path,
+                kind: kind.to_owned(),
+            },
+        );
+        if page.len() > limit + 1 {
+            page.pop_last();
+        }
+    }
+    let has_more = page.len() > limit;
+    if has_more {
+        page.pop_last();
+    }
+    let next_cursor = if has_more {
+        page.last_key_value().map(|(key, _)| key.clone())
+    } else {
+        None
+    };
+    Ok(WorkspaceDirectoryPage {
+        entries: page.into_values().collect(),
+        next_cursor,
+    })
+}
+
+fn workspace_metadata_is_link(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
 }
 
 #[tauri::command]
@@ -235,8 +373,10 @@ fn resolve_workspace_file(root: &Path, requested_path: &str) -> Result<PathBuf, 
             "工作区文件路径无效",
         ));
     }
+    let root = normalize_process_path(root.to_path_buf());
+    let root = root.as_path();
     let candidate = if requested.is_absolute() {
-        requested.to_path_buf()
+        normalize_process_path(requested.to_path_buf())
     } else {
         root.join(requested)
     };
@@ -249,6 +389,7 @@ fn resolve_workspace_file(root: &Path, requested_path: &str) -> Result<PathBuf, 
     reject_unsafe_workspace_path_components(root, relative)?;
     let canonical = candidate
         .canonicalize()
+        .map(normalize_process_path)
         .map_err(|_| AppError::new("WORKSPACE_FILE_NOT_FOUND", "工作区文件不存在或无法访问"))?;
     if !canonical.starts_with(root) {
         return Err(AppError::new(
@@ -274,7 +415,7 @@ fn reject_unsafe_workspace_path_components(root: &Path, relative: &Path) -> Resu
                 let metadata = fs::symlink_metadata(&current).map_err(|_| {
                     AppError::new("WORKSPACE_FILE_NOT_FOUND", "工作区文件不存在或无法访问")
                 })?;
-                if metadata.file_type().is_symlink() {
+                if workspace_metadata_is_link(&metadata) {
                     return Err(AppError::new(
                         "WORKSPACE_FILE_SYMLINK_UNSUPPORTED",
                         "工作区文件路径不能包含符号链接",
@@ -342,12 +483,7 @@ pub async fn workspace_search_paths(
     let authorized = PathBuf::from(store.authorize(&cwd)?);
     tauri::async_runtime::spawn_blocking(move || search_workspace_paths(&authorized, &query, limit))
         .await
-        .map_err(|_| {
-            AppError::new(
-                "WORKSPACE_SEARCH_FAILED",
-                "搜索工作区路径时任务异常终止",
-            )
-        })?
+        .map_err(|_| AppError::new("WORKSPACE_SEARCH_FAILED", "搜索工作区路径时任务异常终止"))?
 }
 
 fn search_workspace_paths(
@@ -880,6 +1016,175 @@ mod tests {
 
     const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\nclipboard";
 
+    #[cfg(windows)]
+    #[test]
+    fn lists_and_reads_files_with_normalized_authorized_windows_root() {
+        let fixture = workspace_file_test_root("authorized-windows-root");
+        let root = fixture.join("workspace");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join("README.md"), b"readme").unwrap();
+        fs::write(root.join("src/hello.txt"), b"hello").unwrap();
+        let store = WorkspaceStore::new(fixture.join("config"), fixture.join("documents"));
+        store.remember(&root.to_string_lossy()).unwrap();
+        let authorized = PathBuf::from(store.authorize(&root.to_string_lossy()).unwrap());
+        assert!(!authorized.to_string_lossy().starts_with(r"\\?\"));
+        let canonical = root.canonicalize().unwrap();
+        assert_ne!(authorized, canonical);
+
+        let outside = fixture.join("workspace-other");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("outside.txt"), b"outside").unwrap();
+        for root in [&authorized, &canonical] {
+            let page = list_workspace_entries(root, "", None, 200).unwrap();
+            assert_eq!(
+                page.entries
+                    .iter()
+                    .map(|entry| entry.relative_path.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["src", "README.md"]
+            );
+            let nested = list_workspace_entries(root, "src", None, 200).unwrap();
+            assert_eq!(nested.entries.len(), 1);
+            assert_eq!(nested.entries[0].relative_path, "src/hello.txt");
+            for requested in [
+                "src/hello.txt".to_owned(),
+                authorized
+                    .join("src/hello.txt")
+                    .to_string_lossy()
+                    .into_owned(),
+                canonical
+                    .join("src/hello.txt")
+                    .to_string_lossy()
+                    .into_owned(),
+            ] {
+                let content = read_workspace_file(root, &requested).unwrap();
+                assert_eq!(content.size, 5);
+                assert_eq!(content.data_base64, "aGVsbG8=");
+            }
+            for outside_root in [outside.clone(), normalize_process_path(outside.clone())] {
+                assert_eq!(
+                    read_workspace_file(
+                        root,
+                        &outside_root.join("outside.txt").to_string_lossy(),
+                    )
+                    .unwrap_err()
+                    .code,
+                    "WORKSPACE_FILE_UNAUTHORIZED"
+                );
+            }
+            for directory in ["../workspace-other", "src/..", ".git", "src/.GIT"] {
+                assert_eq!(
+                    list_workspace_entries(root, directory, None, 200)
+                        .unwrap_err()
+                        .code,
+                    "WORKSPACE_LIST_PATH_INVALID"
+                );
+            }
+            for requested in [
+                "../workspace-other/outside.txt".to_owned(),
+                format!(r"{}\src\..\README.md", authorized.display()),
+                format!(r"{}\src\..\README.md", canonical.display()),
+            ] {
+                assert_eq!(
+                    read_workspace_file(root, &requested).unwrap_err().code,
+                    "WORKSPACE_FILE_PATH_INVALID"
+                );
+            }
+        }
+        fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn lists_directory_pages_with_folders_first_without_recursive_scanning() {
+        let root = workspace_file_test_root("directory-pages");
+        fs::create_dir_all(root.join("z-folder")).unwrap();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join("z-folder/nested.txt"), b"nested").unwrap();
+        fs::write(root.join("a.txt"), b"a").unwrap();
+        fs::write(root.join("b.txt"), b"b").unwrap();
+        let first = list_workspace_entries(&root, "", None, 2).unwrap();
+        assert_eq!(
+            first
+                .entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["z-folder", "a.txt"]
+        );
+        assert_eq!(first.entries[0].kind, "folder");
+        let second = list_workspace_entries(&root, "", first.next_cursor.as_deref(), 2).unwrap();
+        assert_eq!(second.entries.len(), 1);
+        assert_eq!(second.entries[0].name, "b.txt");
+        assert!(second.next_cursor.is_none());
+        let nested = list_workspace_entries(&root, "z-folder", None, 200).unwrap();
+        assert_eq!(nested.entries[0].relative_path, "z-folder/nested.txt");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_unsafe_directory_paths_and_invalid_pagination() {
+        let root = workspace_file_test_root("directory-invalid");
+        for path in ["../outside", ".git", "nested/.GIT", "bad\npath"] {
+            assert_eq!(
+                list_workspace_entries(&root, path, None, 200)
+                    .unwrap_err()
+                    .code,
+                "WORKSPACE_LIST_PATH_INVALID"
+            );
+        }
+        assert_eq!(
+            list_workspace_entries(&root, &root.to_string_lossy(), None, 200)
+                .unwrap_err()
+                .code,
+            "WORKSPACE_LIST_PATH_INVALID"
+        );
+        for limit in [0, 201] {
+            assert_eq!(
+                list_workspace_entries(&root, "", None, limit)
+                    .unwrap_err()
+                    .code,
+                "WORKSPACE_LIST_INVALID"
+            );
+        }
+        assert_eq!(
+            list_workspace_entries(&root, "", Some("bad\ncursor"), 200)
+                .unwrap_err()
+                .code,
+            "WORKSPACE_LIST_INVALID"
+        );
+        fs::write(root.join("file.txt"), b"file").unwrap();
+        assert_eq!(
+            list_workspace_entries(&root, "file.txt", None, 200)
+                .unwrap_err()
+                .code,
+            "WORKSPACE_LIST_UNAUTHORIZED"
+        );
+        assert!(list_workspace_entries(&root, "missing", None, 200).is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn directory_pages_skip_links_and_deny_link_traversal() {
+        let root = workspace_file_test_root("directory-links");
+        fs::create_dir(root.join("real")).unwrap();
+        std::os::windows::fs::symlink_dir(root.join("real"), root.join("linked")).unwrap();
+        let normalized = normalize_process_path(root.clone());
+        for root in [&root, &normalized] {
+            let page = list_workspace_entries(root, "", None, 200).unwrap();
+            assert_eq!(page.entries.len(), 1);
+            assert_eq!(page.entries[0].name, "real");
+            assert_eq!(
+                list_workspace_entries(root, "linked", None, 200)
+                    .unwrap_err()
+                    .code,
+                "WORKSPACE_FILE_SYMLINK_UNSUPPORTED"
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn saves_valid_clipboard_image_with_a_unique_absolute_path() {
         let root = workspace_file_test_root("clipboard-image");
@@ -1046,7 +1351,11 @@ mod tests {
         fs::create_dir_all(root.join("node_modules").join("hidden")).unwrap();
         fs::write(root.join("README.md"), "readme").unwrap();
         fs::write(source.join("composer.tsx"), "composer").unwrap();
-        fs::write(root.join("node_modules").join("hidden").join("composer.ts"), "x").unwrap();
+        fs::write(
+            root.join("node_modules").join("hidden").join("composer.ts"),
+            "x",
+        )
+        .unwrap();
 
         let matches = search_workspace_paths(&root, "composer", 24).unwrap();
         assert_eq!(matches.len(), 1);
@@ -1130,10 +1439,15 @@ mod tests {
         fs::write(&outside, b"outside").unwrap();
         std::os::windows::fs::symlink_file(&outside, &link).unwrap();
 
-        assert_eq!(
-            read_workspace_file(&root, "linked.txt").unwrap_err().code,
-            "WORKSPACE_FILE_SYMLINK_UNSUPPORTED"
-        );
+        let normalized = normalize_process_path(root.clone());
+        for root in [&root, &normalized] {
+            for requested in ["linked.txt".to_owned(), link.to_string_lossy().into_owned()] {
+                assert_eq!(
+                    read_workspace_file(root, &requested).unwrap_err().code,
+                    "WORKSPACE_FILE_SYMLINK_UNSUPPORTED"
+                );
+            }
+        }
 
         let _ = fs::remove_file(outside);
         let _ = fs::remove_dir_all(root);

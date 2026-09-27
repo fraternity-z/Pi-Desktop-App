@@ -13,7 +13,7 @@ import {
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
 
 import { AppSidebar, threadTitle } from "../components/AppSidebar";
-import { BrowserSidebarPanel } from "../components/BrowserSidebarPanel";
+import { WorkspaceFilesPanel } from "../components/WorkspaceFilesPanel";
 import { ChatComposer } from "../components/ChatComposer";
 import { CommandPalette } from "../components/CommandPalette";
 import {
@@ -25,8 +25,9 @@ import { createDeferredView } from "../components/createDeferredView";
 import { FileSearchDialog, type FileSearchResult } from "../components/FileSearchDialog";
 import { FileViewer } from "../components/FileViewer";
 import { GitReviewPanel } from "../components/GitReviewPanel";
+import { SessionReviewPanel } from "../components/SessionReviewPanel";
 import { QuickPreview } from "../components/QuickPreview";
-import { RightPanel, type RightPanelTabId } from "../components/RightPanel";
+import { RightPanel } from "../components/RightPanel";
 import { RuntimeStatusControl } from "../components/RuntimeStatusControl";
 import { SessionLoading } from "../components/SessionLoading";
 import { SettingsSidebar, type SettingsSectionId } from "../components/SettingsSidebar";
@@ -73,6 +74,7 @@ import {
   type RightPanelFileTarget,
 } from "../stores/rightPanelFiles";
 import { useRightPanelLayout, useRightPanelVisibility } from "../stores/useRightPanelLayout";
+import { useRightPanelSessionState } from "../stores/useRightPanelSessionState";
 import { useSidebarPreferences } from "../stores/useSidebarPreferences";
 import { useToolPermissions } from "../stores/useToolPermissions";
 import { useGitBranches } from "../stores/useGitBranches";
@@ -162,13 +164,14 @@ export function ChatWorkbenchView() {
   const rightPanelEnabled =
     activeView === "chat" && hasSession && isProjectWorkspace(session.cwd, session.conversationHome);
   const rightPanelLayout = useRightPanelLayout();
-  const rightPanelVisibility = useRightPanelVisibility(rightPanelEnabled);
-  const [rightPanelTab, setRightPanelTab] = useState<RightPanelTabId>("review");
-  const [browserTabOpen, setBrowserTabOpen] = useState(false);
+  const panelSessionKey = session.cwd;
+  const panelSession = useRightPanelSessionState(panelSessionKey);
+  const rightPanelVisibility = useRightPanelVisibility(rightPanelEnabled, { key: panelSessionKey, open: panelSession.open, setOpen: panelSession.setOpen });
+  const { activeTab: rightPanelTab, setActiveTab: setRightPanelTab, fileTab, setFileTab, previewTab, setPreviewTab, selectedFilePath, setSelectedFilePath } = panelSession;
   const [fileSearchOpen, setFileSearchOpen] = useState(false);
-  const [fileTab, setFileTab] = useState<RightPanelFileTarget | null>(null);
-  const [previewTab, setPreviewTab] = useState<RightPanelFileTarget | null>(null);
   const [fileReloadKey, setFileReloadKey] = useState(0);
+  const { reviewScope, setReviewScope } = panelSession;
+  const [reviewReloadKey, setReviewReloadKey] = useState(0);
   const [rightPanelFileState, setRightPanelFileState] = useState<RightPanelFileLoadState>(
     EMPTY_RIGHT_PANEL_FILE_STATE,
   );
@@ -398,11 +401,8 @@ export function ChatWorkbenchView() {
 
   useEffect(() => {
     setFileSearchOpen(false);
-    setFileTab(null);
-    setPreviewTab(null);
-    setRightPanelTab("review");
     setRightPanelFileState(EMPTY_RIGHT_PANEL_FILE_STATE);
-  }, [session.cwd]);
+  }, [panelSessionKey]);
 
   useEffect(() => {
     if (activeRightPanelFile === null || !session.cwd) return undefined;
@@ -431,6 +431,7 @@ export function ChatWorkbenchView() {
         const content = target.tab === "file" || target.previewKind === "markdown" || target.previewKind === "text"
           ? decodeBase64Utf8(result.dataBase64)
           : "";
+        if (content.includes("\0")) throw new Error("WORKSPACE_FILE_BINARY: 二进制文件不支持文本预览，请在外部打开");
         setRightPanelFileState({
           targetPath: target.path,
           status: "ready",
@@ -452,7 +453,7 @@ export function ChatWorkbenchView() {
     return () => {
       cancelled = true;
     };
-  }, [activeRightPanelFile, fileReloadKey, session.cwd]);
+  }, [activeRightPanelFile, fileReloadKey, session.cwd, panelSessionKey]);
 
   useEffect(() => {
     if (!rightPanelVisibility.open) setFileSearchOpen(false);
@@ -773,6 +774,7 @@ export function ChatWorkbenchView() {
 
   const openRightPanelFile = useCallback((file: FileSearchResult) => {
     const target = createRightPanelFileTarget(file.path);
+    setSelectedFilePath(file.path);
     if (target.tab === "preview") {
       setPreviewTab(target);
       setRightPanelTab("preview");
@@ -782,17 +784,15 @@ export function ChatWorkbenchView() {
     }
     setFileSearchOpen(false);
     rightPanelVisibility.openPanel();
-  }, [rightPanelVisibility]);
+  }, [rightPanelVisibility, setSelectedFilePath, setPreviewTab, setFileTab, setRightPanelTab]);
 
   const closeRightPanelFile = useCallback(() => {
     setFileTab(null);
-    setRightPanelTab((current) => current === "file" ? "review" : current);
-  }, []);
+  }, [setFileTab]);
 
   const closeRightPanelPreview = useCallback(() => {
     setPreviewTab(null);
-    setRightPanelTab((current) => current === "preview" ? "review" : current);
-  }, []);
+  }, [setPreviewTab]);
 
   const createRightPanelComment = useCallback((input: Omit<CreateLocalCodeCommentInput, "rootPath" | "filePath">) => {
     if (!session.cwd || fileTab === null) return;
@@ -825,18 +825,6 @@ export function ChatWorkbenchView() {
     if (!session.cwd || activeRightPanelFile === null) return;
     await revealWorkspaceFile(session.cwd, activeRightPanelFile.path);
   }, [activeRightPanelFile, session.cwd]);
-
-  const openRightPanelBrowser = useCallback(() => {
-    if (!rightPanelEnabled) return;
-    setBrowserTabOpen(true);
-    setRightPanelTab("browser");
-    rightPanelVisibility.openPanel();
-  }, [rightPanelEnabled, rightPanelVisibility]);
-
-  const closeRightPanelBrowser = useCallback(() => {
-    setBrowserTabOpen(false);
-    setRightPanelTab((current) => current === "browser" ? "review" : current);
-  }, []);
 
   const closeRightPanel = useCallback(() => {
     rightPanelVisibility.closePanel();
@@ -895,7 +883,6 @@ export function ChatWorkbenchView() {
     newSession: !runtimeReady || !eventChannelReady || session.phase === "creating",
     focus: !hasSession,
     file: !rightPanelEnabled,
-    browser: !rightPanelEnabled,
   };
   function runShortcut(action: ShortcutAction) {
     if (shortcutDisabled[action]) return;
@@ -913,7 +900,6 @@ export function ChatWorkbenchView() {
       case "theme": updatePreferences({ theme: document.documentElement.dataset.theme === "dark" ? "light" : "dark" }); break;
       case "runtime": openSettings(); setSettingsSection("runtime"); break;
       case "file": rightPanelVisibility.openPanel(); openRightPanelFileSearch(); break;
-      case "browser": openRightPanelBrowser(); break;
     }
   }
   useShortcutListener(shortcuts.bindings, runShortcut);
@@ -1054,9 +1040,9 @@ export function ChatWorkbenchView() {
                 ref={rightPanelTrigger}
                 className="icon-button"
                 type="button"
-                aria-label={rightPanelVisibility.open ? "隐藏审查侧栏" : "显示审查侧栏"}
+                aria-label={rightPanelVisibility.open ? "隐藏工作区侧栏" : "显示工作区侧栏"}
                 aria-pressed={rightPanelVisibility.open}
-                title={rightPanelVisibility.open ? "隐藏审查侧栏" : "显示审查侧栏"}
+                title={rightPanelVisibility.open ? "隐藏工作区侧栏" : "显示工作区侧栏"}
                 onClick={rightPanelVisibility.togglePanel}
               >
                 <PanelRight size={18} aria-hidden="true" />
@@ -1231,7 +1217,7 @@ export function ChatWorkbenchView() {
       </main>
       )}
 
-      {rightPanelVisibility.available && (
+      {rightPanelEnabled && (
         <>
           {rightPanelVisibility.open && (
             <button
@@ -1251,19 +1237,23 @@ export function ChatWorkbenchView() {
             activeTab={rightPanelTab}
             fileTab={fileTab ? { label: fileTab.name, title: fileTab.path } : null}
             previewTab={previewTab ? { label: previewTab.name, title: previewTab.path } : null}
-            browserTab={browserTabOpen ? { label: "浏览器" } : null}
+            sessionKey={panelSessionKey}
+            toolTabs={panelSession.toolTabs}
+            onCloseToolTab={panelSession.closeToolTab}
             onClose={closeRightPanel}
             onWidthChange={rightPanelLayout.setWidth}
+            onWidthCommit={rightPanelLayout.commitWidth}
             onExpandedChange={setRightPanelExpanded}
             onActiveTabChange={setRightPanelTab}
             onOpenFile={openRightPanelFileSearch}
-            onOpenBrowser={openRightPanelBrowser}
             fileShortcut={shortcuts.bindings.file}
-            browserShortcut={shortcuts.bindings.browser}
             onCloseFileTab={closeRightPanelFile}
             onClosePreviewTab={closeRightPanelPreview}
-            onCloseBrowserTab={closeRightPanelBrowser}
           >
+            <div className="right-panel-tool-surface" hidden={rightPanelTab !== "files"}>
+              <WorkspaceFilesPanel cwd={session.cwd} active={rightPanelVisibility.open && rightPanelTab === "files"} selectedPath={selectedFilePath} onOpenFile={openRightPanelFile} onSearch={openRightPanelFileSearch} />
+            </div>
+            {(rightPanelTab === "file" || rightPanelTab === "preview") && <button type="button" className="right-panel-preview-back" onClick={() => setRightPanelTab("files")}>返回文件列表</button>}
             {rightPanelTab === "file" && fileTab ? (
               <FileViewer
                 path={fileTab.path}
@@ -1294,20 +1284,30 @@ export function ChatWorkbenchView() {
                 onReveal={revealActiveRightPanelFile}
                 onRetry={() => setFileReloadKey((current) => current + 1)}
               />
-            ) : rightPanelTab === "browser" ? (
-              <BrowserSidebarPanel active={rightPanelVisibility.open && !commandPaletteOpen} />
-            ) : (
+            ) : null}
+            <div className="right-panel-tool-surface" hidden={rightPanelTab !== "review"}>
+              <div className="review-scope-tabs" role="group" aria-label="审查范围">
+                <button type="button" aria-pressed={reviewScope === "git"} onClick={() => setReviewScope("git")}>Git 工作区</button>
+                <button type="button" aria-pressed={reviewScope === "session"} onClick={() => setReviewScope("session")}>会话修改</button>
+              </div>
+              <div hidden={reviewScope !== "session"}>
+                <SessionReviewPanel sessionId={session.sessionId ?? ""} cwd={session.cwd} active={rightPanelVisibility.open && rightPanelTab === "review" && reviewScope === "session"}
+                  onOpenFile={(path) => openRightPanelFile({ path, name: path.split(/[\\/]/).at(-1) ?? path })}
+                  onChanged={() => { setReviewReloadKey((value) => value + 1); setFileReloadKey((value) => value + 1); gitBranches.refresh(); }} />
+              </div>
+              <div hidden={reviewScope !== "git"}>
               <GitReviewPanel
-                key={`${session.cwd}:${gitBranches.branchName}`}
+                key={`${session.cwd}:${gitBranches.branchName}:${reviewReloadKey}`}
                 cwd={session.cwd}
                 onRepositoryChange={gitBranches.refresh}
-                active={rightPanelVisibility.open && rightPanelTab === "review"}
+                active={rightPanelVisibility.open && rightPanelTab === "review" && reviewScope === "git"}
                 diffStyle={rightPanelLayout.diffStyle}
                 displayOptions={rightPanelLayout.displayOptions}
                 onDiffStyleChange={rightPanelLayout.setDiffStyle}
                 onDisplayOptionToggle={rightPanelLayout.toggleDisplayOption}
               />
-            )}
+              </div>
+            </div>
           </RightPanel>
           <FileSearchDialog
             open={fileSearchOpen}

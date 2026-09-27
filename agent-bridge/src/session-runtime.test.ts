@@ -5,6 +5,7 @@ import { performance } from "node:perf_hooks";
 
 import { describe, expect, it, vi } from "vitest";
 import { readPackageVersion } from "./package-version.js";
+import { REVIEW_ENTRY, type ReviewExtensionApi, type ReviewExtensionFactory, type SessionReviewSummary } from "./session-review.js";
 
 vi.mock("./package-version.js", () => ({ readPackageVersion: vi.fn(async () => undefined) }));
 
@@ -250,6 +251,99 @@ function sdkReturning(...sessions: SessionMock[]): PiSdkLike & {
 }
 
 describe("PiSessionRuntime", () => {
+  it.each(["identity", "branch"])("审查恢复 %s 失败时释放会话并隐藏 SDK 错误细节", async (failure) => {
+    const mock = createSessionMock();
+    const sdk = sdkReturning(mock);
+    sdk.DefaultResourceLoader = class { async reload(): Promise<void> {} };
+    sdk.SessionManager.create = () => ({
+      getCwd: () => "C:\\work",
+      getSessionId: () => failure === "identity" ? "other-session" : "s-1",
+      getBranch: () => { throw new Error("private SDK failure detail"); },
+    });
+    const runtime = new PiSessionRuntime(sdk, "C:\\agent");
+    await expect(runtime.createSession("C:\\work")).rejects.toMatchObject({ code: "REVIEW_UNAVAILABLE", message: "无法恢复 Pi 会话审查记录" });
+    expect(mock.dispose).toHaveBeenCalledOnce();
+    expect(mock.session.subscribe).not.toHaveBeenCalled();
+    await runtime.shutdown();
+  });
+
+  it("无需 session_start 即可恢复原生审查记录、回滚状态与历史，并拒绝繁忙或错配工作区", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-runtime-review-"));
+    const other = join(cwd, "other");
+    await mkdir(other);
+    const path = join(cwd, "sample.txt");
+    const sessionPath = join(cwd, "saved.jsonl");
+    const entries: unknown[] = [];
+    const messages: unknown[] = [];
+    const sessionManager = { getCwd: () => cwd, getSessionId: () => "review-session", getBranch: () => entries };
+    const runtimes: PiSessionRuntime[] = [];
+    const setup = () => {
+      const mock = createSessionMock("review-session", { sessionFile: sessionPath, messages });
+      const sdk = sdkReturning(mock);
+      sdk.SessionManager.create = vi.fn(() => sessionManager);
+      sdk.SessionManager.open = vi.fn(() => sessionManager);
+      type Handler = Parameters<ReviewExtensionApi["on"]>[1];
+      const handlers = new Map<string, Handler>();
+      type LoaderOptions = ConstructorParameters<NonNullable<PiSdkLike["DefaultResourceLoader"]>>[0];
+      sdk.DefaultResourceLoader = class {
+        constructor(private readonly options: LoaderOptions) {}
+        async reload(): Promise<void> {
+          const factory = this.options.extensionFactories.find((extension) => extension.name === "pi-desktop-file-review")!.factory as ReviewExtensionFactory;
+          factory({
+            on: (event, handler) => { handlers.set(event, handler); },
+            appendEntry: (customType, data) => { entries.push({ type: "custom", customType, data: structuredClone(data) }); },
+          });
+        }
+      };
+      const runtime = new PiSessionRuntime(sdk, cwd);
+      runtimes.push(runtime);
+      // Deliberately never emit session_start or bind UI extensions.
+      const emit = (event: string) => handlers.get(event)!({ toolName: "write", toolCallId: "write-1", input: { path: "sample.txt" } }, { sessionManager });
+      return { runtime, mock, emit };
+    };
+    try {
+      await writeFile(path, "before\n");
+      const initial = setup();
+      await initial.runtime.createSession(cwd);
+      await initial.emit("tool_call");
+      await writeFile(path, "after\n");
+      const result = await initial.emit("tool_result") as { details: { piDesktopReview: SessionReviewSummary } };
+      const summary = result.details.piDesktopReview;
+      messages.push({ role: "toolResult", toolCallId: "write-1", toolName: "write", content: "written", details: result.details });
+      expect(entries[0]).toMatchObject({ type: "custom", customType: REVIEW_ENTRY });
+      await initial.runtime.shutdown();
+
+      const reopened = setup();
+      const events: RuntimeEvent[] = [];
+      reopened.runtime.subscribe((event) => events.push(event));
+      const opened = await reopened.runtime.openSession(sessionPath);
+      expect(opened.messages[0]?.review).toMatchObject({ id: summary.id, status: "ready" });
+      expect((await reopened.runtime.listReviews("review-session", cwd)).entries).toEqual([summary]);
+      await expect(reopened.runtime.reviewDetail("review-session", cwd, summary.id)).resolves.toMatchObject({ beforeText: "before\n", afterText: "after\n" });
+      for (const action of [
+        () => reopened.runtime.listReviews("review-session", other),
+        () => reopened.runtime.reviewDetail("review-session", other, summary.id),
+        () => reopened.runtime.rollbackReview("review-session", other, summary.id),
+      ]) await expect(action()).rejects.toMatchObject({ code: "REVIEW_UNSAFE_PATH" });
+      reopened.mock.setStreaming(true);
+      await expect(reopened.runtime.rollbackReview("review-session", cwd, summary.id)).rejects.toMatchObject({ code: "SESSION_BUSY" });
+      expect(await readFile(path, "utf8")).toBe("after\n");
+      reopened.mock.setStreaming(false);
+      await expect(reopened.runtime.rollbackReview("review-session", cwd, summary.id)).resolves.toMatchObject({ status: "rolled-back" });
+      expect(await readFile(path, "utf8")).toBe("before\n");
+      expect(events).toContainEqual({ sessionId: "review-session", name: "session.reviewChanged", data: expect.objectContaining({ id: summary.id, status: "rolled-back" }) });
+      expect((await reopened.runtime.openSession(sessionPath)).messages[0]?.review?.status).toBe("rolled-back");
+      await reopened.runtime.shutdown();
+
+      const restored = setup();
+      expect((await restored.runtime.openSession(sessionPath)).messages[0]?.review?.status).toBe("rolled-back");
+      expect((await restored.runtime.listReviews("review-session", cwd)).entries[0]?.status).toBe("rolled-back");
+    } finally {
+      await Promise.all(runtimes.map((runtime) => runtime.shutdown()));
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("分页恢复超过 200 条历史，保持多文本块顺序且不遗漏工具输入", async () => {
     const messages = [
       { role: "user", content: "first" },
@@ -1055,7 +1149,7 @@ describe("PiSessionRuntime", () => {
     const reload = vi.fn(async () => undefined);
     sdk.DefaultResourceLoader = class {
       constructor(options: LoaderOptions) {
-        extensionFactory = options.extensionFactories[0]?.factory;
+        extensionFactory = options.extensionFactories[0]?.factory as RequestHeaderExtensionFactory;
       }
 
       reload(): Promise<void> {

@@ -1,11 +1,11 @@
 pub(crate) mod appearance;
 pub(crate) mod application;
-pub(crate) mod browser;
 pub(crate) mod diagnostics;
 pub(crate) mod git;
 pub(crate) mod notifications;
 pub(crate) mod providers;
 pub(crate) mod runtime;
+pub(crate) mod session_review;
 pub(crate) mod settings;
 pub(crate) mod updates;
 pub(crate) mod workspace;

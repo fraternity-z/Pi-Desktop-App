@@ -8,6 +8,14 @@ const { renderDocx } = vi.hoisted(() => ({ renderDocx: vi.fn() }));
 vi.mock("docx-preview", () => ({ renderAsync: renderDocx }));
 
 describe("QuickPreview", () => {
+  it.each(["text", "markdown"] as const)("%s 长文本提示与正文分离", (kind) => {
+    const content = [...Array.from({ length: 5000 }, () => "line"), "not-rendered-tail"].join("\n");
+    const { container } = render(<QuickPreview target={{ kind, name: kind === "text" ? "long.txt" : "long.md", content }} />);
+    expect(screen.getByRole("status")).toHaveTextContent("共 5001 行");
+    const body = container.querySelector(kind === "text" ? "pre" : ".right-panel-preview-markdown");
+    expect(body).not.toHaveTextContent("仅预览");
+    expect(body).not.toHaveTextContent("not-rendered-tail");
+  });
   beforeEach(() => {
     renderDocx.mockReset().mockImplementation(async (_data, body: HTMLElement) => {
       const wrapper = document.createElement("div");

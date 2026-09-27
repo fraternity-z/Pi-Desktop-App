@@ -254,6 +254,63 @@ describe("useChatSession", () => {
     expect(createAgentSession).not.toHaveBeenCalled();
   });
 
+  it("打开已有会话先完成工作区登记，再发布工作区给侧栏", async () => {
+    let resolve!: (workspace: Awaited<ReturnType<typeof rememberWorkspace>>) => void;
+    vi.mocked(rememberWorkspace).mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    let opening!: Promise<boolean>;
+    act(() => { opening = result.current.openSession({ ...savedSummary, lifecycle: "persisted" }); });
+    await waitFor(() => expect(rememberWorkspace).toHaveBeenCalledWith(savedSummary.cwd));
+    expect(result.current.sessionId).toBeNull();
+    expect(result.current.cwd).toBe("");
+    expect(result.current.phase).toBe("creating");
+    await act(async () => {
+      resolve({ recentWorkspaces: [savedSummary.cwd], lastWorkspace: savedSummary.cwd, conversationHome: "C:/conversations" });
+      expect(await opening).toBe(true);
+    });
+    expect(result.current.sessionId).toBe("saved");
+    expect(result.current.cwd).toBe(savedSummary.cwd);
+    expect(result.current.phase).toBe("ready");
+  });
+
+  it("已有会话工作区登记失败时不激活，并保留可定位错误", async () => {
+    vi.mocked(rememberWorkspace).mockRejectedValueOnce({ code: "WORKSPACE_PATH_INVALID", message: "工作区无法访问" });
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(async () => {
+      expect(await result.current.openSession({ ...savedSummary, lifecycle: "persisted" })).toBe(false);
+    });
+    expect(result.current.sessionId).toBeNull();
+    expect(result.current.cwd).toBe("");
+    expect(result.current.phase).toBe("idle");
+    expect(result.current.error).toBe("WORKSPACE_PATH_INVALID: 工作区无法访问");
+  });
+
+  it.each([false, true])("切回缓存会话后忽略旧工作区授权完成（失败：%s）", async (fails) => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:/alpha"));
+    const draft = result.current.sessions[0]!;
+    let resolve!: (workspace: Awaited<ReturnType<typeof rememberWorkspace>>) => void;
+    let reject!: (error: Error) => void;
+    vi.mocked(rememberWorkspace).mockReturnValueOnce(new Promise((done, fail) => { resolve = done; reject = fail; }));
+    let opening!: Promise<boolean>;
+    act(() => { opening = result.current.openSession({ ...savedSummary, lifecycle: "persisted" }); });
+    await waitFor(() => expect(rememberWorkspace).toHaveBeenCalledWith(savedSummary.cwd));
+    await act(() => result.current.openSession(draft));
+    await act(async () => {
+      if (fails) reject(new Error("old workspace failed"));
+      else resolve({ recentWorkspaces: [savedSummary.cwd], lastWorkspace: savedSummary.cwd, conversationHome: "C:/conversations" });
+      expect(await opening).toBe(false);
+    });
+    expect(result.current.sessionId).toBe(draft.id);
+    expect(result.current.cwd).toBe("C:/alpha");
+    expect(result.current.phase).toBe("ready");
+    expect(result.current.error).toBeNull();
+    expect(result.current.sessions).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: "saved" })]));
+  });
+
   it("在切换项目后分别使用各自的工作区创建会话", async () => {
     vi.mocked(createAgentSession).mockImplementation(async (cwd) =>
       agentSession({

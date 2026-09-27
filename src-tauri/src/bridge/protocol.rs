@@ -204,6 +204,196 @@ pub struct AgentMessageSummary {
     pub is_error: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<SessionReviewSummary>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionReviewSummary {
+    pub id: String,
+    pub tool_call_id: String,
+    pub path: String,
+    pub kind: String,
+    pub status: String,
+    pub additions: u32,
+    pub deletions: u32,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionReviewPage {
+    pub entries: Vec<SessionReviewSummary>,
+    pub next_cursor: Option<String>,
+    pub truncated: bool,
+}
+
+pub enum SessionReviewRequest {
+    List { cursor: Option<String> },
+    Detail { review_id: String },
+    Rollback { review_id: String },
+}
+
+pub(crate) fn valid_review_id(id: &str) -> bool {
+    id.len() == 36
+        && id.bytes().enumerate().all(|(i, byte)| {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+            }
+        })
+}
+
+// Review timestamps are produced by JavaScript Date.toISOString(). Keep this
+// boundary deliberately narrower than arbitrary RFC3339 timestamps.
+fn valid_review_timestamp(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 24
+        || !bytes.iter().enumerate().all(|(i, byte)| match i {
+            4 | 7 => *byte == b'-',
+            10 => *byte == b'T',
+            13 | 16 => *byte == b':',
+            19 => *byte == b'.',
+            23 => *byte == b'Z',
+            _ => byte.is_ascii_digit(),
+        })
+    {
+        return false;
+    }
+    let number = |start: usize, end: usize| {
+        bytes[start..end]
+            .iter()
+            .fold(0_u32, |n, b| n * 10 + u32::from(b - b'0'))
+    };
+    let year = number(0, 4);
+    let days = match number(5, 7) {
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        _ => return false,
+    };
+    (1..=days).contains(&number(8, 10))
+        && number(11, 13) < 24
+        && number(14, 16) < 60
+        && number(17, 19) < 60
+}
+
+pub(crate) fn valid_review_summary(summary: &SessionReviewSummary) -> bool {
+    valid_review_id(&summary.id)
+        && !summary.tool_call_id.trim().is_empty()
+        && summary.tool_call_id.len() <= 1024
+        && !summary.tool_call_id.chars().any(char::is_control)
+        && summary.path.chars().count() <= 4096
+        && !summary.path.chars().any(char::is_control)
+        && !summary.path.starts_with(['/', '\\'])
+        && !summary
+            .path
+            .split(['/', '\\'])
+            .any(|part| part == ".." || part.contains(':') || part.eq_ignore_ascii_case(".git"))
+        && matches!(
+            summary.kind.as_str(),
+            "added" | "modified" | "deleted" | "unknown"
+        )
+        && matches!(
+            summary.status.as_str(),
+            "ready"
+                | "unchanged"
+                | "binary"
+                | "too-large"
+                | "unsafe-path"
+                | "sensitive"
+                | "unavailable"
+                | "failed"
+                | "conflict"
+                | "rolled-back"
+        )
+        && (summary.status != "ready" || !summary.path.is_empty())
+        && summary.additions <= 32768
+        && summary.deletions <= 32768
+        && valid_review_timestamp(&summary.created_at)
+}
+
+impl SessionReviewRequest {
+    pub(crate) fn validate(&self) -> Result<(), AppError> {
+        let id = match self {
+            Self::List { cursor } => cursor.as_deref(),
+            Self::Detail { review_id } | Self::Rollback { review_id } => Some(review_id.as_str()),
+        };
+        if id.is_some_and(|id| !valid_review_id(id)) {
+            return Err(AppError::new(
+                "REVIEW_ID_INVALID",
+                "审查记录 id 或分页游标无效",
+            ));
+        }
+        Ok(())
+    }
+    pub(crate) fn operation(&self) -> &'static str {
+        match self {
+            Self::List { .. } => "session.review.list",
+            Self::Detail { .. } => "session.review.detail",
+            Self::Rollback { .. } => "session.review.rollback",
+        }
+    }
+    pub(crate) fn validate_response(&self, value: &serde_json::Value) -> bool {
+        match self {
+            Self::List { .. } => serde_json::from_value::<SessionReviewPage>(value.clone())
+                .ok()
+                .is_some_and(|page| {
+                    let mut ids = std::collections::HashSet::new();
+                    page.entries.len() <= 50
+                        && page.entries.iter().all(|entry| {
+                            valid_review_summary(entry) && ids.insert(entry.id.as_str())
+                        })
+                        && page.next_cursor.as_deref().is_none_or(valid_review_id)
+                }),
+            Self::Rollback { review_id } => {
+                serde_json::from_value::<SessionReviewSummary>(value.clone())
+                    .ok()
+                    .is_some_and(|summary| {
+                        valid_review_summary(&summary)
+                            && summary.id == *review_id
+                            && summary.status == "rolled-back"
+                    })
+            }
+            Self::Detail { review_id } => {
+                let Some(mut fields) = value.as_object().cloned() else {
+                    return false;
+                };
+                let before = fields.remove("beforeText");
+                let after = fields.remove("afterText");
+                let diff = fields.remove("diff");
+                let truncated = fields.remove("diffTruncated");
+                let text_valid = |text: Option<serde_json::Value>| {
+                    text.is_some_and(|text| {
+                        text.is_null()
+                            || text
+                                .as_str()
+                                .is_some_and(|text| text.len() <= 32768 && !text.contains('\0'))
+                    })
+                };
+                text_valid(before)
+                    && text_valid(after)
+                    && diff
+                        .as_ref()
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|diff| diff.chars().count() <= 32768)
+                    && truncated
+                        .as_ref()
+                        .and_then(serde_json::Value::as_bool)
+                        .is_some()
+                    && serde_json::from_value::<SessionReviewSummary>(serde_json::Value::Object(
+                        fields,
+                    ))
+                    .ok()
+                    .is_some_and(|summary| {
+                        valid_review_summary(&summary) && summary.id == *review_id
+                    })
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -459,13 +649,32 @@ pub fn validate_event(event: &BridgeEvent) -> Result<(), AppError> {
             } else {
                 "output"
             };
-            let valid_shape = data.len() == 2
-                || (data.len() == 3
-                    && data.contains_key(detail_key)
-                    && valid_tool_display_payload(data.get(detail_key)));
+            let valid_shape = data.keys().all(|key| {
+                matches!(key.as_str(), "toolCallId" | "toolName")
+                    || key == detail_key
+                    || (event.name != "tool.started" && key == "review")
+            }) && (!data.contains_key(detail_key)
+                || valid_tool_display_payload(data.get(detail_key)))
+                && (!data.contains_key("review")
+                    || data
+                        .get("review")
+                        .and_then(|review| {
+                            serde_json::from_value::<SessionReviewSummary>(review.clone()).ok()
+                        })
+                        .is_some_and(|review| valid_review_summary(&review)));
             if !valid_shape
                 || !valid_bounded_text(data.get("toolCallId"), 256)
                 || !valid_bounded_text(data.get("toolName"), 128)
+            {
+                return Err(invalid_event_data(&event.name));
+            }
+        }
+        "session.reviewChanged" => {
+            if !event
+                .data
+                .as_ref()
+                .and_then(|data| serde_json::from_value::<SessionReviewSummary>(data.clone()).ok())
+                .is_some_and(|summary| valid_review_summary(&summary))
             {
                 return Err(invalid_event_data(&event.name));
             }
@@ -729,6 +938,101 @@ mod tests {
     use super::*;
 
     #[test]
+    fn validates_review_timestamps_and_request_ids() {
+        assert!(valid_review_timestamp("2026-09-27T12:30:00.123Z"));
+        assert!(valid_review_timestamp("2024-02-29T23:59:59.999Z"));
+        for invalid in [
+            "",
+            "2026-02-29T00:00:00.000Z",
+            "2100-02-29T00:00:00.000Z",
+            "2026-13-01T00:00:00.000Z",
+            "2026-04-31T00:00:00.000Z",
+            "2026-01-00T00:00:00.000Z",
+            "2026-01-01T24:00:00.000Z",
+            "2026-01-01T00:60:00.000Z",
+            "2026-01-01T00:00:60.000Z",
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:00:00.000X",
+        ] {
+            assert!(!valid_review_timestamp(invalid), "{invalid}");
+        }
+        assert!(
+            SessionReviewRequest::List { cursor: None }
+                .validate()
+                .is_ok()
+        );
+        for invalid in ["", "../entry", "------------------------------------"] {
+            assert!(
+                SessionReviewRequest::Detail {
+                    review_id: invalid.to_owned()
+                }
+                .validate()
+                .is_err()
+            );
+            assert!(
+                SessionReviewRequest::List {
+                    cursor: Some(invalid.to_owned())
+                }
+                .validate()
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn validates_review_responses_and_events() {
+        let id = "01234567-89ab-4cde-8fab-0123456789ab";
+        let summary = serde_json::json!({ "id": id, "toolCallId": "tool-1", "path": "src/main.ts", "kind": "modified", "status": "ready", "additions": 1, "deletions": 1, "createdAt": "2026-09-27T12:30:00.000Z" });
+        let list = SessionReviewRequest::List { cursor: None };
+        assert!(list.validate_response(&serde_json::json!({ "entries": [summary.clone()], "nextCursor": null, "truncated": false })));
+        assert!(!list.validate_response(&serde_json::json!({ "entries": [summary.clone(), summary.clone()], "nextCursor": null, "truncated": false })));
+        let mut detail = summary.clone();
+        for (key, value) in [
+            ("beforeText", serde_json::json!("before")),
+            ("afterText", serde_json::json!("after")),
+            ("diff", serde_json::json!("-before\n+after")),
+            ("diffTruncated", serde_json::json!(false)),
+        ] {
+            detail[key] = value;
+        }
+        let request = SessionReviewRequest::Detail {
+            review_id: id.to_owned(),
+        };
+        assert!(request.validate_response(&detail));
+        detail["beforeText"] = serde_json::json!("x".repeat(32769));
+        assert!(!request.validate_response(&detail));
+        let rollback = SessionReviewRequest::Rollback {
+            review_id: id.to_owned(),
+        };
+        assert!(!rollback.validate_response(&summary));
+        let mut rolled_back = summary.clone();
+        rolled_back["status"] = serde_json::json!("rolled-back");
+        assert!(rollback.validate_response(&rolled_back));
+        let mut event = BridgeEvent {
+            v: 1,
+            kind: "event".to_owned(),
+            seq: 1,
+            session_id: "s-1".to_owned(),
+            name: "session.reviewChanged".to_owned(),
+            data: Some(summary.clone()),
+        };
+        assert!(validate_event(&event).is_ok());
+        for path in ["../secret", "C:/secret", ".git/config", "src/../../secret"] {
+            let mut invalid = summary.clone();
+            invalid["path"] = serde_json::json!(path);
+            event.data = Some(invalid);
+            assert!(validate_event(&event).is_err());
+        }
+        event.name = "tool.completed".to_owned();
+        event.data = Some(
+            serde_json::json!({ "toolCallId": "tool-1", "toolName": "write", "review": summary }),
+        );
+        assert!(validate_event(&event).is_ok());
+        event.name = "tool.started".to_owned();
+        assert!(validate_event(&event).is_err());
+    }
+
+    #[test]
     fn package_version_is_optional_and_round_trips() {
         let legacy = serde_json::json!({
             "source": "npm:example", "scope": "global", "kind": "npm",
@@ -736,11 +1040,19 @@ mod tests {
         });
         let mut package: PackageSummary = serde_json::from_value(legacy).unwrap();
         assert_eq!(package.version, None);
-        assert!(serde_json::to_value(&package).unwrap().get("version").is_none());
+        assert!(
+            serde_json::to_value(&package)
+                .unwrap()
+                .get("version")
+                .is_none()
+        );
         package.version = Some("1.2.3".to_owned());
         let encoded = serde_json::to_value(&package).unwrap();
         assert_eq!(encoded["version"], "1.2.3");
-        assert_eq!(serde_json::from_value::<PackageSummary>(encoded).unwrap(), package);
+        assert_eq!(
+            serde_json::from_value::<PackageSummary>(encoded).unwrap(),
+            package
+        );
     }
 
     const ALL_CAPABILITIES: &[&str] = &[

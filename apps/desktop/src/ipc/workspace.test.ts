@@ -7,6 +7,7 @@ import {
   ensureConversationWorkspace,
   getWorkspaceState,
   getWorktreeOptions,
+  listWorkspaceEntries,
   openWorkspaceFile,
   readWorkspaceFile,
   rememberWorkspace,
@@ -20,6 +21,11 @@ import {
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 describe("workspace IPC", () => {
+  it("forwards directory pagination through the authorized command", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ entries: [], nextCursor: null });
+    await expect(listWorkspaceEntries("C:/work", "src", "1:a.ts", 20)).resolves.toEqual({ entries: [], nextCursor: null });
+    expect(invoke).toHaveBeenCalledWith("workspace_list_entries", { cwd: "C:/work", directory: "src", cursor: "1:a.ts", limit: 20 });
+  });
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
   });

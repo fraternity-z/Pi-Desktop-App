@@ -47,6 +47,7 @@ import {
 } from "../stores/useRightPanelLayout";
 import { HighlightedCodeLine } from "./CodeHighlight";
 import {
+  addSplitWordSegments,
   buildGitApplyCommand,
   buildSplitDiffRows,
   buildUnifiedWordSegments,
@@ -55,6 +56,7 @@ import {
   parseUnifiedDiff,
   type DiffLine,
   type DiffStats,
+  type SplitDiffRow as SplitDiffRowData,
   type WordSegment,
 } from "./gitReviewModel";
 import "./git-review.css";
@@ -101,6 +103,8 @@ const NON_PATCH_DIFF_MESSAGES = new Set([
   "当前文件没有可展示的文本差异",
 ]);
 const MAX_CONCURRENT_DIFF_REQUESTS = 4;
+const DIFF_PAGE_SIZE = 200;
+const MAX_HIGHLIGHT_LINE_LENGTH = 4000;
 const STALE_DIFF_REQUEST = new Error("Git diff request belongs to a stale workspace");
 
 interface AsyncLimiter {
@@ -197,7 +201,14 @@ export const GitReviewPanel = memo(function GitReviewPanel({
   const copyRequest = useRef(0);
   const activeRef = useRef(active);
   activeRef.current = active;
-  const operationKey = `${active}\0${cwd}`;
+  const refreshNeeded = useRef(true);
+  const pendingMutation = useRef<number | null>(null);
+  const cacheContextRef = useRef({ api, cwd, generation: 0 });
+  if (cacheContextRef.current.api !== api || cacheContextRef.current.cwd !== cwd) {
+    cacheContextRef.current = { api, cwd, generation: cacheContextRef.current.generation + 1 };
+  }
+  const cacheGeneration = cacheContextRef.current.generation;
+  const operationKey = `${active}\0${cacheGeneration}\0${cwd}`;
   const operationContextRef = useRef({ key: operationKey, generation: 0 });
   if (operationContextRef.current.key !== operationKey) {
     operationContextRef.current = {
@@ -208,7 +219,7 @@ export const GitReviewPanel = memo(function GitReviewPanel({
   const operationGeneration = operationContextRef.current.generation;
   const viewStyle = diffStyle ?? localViewStyle;
   const displayOptions = controlledDisplayOptions ?? localDisplayOptions;
-  const status = statusState?.cwd === cwd && statusState.generation === operationGeneration
+  const status = statusState?.cwd === cwd && statusState.generation === cacheGeneration
     ? statusState.value
     : null;
   const diffContextRef = useRef({ api, cwd });
@@ -221,18 +232,24 @@ export const GitReviewPanel = memo(function GitReviewPanel({
     [api],
   );
   const loadDiff = useCallback(
-    (input: GitDiffInput) => {
+    (input: GitDiffInput, isCurrent: () => boolean = () => true) => {
       const generation = operationContextRef.current.generation;
-      return diffLimiter.run(() => {
+      const context = copyContextRef.current;
+      return diffLimiter.run(async () => {
         const current = diffContextRef.current;
         if (
+          !activeRef.current || !isCurrent() || context !== copyContextRef.current ||
           current.api !== api ||
           current.cwd !== input.cwd ||
           operationContextRef.current.generation !== generation
         ) {
           return Promise.reject(STALE_DIFF_REQUEST);
         }
-        return api.gitDiff(input);
+        const output = await api.gitDiff(input);
+        if (!isCurrent() || context !== copyContextRef.current || !activeRef.current) {
+          throw STALE_DIFF_REQUEST;
+        }
+        return output;
       });
     },
     [api, diffLimiter],
@@ -240,6 +257,7 @@ export const GitReviewPanel = memo(function GitReviewPanel({
 
   const refresh = useCallback(async (): Promise<void> => {
     if (!activeRef.current) return;
+    refreshNeeded.current = true;
     const generation = operationContextRef.current.generation;
     const request = ++statusRequest.current;
     setLoading(true);
@@ -250,7 +268,8 @@ export const GitReviewPanel = memo(function GitReviewPanel({
         request !== statusRequest.current ||
         generation !== operationContextRef.current.generation
       ) return;
-      setStatusState({ cwd, generation, value: nextStatus });
+      refreshNeeded.current = false;
+      setStatusState({ cwd, generation: cacheContextRef.current.generation, value: nextStatus });
       setStatsByPath({});
       setStatusRevision((current) => current + 1);
     } catch (cause) {
@@ -269,19 +288,23 @@ export const GitReviewPanel = memo(function GitReviewPanel({
   }, [api, cwd]);
 
   useEffect(() => {
+    refreshNeeded.current = true;
     setStatusState(null);
     setStatsByPath({});
     setActionError(null);
     setScope("unstaged");
+    setBusy(false);
+  }, [api, cwd]);
+
+  useEffect(() => {
     setOpenMenu(null);
     setDialog(null);
-    setBusy(false);
     if (!active) {
       statusRequest.current += 1;
       setLoading(false);
       return;
     }
-    void refresh();
+    if (refreshNeeded.current) void refresh();
   }, [active, cwd, refresh]);
 
   useEffect(() => {
@@ -344,7 +367,10 @@ export const GitReviewPanel = memo(function GitReviewPanel({
 
   const runAction = useCallback(
     async (action: () => Promise<unknown>): Promise<boolean> => {
-      if (busy) return false;
+      const sameRepository = () => cacheContextRef.current.generation === cacheGeneration;
+      if (!sameRepository() || pendingMutation.current === cacheGeneration) return false;
+      pendingMutation.current = cacheGeneration;
+      refreshNeeded.current = true;
       const generation = operationContextRef.current.generation;
       const isCurrent = () =>
         activeRef.current && operationContextRef.current.generation === generation;
@@ -352,21 +378,24 @@ export const GitReviewPanel = memo(function GitReviewPanel({
       setActionError(null);
       try {
         await action();
-        if (!isCurrent()) return false;
+        if (!sameRepository()) return false;
+        refreshNeeded.current = true;
         await refresh();
         if (isCurrent()) void onRepositoryChange?.();
         return isCurrent();
       } catch (cause) {
-        if (isCurrent()) {
-          setActionError(formatGitError(cause));
+        if (sameRepository()) {
+          refreshNeeded.current = true;
+          if (activeRef.current) setActionError(formatGitError(cause));
           await refresh();
         }
         return false;
       } finally {
-        if (isCurrent()) setBusy(false);
+        if (pendingMutation.current === cacheGeneration) pendingMutation.current = null;
+        if (sameRepository()) setBusy(false);
       }
     },
-    [busy, onRepositoryChange, refresh],
+    [cacheGeneration, onRepositoryChange, refresh],
   );
 
   const unstagedEntries = useMemo(
@@ -380,6 +409,7 @@ export const GitReviewPanel = memo(function GitReviewPanel({
   const entries = scope === "staged" ? status?.staged ?? [] : unstagedEntries;
   const totals = sumStats(entries, statsByPath);
   const statsReady = entries.length > 0 && entries.every((entry) => statsByPath[entry.path]);
+  const knownFileCount = entries.filter((entry) => statsByPath[entry.path]).length;
 
   const reportStats = useCallback((path: string, stats: DiffStats) => {
     setStatsByPath((current) => {
@@ -410,11 +440,12 @@ export const GitReviewPanel = memo(function GitReviewPanel({
   }, [onDiffStyleChange, viewStyle]);
 
   async function handleDiscard(entry: GitStatusEntry): Promise<void> {
+    const generation = operationContextRef.current.generation;
     const deleteUntracked = entry.indexStatus === "?" && entry.worktreeStatus === "?";
     const allowed = await confirm(
       `确定要${deleteUntracked ? "删除" : "还原"} ${entry.path} 吗？此操作不可撤销。`,
     );
-    if (!allowed) return;
+    if (!allowed || !activeRef.current || operationContextRef.current.generation !== generation) return;
     await runAction(() => api.gitDiscard(cwd, [entry.path], deleteUntracked));
   }
 
@@ -477,41 +508,23 @@ export const GitReviewPanel = memo(function GitReviewPanel({
     pushAfterCommit: boolean,
     includeUnstaged: boolean,
   ): Promise<void> {
-    if (busy) return;
     const generation = operationContextRef.current.generation;
-    const isCurrent = () =>
-      activeRef.current && operationContextRef.current.generation === generation;
-    setBusy(true);
-    setActionError(null);
-    try {
+    await runAction(async () => {
       if (includeUnstaged) {
         await stagePathsInChunks(api, cwd, uniquePaths(unstagedEntries));
       }
       await api.gitCommit(cwd, message);
-    } catch (cause) {
-      if (isCurrent()) {
-        setActionError(formatGitError(cause));
-        await refresh();
-        setBusy(false);
+      if (activeRef.current && operationContextRef.current.generation === generation) {
+        closeDialog();
       }
-      return;
-    }
-
-    if (isCurrent()) {
-      closeDialog();
-      await refresh();
-    }
-    if (pushAfterCommit) {
-      try {
-        await api.gitPush(cwd);
-        if (isCurrent()) await refresh();
-      } catch (cause) {
-        if (isCurrent()) {
-          setActionError(formatGitError(cause, "GIT_PUSH_FAILED: 提交已创建，但推送失败"));
+      if (pushAfterCommit) {
+        try {
+          await api.gitPush(cwd);
+        } catch (cause) {
+          throw new Error(formatGitError(cause, "GIT_PUSH_FAILED: 提交已创建，但推送失败"));
         }
       }
-    }
-    if (isCurrent()) setBusy(false);
+    });
   }
 
   function handleMenuKeyDown(event: ReactKeyboardEvent<HTMLElement>): void {
@@ -628,7 +641,11 @@ export const GitReviewPanel = memo(function GitReviewPanel({
               <b>-{totals.deletions}</b>
             </span>
           ) : (
-            <span className="git-review-summary-pending">更新中…</span>
+            <span className="git-review-summary-pending">
+              {knownFileCount > 0
+                ? `已读取 ${knownFileCount}/${entries.length} 个文件 · +${totals.additions} -${totals.deletions}`
+                : "展开文件查看差异"}
+            </span>
           )}
         </div>
 
@@ -781,8 +798,10 @@ export const GitReviewPanel = memo(function GitReviewPanel({
         ) : (
           entries.map((entry) => (
             <DiffCard
-              key={`${statusRevision}:${scope}:${entry.path}`}
+              key={`${cacheGeneration}:${scope}:${entry.path}`}
               cwd={cwd}
+              revision={statusRevision}
+              active={active}
               loadDiff={loadDiff}
               entry={entry}
               staged={scope === "staged"}
@@ -840,7 +859,9 @@ export const GitReviewPanel = memo(function GitReviewPanel({
 
 interface DiffCardProps {
   readonly cwd: string;
-  readonly loadDiff: (input: GitDiffInput) => Promise<GitDiff>;
+  readonly revision: number;
+  readonly active: boolean;
+  readonly loadDiff: (input: GitDiffInput, isCurrent?: () => boolean) => Promise<GitDiff>;
   readonly entry: GitStatusEntry;
   readonly staged: boolean;
   readonly busy: boolean;
@@ -853,48 +874,51 @@ interface DiffCardProps {
 }
 
 function DiffCard(props: DiffCardProps): ReactElement {
-  const [open, setOpen] = useState(true);
-  const [diff, setDiff] = useState<GitDiff | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const requestKey = `${props.cwd}:${props.entry.path}:${props.staged}:${props.displayOptions.hideWhitespace}`;
+  const [open, setOpen] = useState(false);
+  const [result, setResult] = useState<{
+    readonly key: string;
+    readonly lines: ReadonlyArray<DiffLine>;
+    readonly stats: DiffStats | null;
+    readonly error: string | null;
+  } | null>(null);
+  const requestKey = JSON.stringify([props.cwd, props.entry.path, props.staged, props.displayOptions.hideWhitespace, props.revision]);
+  const currentKey = useRef(requestKey);
+  currentKey.current = requestKey;
+  const cached = result?.key === requestKey ? result : null;
+  const error = cached?.error ?? null;
+  const loading = open && props.active && !cached;
 
   useEffect(() => {
     if (props.collapseSignal > 0) setOpen(false);
   }, [props.collapseSignal]);
 
   useEffect(() => {
-    setDiff(null);
-    setError(null);
-  }, [requestKey]);
-
-  useEffect(() => {
-    if (!open || diff || error) return;
+    if (!props.active || !open || cached) return;
     let current = true;
-    setLoading(true);
+    const isCurrent = () => current && currentKey.current === requestKey;
     void props.loadDiff({
       cwd: props.cwd,
       path: props.entry.path,
       staged: props.staged,
       ignoreWhitespaceChanges: props.displayOptions.hideWhitespace,
-    }).then((output) => {
-      if (!current) return;
-      setDiff(output);
-      props.onStats(props.entry.path, calculateDiffStats(parseUnifiedDiff(output.diff)));
+    }, isCurrent).then((output) => {
+      if (!isCurrent()) return;
+      const lines = output.diff ? parseUnifiedDiff(output.diff) : [];
+      const stats = calculateDiffStats(lines);
+      setResult({ key: requestKey, lines, stats, error: null });
+      props.onStats(props.entry.path, stats);
     }).catch((cause) => {
-      if (current && cause !== STALE_DIFF_REQUEST) {
-        setError(formatGitError(cause, "GIT_DIFF_FAILED: 无法读取差异"));
+      if (isCurrent() && cause !== STALE_DIFF_REQUEST) {
+        setResult({ key: requestKey, lines: [], stats: null, error: formatGitError(cause, "GIT_DIFF_FAILED: 无法读取差异") });
       }
-    }).finally(() => {
-      if (current) setLoading(false);
     });
     return () => {
       current = false;
     };
   }, [
-    diff,
-    error,
+    cached,
     open,
+    props.active,
     props.cwd,
     props.displayOptions.hideWhitespace,
     props.entry.path,
@@ -904,8 +928,8 @@ function DiffCard(props: DiffCardProps): ReactElement {
     requestKey,
   ]);
 
-  const parsedLines = useMemo(() => diff ? parseUnifiedDiff(diff.diff) : [], [diff]);
-  const stats = diff ? calculateDiffStats(parsedLines) : null;
+  const parsedLines = cached?.lines ?? [];
+  const stats = cached?.stats ?? null;
   const title = props.entry.originalPath
     ? `${props.entry.originalPath} → ${props.entry.path}`
     : props.entry.path;
@@ -971,10 +995,11 @@ function DiffCard(props: DiffCardProps): ReactElement {
             <div className="git-review-card-error" role="alert">
               <AlertTriangle aria-hidden="true" />
               <span>{error}</span>
-              <button type="button" onClick={() => setError(null)}>重试</button>
+              <button type="button" onClick={() => setResult(null)}>重试</button>
             </div>
-          ) : diff && parsedLines.length > 0 ? (
+          ) : parsedLines.length > 0 ? (
             <DiffView
+              key={requestKey}
               lines={parsedLines}
               path={props.entry.path}
               displayOptions={props.displayOptions}
@@ -989,27 +1014,38 @@ function DiffCard(props: DiffCardProps): ReactElement {
   );
 }
 
-function DiffView(props: {
+const DiffView = memo(function DiffView(props: {
   readonly lines: ReadonlyArray<DiffLine>;
   readonly path: string;
   readonly displayOptions: DisplayOptions;
   readonly viewStyle: ViewStyle;
 }): ReactElement {
-  const lines = useMemo(() => collapseUnchangedLines(props.lines), [props.lines]);
-  if (props.viewStyle === "split") {
-    return (
-      <SplitDiffView
-        lines={lines}
-        path={props.path}
-        displayOptions={props.displayOptions}
-      />
-    );
-  }
-  const wordSegments = props.displayOptions.wordDiff
-    ? buildUnifiedWordSegments(lines)
-    : new Map<DiffLine, ReadonlyArray<WordSegment>>();
+  const [page, setPage] = useState(0);
+  const [showContext, setShowContext] = useState(false);
+  const allLines = useMemo(() => showContext ? props.lines : collapseUnchangedLines(props.lines), [props.lines, showContext]);
+  const allSplitRows = useMemo(() => props.viewStyle === "split" ? buildSplitDiffRows(allLines, false) : [], [allLines, props.viewStyle]);
+  const totalRows = props.viewStyle === "split" ? allSplitRows.length : allLines.length;
+  const pageCount = Math.max(1, Math.ceil(totalRows / DIFF_PAGE_SIZE));
+  const pageIndex = Math.min(page, pageCount - 1);
+  const lines = useMemo(() => allLines.slice(pageIndex * DIFF_PAGE_SIZE, (pageIndex + 1) * DIFF_PAGE_SIZE), [allLines, pageIndex]);
+  const splitRows = useMemo(() => allSplitRows.slice(pageIndex * DIFF_PAGE_SIZE, (pageIndex + 1) * DIFF_PAGE_SIZE), [allSplitRows, pageIndex]);
+  const wordSegments = useMemo(() => props.displayOptions.wordDiff && props.viewStyle === "unified"
+    ? buildUnifiedWordSegments(allLines, lines)
+    : new Map<DiffLine, ReadonlyArray<WordSegment>>(), [allLines, lines, props.displayOptions.wordDiff, props.viewStyle]);
   return (
-    <DiffScrollFrame wordWrap={props.displayOptions.wordWrap}>
+    <>
+      <div className="git-review-diff-navigation">
+        <button type="button" onClick={() => { setShowContext((value) => !value); setPage(0); }}>
+          {showContext ? "折叠未修改内容" : "显示全部上下文"}
+        </button>
+        {pageCount > 1 ? <>
+          <button type="button" aria-label="上一页差异" disabled={pageIndex === 0} onClick={() => setPage(pageIndex - 1)}>上一页</button>
+          <span role="status">第 {pageIndex + 1}/{pageCount} 页 · {totalRows} 行</span>
+          <button type="button" aria-label="下一页差异" disabled={pageIndex === pageCount - 1} onClick={() => setPage(pageIndex + 1)}>下一页</button>
+        </> : null}
+      </div>
+      {props.viewStyle === "split" ? <SplitDiffView rows={splitRows} path={props.path} displayOptions={props.displayOptions} /> : (
+      <DiffScrollFrame wordWrap={props.displayOptions.wordWrap}>
       <section className="git-review-hunk">
         {lines.map((line, index) => (
           <UnifiedDiffRow
@@ -1021,9 +1057,11 @@ function DiffView(props: {
           />
         ))}
       </section>
-    </DiffScrollFrame>
+      </DiffScrollFrame>
+      )}
+    </>
   );
-}
+});
 
 function UnifiedDiffRow(props: {
   readonly line: DiffLine;
@@ -1047,13 +1085,13 @@ function UnifiedDiffRow(props: {
 }
 
 function SplitDiffView(props: {
-  readonly lines: ReadonlyArray<DiffLine>;
+  readonly rows: ReadonlyArray<SplitDiffRowData>;
   readonly path: string;
   readonly displayOptions: DisplayOptions;
 }): ReactElement {
   const rows = useMemo(
-    () => buildSplitDiffRows(props.lines, props.displayOptions.wordDiff),
-    [props.displayOptions.wordDiff, props.lines],
+    () => props.displayOptions.wordDiff ? addSplitWordSegments(props.rows) : props.rows,
+    [props.displayOptions.wordDiff, props.rows],
   );
   return (
     <DiffScrollFrame wordWrap={props.displayOptions.wordWrap} split>
@@ -1136,7 +1174,7 @@ function DiffLineContent(props: {
       </code>
     );
   }
-  return props.richPreview ? (
+  return props.richPreview && props.line.content.length <= MAX_HIGHLIGHT_LINE_LENGTH ? (
     <code className="git-review-code-content">
       <HighlightedCodeLine content={props.line.content} path={props.path} />
     </code>

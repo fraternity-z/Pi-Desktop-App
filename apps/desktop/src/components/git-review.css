@@ -417,6 +417,32 @@
   background: var(--code-bg);
 }
 
+.git-review-diff-navigation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line);
+  color: var(--subtle);
+  font-size: 10.5px;
+}
+
+.git-review-diff-navigation button {
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+}
+
+.git-review-diff-navigation button:disabled {
+  cursor: not-allowed;
+  opacity: var(--disabled-opacity);
+}
+
 .git-review-card-state {
   display: flex;
   min-height: 52px;

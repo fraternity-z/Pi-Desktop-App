@@ -8,6 +8,7 @@ import {
 } from "./protocol.js";
 import { RuntimeError, type SessionRuntime } from "./session-runtime.js";
 import { ProviderSettingsError } from "./provider-config.js";
+import { ReviewError } from "./session-review.js";
 
 export class BridgeServer {
   private sequence = 0;
@@ -138,6 +139,18 @@ export class BridgeServer {
               : { thinkingLevel: request.thinkingLevel }),
           });
           break;
+        case "session.review.list":
+          if (!this.runtime.listReviews) throw new RuntimeError("REVIEW_UNAVAILABLE", "当前运行时不支持会话审查");
+          data = await this.runtime.listReviews(request.sessionId, request.cwd, request.cursor);
+          break;
+        case "session.review.detail":
+          if (!this.runtime.reviewDetail) throw new RuntimeError("REVIEW_UNAVAILABLE", "当前运行时不支持会话审查");
+          data = await this.runtime.reviewDetail(request.sessionId, request.cwd, request.reviewId);
+          break;
+        case "session.review.rollback":
+          if (!this.runtime.rollbackReview) throw new RuntimeError("REVIEW_UNAVAILABLE", "当前运行时不支持会话审查");
+          data = await this.runtime.rollbackReview(request.sessionId, request.cwd, request.reviewId);
+          break;
         case "prompt":
           await this.runtime.prompt(
             request.sessionId,
@@ -183,7 +196,7 @@ export class BridgeServer {
   }
 
   private failureResponse(id: string, error: unknown): BridgeResponse {
-    if (error instanceof ProtocolError || error instanceof RuntimeError || error instanceof ProviderSettingsError) {
+    if (error instanceof ProtocolError || error instanceof RuntimeError || error instanceof ProviderSettingsError || error instanceof ReviewError) {
       return {
         v: PROTOCOL_VERSION,
         kind: "response",

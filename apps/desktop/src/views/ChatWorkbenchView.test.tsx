@@ -29,11 +29,6 @@ import {
 } from "../ipc/agent";
 import { selectProjectDirectory } from "../ipc/project";
 import {
-  hideBrowserSidebar,
-  openBrowserSidebar,
-  updateBrowserSidebarBounds,
-} from "../ipc/browser";
-import {
   gitCommit,
   gitCreateBranch,
   gitDiff,
@@ -62,6 +57,7 @@ import {
   ensureConversationWorkspace,
   getWorkspaceState,
   getWorktreeOptions,
+  listWorkspaceEntries,
   openWorkspaceFile,
   readWorkspaceFile,
   rememberWorkspace,
@@ -72,6 +68,7 @@ import {
   searchWorkspacePaths,
 } from "../ipc/workspace";
 import { ChatWorkbenchView } from "./ChatWorkbenchView";
+import { listSessionReviews } from "../ipc/sessionReview";
 
 function finishStartupWriting() {
   const target = document.querySelector('[data-final="true"]')!;
@@ -129,12 +126,8 @@ vi.mock("../ipc/agent", () => ({
   updateAgentPackage: vi.fn(),
 }));
 vi.mock("../ipc/project", () => ({ selectProjectDirectory: vi.fn() }));
+vi.mock("../ipc/sessionReview", () => ({ listSessionReviews: vi.fn(), getSessionReview: vi.fn(), rollbackSessionReview: vi.fn() }));
 vi.mock("../ipc/proxy", async (original) => ({ ...await original<typeof import("../ipc/proxy")>(), getProxySettings: vi.fn() }));
-vi.mock("../ipc/browser", () => ({
-  hideBrowserSidebar: vi.fn(),
-  openBrowserSidebar: vi.fn(),
-  updateBrowserSidebarBounds: vi.fn(),
-}));
 vi.mock("../ipc/git", () => ({
   gitSwitchBranch: vi.fn(),
   gitStatus: vi.fn(),
@@ -165,6 +158,7 @@ vi.mock("../ipc/workspace", () => ({
   ensureConversationWorkspace: vi.fn(),
   getWorkspaceState: vi.fn(),
   getWorktreeOptions: vi.fn(),
+  listWorkspaceEntries: vi.fn(),
   openWorkspaceFile: vi.fn(),
   readWorkspaceFile: vi.fn(),
   rememberWorkspace: vi.fn(),
@@ -290,9 +284,8 @@ describe("ChatWorkbenchView", () => {
     vi.mocked(gitPush).mockReset().mockResolvedValue(undefined);
     vi.mocked(gitCreateBranch).mockReset().mockResolvedValue(undefined);
     vi.mocked(gitSwitchBranch).mockReset().mockResolvedValue(undefined);
-    vi.mocked(hideBrowserSidebar).mockReset().mockResolvedValue(undefined);
-    vi.mocked(openBrowserSidebar).mockReset().mockResolvedValue(undefined);
-    vi.mocked(updateBrowserSidebarBounds).mockReset().mockResolvedValue(undefined);
+    vi.mocked(listWorkspaceEntries).mockReset().mockResolvedValue({ entries: [], nextCursor: null });
+    vi.mocked(listSessionReviews).mockReset().mockResolvedValue({ entries: [], nextCursor: null, truncated: false });
     vi.mocked(createAgentSession).mockReset().mockResolvedValue(defaultSession);
     vi.mocked(deleteAgentSessions)
       .mockReset()
@@ -355,15 +348,17 @@ describe("ChatWorkbenchView", () => {
     vi.mocked(createWorkspaceWorktree)
       .mockReset()
       .mockResolvedValue({ path: "C:\\worktrees\\work-1" });
+    const agentHandlers = new Set<(event: AgentEvent) => void>();
+    emitAgentEvent = (event) => { for (const handler of agentHandlers) handler(event); };
     vi.mocked(listenToAgentEvents)
       .mockReset()
       .mockImplementation(async (handler) => {
-        emitAgentEvent = handler;
-        return unlisten;
+        agentHandlers.add(handler);
+        return () => { agentHandlers.delete(handler); unlisten(); };
       });
   });
 
-  it("会话快捷键聚焦输入并打开文件和浏览器，弹窗期间不触发导航", async () => {
+  it("会话快捷键聚焦输入并打开文件，弹窗期间不触发导航", async () => {
     render(<ChatWorkbenchView />);
     await screen.findByRole("status", { name: "状态正常" });
     await addProject("C:\\work");
@@ -377,7 +372,7 @@ describe("ChatWorkbenchView", () => {
     expect(screen.queryByRole("heading", { name: "插件" })).not.toBeInTheDocument();
     fireEvent.keyDown(screen.getByRole("searchbox", { name: "输入内容搜索文件" }), { key: "Escape" });
     fireEvent.keyDown(window, { key: "t", ctrlKey: true });
-    expect(await screen.findByRole("tab", { name: "浏览器" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "浏览器" })).not.toBeInTheDocument();
     fireEvent.keyDown(window, { key: "n", ctrlKey: true });
     expect(await screen.findByLabelText("发送给 Pi 的消息")).toHaveValue("");
   });
@@ -991,7 +986,7 @@ describe("ChatWorkbenchView", () => {
     expect(screen.getByRole("button", { name: "选择项目" })).toBeEnabled();
     expect(screen.getByTitle("本机 Pi Runtime")).toBeInTheDocument();
     unmount();
-    expect(unlisten).toHaveBeenCalledOnce();
+    expect(unlisten).toHaveBeenCalledTimes(vi.mocked(listenToAgentEvents).mock.calls.length);
   });
 
   it("取消资源管理器选择时保留弹窗且不创建会话", async () => {
@@ -1198,7 +1193,7 @@ describe("ChatWorkbenchView", () => {
     expect(createAgentSession).toHaveBeenCalledWith(
       "C:\\Users\\me\\Documents\\Pix\\conversations",
     );
-    expect(screen.queryByRole("button", { name: "显示审查侧栏" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "显示工作区侧栏" })).not.toBeInTheDocument();
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "选择项目" })).not.toBeInTheDocument(),
     );
@@ -1248,56 +1243,82 @@ describe("ChatWorkbenchView", () => {
   it("仅在项目会话中打开、展开并关闭右侧面板", async () => {
     const { container } = render(<ChatWorkbenchView />);
     await screen.findByRole("status", { name: "状态正常" });
-    expect(screen.queryByRole("button", { name: "显示审查侧栏" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "显示工作区侧栏" })).not.toBeInTheDocument();
 
     await addProject("C:\\work");
-    const toggle = await screen.findByRole("button", { name: "显示审查侧栏" });
+    const toggle = await screen.findByRole("button", { name: "显示工作区侧栏" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "选择 Git 分支" })).toHaveTextContent("main"));
+    const initialGitRequests = vi.mocked(gitStatus).mock.calls.length;
     fireEvent.click(toggle);
     expect(await screen.findByRole("complementary", { name: "工作区侧边栏" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "审查" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("打开工具或文件以继续")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "审查" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "文件" })).not.toBeInTheDocument();
+    expect(gitStatus).toHaveBeenCalledTimes(initialGitRequests);
+    expect(listWorkspaceEntries).not.toHaveBeenCalled();
+    expect(readWorkspaceFile).not.toHaveBeenCalled();
+    expect(listSessionReviews).not.toHaveBeenCalled();
     await waitFor(() => expect(gitStatus).toHaveBeenCalledWith("C:\\work"));
 
     fireEvent.click(screen.getByRole("button", { name: "打开右侧面板标签页" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: /浏览器/ }));
-    expect(screen.getByRole("tab", { name: "浏览器" })).toHaveAttribute("aria-selected", "true");
-    const browserSurface = screen.getByLabelText("浏览器内容区域");
-    Object.defineProperty(browserSurface, "getBoundingClientRect", {
-      configurable: true,
-      value: () => ({
-        x: 600,
-        y: 80,
-        top: 80,
-        left: 600,
-        right: 1_160,
-        bottom: 800,
-        width: 560,
-        height: 720,
-        toJSON: () => ({}),
-      } as DOMRect),
-    });
-    fireEvent(window, new Event("resize"));
-    await waitFor(() => {
-      expect(openBrowserSidebar).toHaveBeenCalledWith({
-        x: 600,
-        y: 80,
-        width: 560,
-        height: 720,
-        visible: true,
-        url: "https://www.google.com",
-      });
-    });
+    fireEvent.click(screen.getByRole("menuitem", { name: /文件列表/ }));
+    expect(screen.getByRole("tab", { name: "文件" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tree", { name: "文件树" })).toBeInTheDocument();
+    await waitFor(() => expect(listWorkspaceEntries).toHaveBeenCalledWith("C:\\work", "", null));
     fireEvent.click(screen.getByRole("button", { name: "展开工作区侧边栏" }));
     expect(container.querySelector(".right-panel")).toHaveClass("right-panel-expanded");
     fireEvent.click(screen.getByRole("button", { name: "收起工作区侧边栏" }));
-    fireEvent.click(screen.getByRole("button", { name: "关闭浏览器标签页" }));
     expect(screen.queryByRole("tab", { name: "浏览器" })).not.toBeInTheDocument();
-    await waitFor(() => expect(hideBrowserSidebar).toHaveBeenCalled());
 
     fireEvent.click(screen.getByRole("button", { name: "关闭差异侧栏" }));
-    expect(screen.getByRole("button", { name: "显示审查侧栏" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "显示工作区侧栏" })).toHaveAttribute("aria-pressed", "false");
     expect(container.querySelector(".right-panel")).toHaveAttribute("aria-hidden", "true");
-    await waitFor(() => expect(screen.getByRole("button", { name: "显示审查侧栏" })).toHaveFocus());
-    await waitFor(() => expect(container.querySelector(".right-panel")).toBeNull());
+    await waitFor(() => expect(screen.getByRole("button", { name: "显示工作区侧栏" })).toHaveFocus());
+    await waitFor(() => expect(container.querySelector(".right-panel")).not.toBeVisible());
+    expect(container.querySelector(".right-panel")).toBeInTheDocument();
+    const filesTree = container.querySelector('[role="tree"][aria-label="文件树"]');
+    const directoryRequests = vi.mocked(listWorkspaceEntries).mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "显示工作区侧栏" }));
+    expect(screen.getByRole("tree", { name: "文件树" })).toBe(filesTree);
+    expect(screen.getByRole("tab", { name: "文件" })).toHaveAttribute("aria-selected", "true");
+    expect(listWorkspaceEntries).toHaveBeenCalledTimes(directoryRequests);
+    fireEvent.click(screen.getByRole("button", { name: "关闭文件列表标签页" }));
+    expect(screen.getByText("打开工具或文件以继续")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "文件" })).not.toBeInTheDocument();
+  });
+
+  it.each(["文件列表", "Git 审查"])("%s 保持打开并自动跟随工作区 A→B→A", async (tool) => {
+    vi.mocked(listWorkspaceEntries).mockImplementation(async (cwd) => ({
+      entries: [{ name: cwd.endsWith("alpha") ? "alpha.ts" : "beta.ts", relativePath: cwd.endsWith("alpha") ? "alpha.ts" : "beta.ts", kind: "file" }], nextCursor: null,
+    }));
+    vi.mocked(gitStatus).mockImplementation(async (cwd) => ({
+      isRepository: true, repoRoot: cwd, branch: { head: cwd.endsWith("alpha") ? "alpha-branch" : "beta-branch", upstream: null, ahead: 0, behind: 0, detached: false },
+      staged: [], unstaged: [], untracked: [], conflicted: [], isClean: true,
+    }));
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    await addProject("C:/alpha");
+    fireEvent.click(await screen.findByRole("button", { name: "显示工作区侧栏" }));
+    fireEvent.click(screen.getByRole("button", { name: tool }));
+    const expectWorkspace = async (name: "alpha" | "beta") => {
+      const panel = screen.getByRole("complementary", { name: "工作区侧边栏" });
+      expect(screen.getByRole("button", { name: "隐藏工作区侧栏" })).toHaveAttribute("aria-pressed", "true");
+      expect(within(panel).getByRole("tab", { name: tool === "文件列表" ? "文件" : "审查" })).toHaveAttribute("aria-selected", "true");
+      if (tool === "文件列表") {
+        expect(await within(panel).findByRole("treeitem", { name: `${name}.ts` })).toBeInTheDocument();
+        expect(within(panel).queryByRole("treeitem", { name: `${name === "alpha" ? "beta" : "alpha"}.ts` })).not.toBeInTheDocument();
+      } else {
+        expect(await within(panel).findByText(`${name}-branch`)).toBeInTheDocument();
+        expect(within(panel).queryByText(`${name === "alpha" ? "beta" : "alpha"}-branch`)).not.toBeInTheDocument();
+      }
+    };
+    await expectWorkspace("alpha");
+    await addProject("C:/beta");
+    await waitFor(() => expect(rememberWorkspace).toHaveBeenCalledWith("C:/beta"));
+    await expectWorkspace("beta");
+    await addProject("C:/alpha");
+    await waitFor(() => expect(screen.getByRole("button", { name: "选择 Git 分支" })).toHaveTextContent("alpha-branch"));
+    await expectWorkspace("alpha");
   });
 
   it("从右侧面板搜索文件、读取源码、添加评论并调用受限文件操作", async () => {
@@ -1308,7 +1329,7 @@ describe("ChatWorkbenchView", () => {
     render(<ChatWorkbenchView />);
     await screen.findByRole("status", { name: "状态正常" });
     await addProject("C:\\work");
-    fireEvent.click(await screen.findByRole("button", { name: "显示审查侧栏" }));
+    fireEvent.click(await screen.findByRole("button", { name: "显示工作区侧栏" }));
 
     fireEvent.click(screen.getByRole("button", { name: "打开右侧面板标签页" }));
     fireEvent.click(screen.getByRole("menuitem", { name: /打开文件/ }));
@@ -1344,7 +1365,30 @@ describe("ChatWorkbenchView", () => {
     );
   });
 
-  it("将图片搜索结果打开到快速预览标签", async () => {
+  it("同工作区切换会话保留审查工具，并读取当前会话修改", async () => {
+    const sessions = ["first", "second"].map((id) => ({
+      id, path: `C:/sessions/${id}.jsonl`, cwd: "C:/alpha", name: `${id} task`,
+      created: "2026-09-27T08:00:00.000Z", modified: "2026-09-27T09:00:00.000Z", messageCount: 1, firstMessage: id,
+    }));
+    vi.mocked(listAgentSessions).mockResolvedValue(sessions);
+    vi.mocked(getWorkspaceState).mockResolvedValue({ recentWorkspaces: ["C:/alpha"], lastWorkspace: null, conversationHome: "C:/conversations" });
+    vi.mocked(openAgentSession).mockImplementation(async (path) => ({
+      ...defaultSession, sessionId: path.includes("first") ? "first" : "second", cwd: "C:/alpha", sessionPath: path,
+    }));
+    render(<ChatWorkbenchView />);
+    fireEvent.click(await screen.findByTitle("first task"));
+    fireEvent.click(await screen.findByRole("button", { name: "显示工作区侧栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "Git 审查" }));
+    fireEvent.click(screen.getByRole("button", { name: "会话修改" }));
+    await waitFor(() => expect(listSessionReviews).toHaveBeenCalledWith("first", "C:/alpha", undefined));
+    fireEvent.click(screen.getByTitle("second task"));
+    await waitFor(() => expect(listSessionReviews).toHaveBeenCalledWith("second", "C:/alpha", undefined));
+    expect(screen.getByRole("button", { name: "隐藏工作区侧栏" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("tab", { name: "审查" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "会话修改" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("将图片搜索结果打开到快速预览标签，并按工作区隔离预览", async () => {
     vi.mocked(searchWorkspacePaths).mockResolvedValueOnce([
       { path: "C:\\work\\assets\\logo.png", relativePath: "assets/logo.png", kind: "file" },
     ]);
@@ -1352,7 +1396,7 @@ describe("ChatWorkbenchView", () => {
     render(<ChatWorkbenchView />);
     await screen.findByRole("status", { name: "状态正常" });
     await addProject("C:\\work");
-    fireEvent.click(await screen.findByRole("button", { name: "显示审查侧栏" }));
+    fireEvent.click(await screen.findByRole("button", { name: "显示工作区侧栏" }));
     fireEvent.click(screen.getByRole("button", { name: "打开右侧面板标签页" }));
     fireEvent.click(screen.getByRole("menuitem", { name: /打开文件/ }));
     fireEvent.change(screen.getByRole("searchbox", { name: "输入内容搜索文件" }), {
@@ -1363,6 +1407,15 @@ describe("ChatWorkbenchView", () => {
     expect(await screen.findByRole("tab", { name: "logo.png" })).toHaveAttribute("aria-selected", "true");
     const image = await screen.findByRole("img", { name: "logo.png" });
     expect(image).toHaveAttribute("src", "data:image/png;base64,AA==");
+    const reads = vi.mocked(readWorkspaceFile).mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+    expect(screen.getByRole("tab", { name: "logo.png" })).toHaveAttribute("aria-selected", "true");
+    expect(readWorkspaceFile).toHaveBeenCalledTimes(reads);
+    await addProject("C:/other");
+    await waitFor(() => expect(screen.queryByRole("tab", { name: "logo.png" })).not.toBeInTheDocument());
+    expect(screen.queryByRole("img", { name: "logo.png" })).not.toBeInTheDocument();
+    expect(screen.getByText("打开工具或文件以继续")).toBeInTheDocument();
+    expect(readWorkspaceFile).toHaveBeenCalledTimes(reads);
   });
 
   it("后台加载尚未完成时进入插件页面不会丢失资源计数", async () => {
@@ -1583,7 +1636,7 @@ async function addProject(path: string) {
 }
 
 async function openAddProjectDialog() {
-  const addButtons = await screen.findAllByRole("button", { name: "添加项目" });
+  const addButtons = await screen.findAllByRole("button", { name: /^添加项目(?:文件夹)?$/ });
   const addButton = addButtons.at(-1);
   expect(addButton).toBeDefined();
   await waitFor(() => expect(addButton).toBeEnabled());

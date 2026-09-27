@@ -184,6 +184,7 @@ export function useChatSession(): ChatSessionState {
   const itemSequence = useRef(1);
   const catalogRequestId = useRef(0);
   const sessionCatalogRequestId = useRef(0);
+  const sessionNavigationId = useRef(0);
   const promptRequests = useRef(new Map<string, number>());
   const materializingDrafts = useRef(new Set<string>());
   const reconnectingSessionId = useRef<string | null>(null);
@@ -217,11 +218,16 @@ export function useChatSession(): ChatSessionState {
   }, []);
 
   const installSession = useCallback(
-    (
+    async (
       session: AgentSession,
       lifecycle: Exclude<SessionLifecycle, "draft">,
-      replacedSessionId?: string,
+      replacedSessionId: string | undefined,
+      navigationId: number,
     ) => {
+      if (navigationId !== sessionNavigationId.current) return null;
+      const workspace = session.cwd ? await rememberWorkspace(session.cwd) : null;
+      if (navigationId !== sessionNavigationId.current) return null;
+      if (workspace) setWorkspaceState(workspace);
       const replaced = replacedSessionId ? projectionsRef.current[replacedSessionId] : undefined;
       const loaded = projectionFromSession(session, nextItemId, lifecycle, replaced);
       commitProjections((current) => {
@@ -254,11 +260,6 @@ export function useChatSession(): ChatSessionState {
       activeSessionIdRef.current = session.sessionId;
       setActiveSessionId(session.sessionId);
       setGlobalError(null);
-      if (session.cwd) {
-        void rememberWorkspace(session.cwd)
-          .then(setWorkspaceState)
-          .catch((error: unknown) => setCatalogError(formatError(error)));
-      }
       return projectionsRef.current[session.sessionId] ?? loaded;
     },
     [commitProjections, nextItemId],
@@ -399,13 +400,14 @@ export function useChatSession(): ChatSessionState {
           ? nextSessions.find((session) => samePath(session.cwd, lastWorkspace))
           : undefined;
         if (shouldRestore && recent) {
+          const navigationId = ++sessionNavigationId.current;
           setNavigationPending(true);
           try {
-            installSession(await openAgentSession(recent.path), "persisted");
+            await installSession(await openAgentSession(recent.path), "persisted", undefined, navigationId);
           } catch (error) {
-            setGlobalError(formatError(error));
+            if (navigationId === sessionNavigationId.current) setGlobalError(formatError(error));
           } finally {
-            setNavigationPending(false);
+            if (navigationId === sessionNavigationId.current) setNavigationPending(false);
           }
         }
 
@@ -453,21 +455,21 @@ export function useChatSession(): ChatSessionState {
     }
     if (reconnectingSessionId.current === sessionId) return false;
     reconnectingSessionId.current = sessionId;
+    const navigationId = ++sessionNavigationId.current;
     pendingAutoRestore.current?.cancelSchedule();
     pendingAutoRestore.current = null;
     setNavigationPending(true);
     try {
       const reopened = await openAgentSession(sessionPath);
       if (activeSessionIdRef.current !== sessionId) return false;
-      installSession(reopened, "persisted", sessionId);
-      return true;
+      return Boolean(await installSession(reopened, "persisted", sessionId, navigationId));
     } catch (error) {
-      if (activeSessionIdRef.current === sessionId) {
+      if (navigationId === sessionNavigationId.current && activeSessionIdRef.current === sessionId) {
         setGlobalError(`SESSION_RECONNECT_FAILED: ${formatError(error)}`);
       }
       return false;
     } finally {
-      setNavigationPending(false);
+      if (navigationId === sessionNavigationId.current) setNavigationPending(false);
       if (reconnectingSessionId.current === sessionId) {
         reconnectingSessionId.current = null;
       }
@@ -541,6 +543,7 @@ export function useChatSession(): ChatSessionState {
     () => () => {
       catalogRequestId.current += 1;
       sessionCatalogRequestId.current += 1;
+      sessionNavigationId.current += 1;
       pendingAutoRestore.current?.cancelSchedule();
       pendingAutoRestore.current = null;
       if (pendingCatalogRefresh.current !== null) {
@@ -564,10 +567,12 @@ export function useChatSession(): ChatSessionState {
         return false;
       }
       if (navigationPending) return false;
+      const navigationId = ++sessionNavigationId.current;
       setNavigationPending(true);
       setGlobalError(null);
       try {
         const workspace = await rememberWorkspace(requestedCwd);
+        if (navigationId !== sessionNavigationId.current) return false;
         setWorkspaceState(workspace);
         const canonicalCwd =
           workspace.recentWorkspaces.find((path) => samePath(path, requestedCwd)) ?? requestedCwd;
@@ -577,10 +582,10 @@ export function useChatSession(): ChatSessionState {
         setActiveSessionId(draft.sessionId);
         return true;
       } catch (error) {
-        setGlobalError(formatError(error));
+        if (navigationId === sessionNavigationId.current) setGlobalError(formatError(error));
         return false;
       } finally {
-        setNavigationPending(false);
+        if (navigationId === sessionNavigationId.current) setNavigationPending(false);
       }
     },
     [cancelAutoRestore, commitProjections, eventConnection, navigationPending],
@@ -589,6 +594,7 @@ export function useChatSession(): ChatSessionState {
   const createConversation = useCallback(async () => {
     cancelAutoRestore();
     if (eventConnection !== "ready" || navigationPending) return false;
+    sessionNavigationId.current += 1;
     setGlobalError(null);
     const draft = createDraftProjection(`draft:${draftSequence.current++}`, "");
     commitProjections((current) => ({ ...current, [draft.sessionId]: draft }));
@@ -609,6 +615,8 @@ export function useChatSession(): ChatSessionState {
             )
           : undefined);
       if (projection) {
+        sessionNavigationId.current += 1;
+        setNavigationPending(false);
         activeSessionIdRef.current = projection.sessionId;
         setActiveSessionId(projection.sessionId);
         setGlobalError(null);
@@ -625,16 +633,16 @@ export function useChatSession(): ChatSessionState {
         return false;
       }
       if (eventConnection !== "ready" || !session.path || navigationPending) return false;
+      const navigationId = ++sessionNavigationId.current;
       setNavigationPending(true);
       setGlobalError(null);
       try {
-        installSession(await openAgentSession(session.path), "persisted");
-        return true;
+        return Boolean(await installSession(await openAgentSession(session.path), "persisted", undefined, navigationId));
       } catch (error) {
-        setGlobalError(formatError(error));
+        if (navigationId === sessionNavigationId.current) setGlobalError(formatError(error));
         return false;
       } finally {
-        setNavigationPending(false);
+        if (navigationId === sessionNavigationId.current) setNavigationPending(false);
       }
     },
     [cancelAutoRestore, eventConnection, installSession, navigationPending],
@@ -704,11 +712,12 @@ export function useChatSession(): ChatSessionState {
       if (draft.lifecycle !== "draft") return draft;
       if (materializingDrafts.current.has(draftSessionId)) return null;
       materializingDrafts.current.add(draftSessionId);
+      const navigationId = ++sessionNavigationId.current;
       setNavigationPending(true);
       commitProjections((current) => updateProjectionError(current, draftSessionId, null));
       try {
         const cwd = draft.cwd || (await ensureConversationWorkspace());
-        return installSession(await createAgentSession(cwd), "live", draftSessionId);
+        return await installSession(await createAgentSession(cwd), "live", draftSessionId, navigationId);
       } catch (error) {
         commitProjections((current) =>
           updateProjectionError(current, draftSessionId, formatError(error)),
@@ -716,7 +725,7 @@ export function useChatSession(): ChatSessionState {
         return null;
       } finally {
         materializingDrafts.current.delete(draftSessionId);
-        setNavigationPending(false);
+        if (navigationId === sessionNavigationId.current) setNavigationPending(false);
       }
     },
     [commitProjections, installSession],

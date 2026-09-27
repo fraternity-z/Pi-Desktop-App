@@ -8,13 +8,13 @@ describe("CommandPalette", () => {
     const onAction = vi.fn();
     render(<CommandPalette bindings={DEFAULT_SHORTCUTS} disabled={{}} onAction={onAction} onClose={vi.fn()} />);
     const close = screen.getByRole("button", { name: "关闭" });
-    const last = screen.getByRole("button", { name: /打开浏览器/ });
+    const last = screen.getByRole("button", { name: /打开文件/ });
     last.focus(); fireEvent.keyDown(last, { key: "Tab" });
     expect(close).toHaveFocus();
     fireEvent.keyDown(close, { key: "Tab", shiftKey: true });
     expect(last).toHaveFocus();
     fireEvent.click(last);
-    expect(onAction).toHaveBeenCalledWith("browser");
+    expect(onAction).toHaveBeenCalledWith("file");
     const search = screen.getByRole("searchbox");
     search.focus(); fireEvent.keyDown(search, { key: "ArrowUp" });
     expect(last).toHaveFocus();

@@ -318,6 +318,7 @@ describe("outbound frames", () => {
         "models",
         "provider-settings",
         "session-history",
+        "session-file-review",
         "session-configuration",
         "tool-status",
         "tool-permissions",

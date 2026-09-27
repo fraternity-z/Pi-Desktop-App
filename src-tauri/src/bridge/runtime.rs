@@ -17,8 +17,8 @@ use crate::{
         protocol::{
             AgentModel, AgentSessionSummary, CreatedSession, DeleteSessionsResult, PackageScope,
             PackageSummary, PackageUpdateInfo, PromptStreamingBehavior, RequestHeaderSettings,
-            ResourceSummary, SessionConfiguration, SessionConfigurationUpdate, SlashCommandSummary,
-            THINKING_LEVELS,
+            ResourceSummary, SessionConfiguration, SessionConfigurationUpdate,
+            SessionReviewRequest, SlashCommandSummary, THINKING_LEVELS,
         },
         supervisor::{
             BridgeEventSink, BridgeFaultSink, BridgeLaunchConfig, BridgeSupervisor,
@@ -201,9 +201,10 @@ impl BridgeRuntime {
         proxy: crate::storage::proxy::ProxyEndpoint,
     ) -> Result<(), AppError> {
         proxy.validate()?;
-        *self.proxy.lock().map_err(|_| {
-            AppError::new("PROXY_STATE_UNAVAILABLE", "代理设置锁不可用")
-        })? = proxy;
+        *self
+            .proxy
+            .lock()
+            .map_err(|_| AppError::new("PROXY_STATE_UNAVAILABLE", "代理设置锁不可用"))? = proxy;
         Ok(())
     }
 
@@ -217,9 +218,10 @@ impl BridgeRuntime {
             .supervisor
             .lock()
             .map_err(|_| AppError::new("BRIDGE_STATE_POISONED", "Bridge 状态锁不可用"))?;
-        let mut current = self.proxy.lock().map_err(|_| {
-            AppError::new("PROXY_STATE_UNAVAILABLE", "代理设置锁不可用")
-        })?;
+        let mut current = self
+            .proxy
+            .lock()
+            .map_err(|_| AppError::new("PROXY_STATE_UNAVAILABLE", "代理设置锁不可用"))?;
         if *current == proxy {
             persist()?;
             return Ok(None);
@@ -228,7 +230,10 @@ impl BridgeRuntime {
             return Err(AppError::new("BRIDGE_CLOSED", "Pi Bridge 已关闭"));
         }
         if slot.starting {
-            return Err(AppError::new("BRIDGE_STARTING", "运行时正在启动，请稍后保存代理设置"));
+            return Err(AppError::new(
+                "BRIDGE_STARTING",
+                "运行时正在启动，请稍后保存代理设置",
+            ));
         }
         persist()?;
         *current = proxy;
@@ -260,9 +265,10 @@ impl BridgeRuntime {
         relaxed: bool,
         persist: impl FnOnce() -> Result<(), AppError>,
     ) -> Result<Option<RestartRequest>, AppError> {
-        let mut slot = self.supervisor.lock().map_err(|_| {
-            AppError::new("BRIDGE_STATE_POISONED", "Bridge 状态锁不可用")
-        })?;
+        let mut slot = self
+            .supervisor
+            .lock()
+            .map_err(|_| AppError::new("BRIDGE_STATE_POISONED", "Bridge 状态锁不可用"))?;
         if self.relaxed_network.load(Ordering::Acquire) == relaxed {
             persist()?;
             return Ok(None);
@@ -271,7 +277,10 @@ impl BridgeRuntime {
             return Err(AppError::new("BRIDGE_CLOSED", "Pi Bridge 已关闭"));
         }
         if slot.starting {
-            return Err(AppError::new("BRIDGE_STARTING", "运行时正在启动，请稍后保存网络设置"));
+            return Err(AppError::new(
+                "BRIDGE_STARTING",
+                "运行时正在启动，请稍后保存网络设置",
+            ));
         }
         persist()?;
         self.relaxed_network.store(relaxed, Ordering::Release);
@@ -441,7 +450,10 @@ impl BridgeRuntime {
         self.with_supervisor(|supervisor| supervisor.list_models())
     }
 
-    pub fn provider_settings(&self, request: super::providers::ProviderRequest) -> Result<serde_json::Value, AppError> {
+    pub fn provider_settings(
+        &self,
+        request: super::providers::ProviderRequest,
+    ) -> Result<serde_json::Value, AppError> {
         request.validate()?;
         self.with_supervisor(|supervisor| supervisor.provider_settings(&request))
     }
@@ -511,6 +523,18 @@ impl BridgeRuntime {
         validate_session_id(&session_id)?;
         self.ensure_known_session(&session_id)?;
         self.with_supervisor(|supervisor| supervisor.list_commands(&session_id))
+    }
+
+    pub fn session_review(
+        &self,
+        session_id: String,
+        cwd: String,
+        request: SessionReviewRequest,
+    ) -> Result<serde_json::Value, AppError> {
+        request.validate()?;
+        self.ensure_known_session(&session_id)?;
+        let cwd = canonical_workspace(Path::new(cwd.trim()))?;
+        self.with_supervisor(|supervisor| supervisor.session_review(&session_id, &cwd, &request))
     }
 
     pub fn configure_request_headers(
@@ -803,9 +827,11 @@ impl BridgeRuntime {
                 ))
             },
             |runtime_paths| {
-                let proxy = self.proxy.lock().map_err(|_| {
-                    AppError::new("PROXY_STATE_UNAVAILABLE", "代理设置锁不可用")
-                })?.clone();
+                let proxy = self
+                    .proxy
+                    .lock()
+                    .map_err(|_| AppError::new("PROXY_STATE_UNAVAILABLE", "代理设置锁不可用"))?
+                    .clone();
                 start_bridge_with_paths(
                     runtime_paths,
                     launch,
@@ -1410,13 +1436,28 @@ mod tests {
     #[test]
     fn proxy_save_reserves_restart_and_rejects_startup_races_without_persisting() {
         use crate::storage::proxy::{ProxyEndpoint, ProxyMode};
-        let runtime = BridgeRuntime::initialize(PathBuf::from("fixture.mjs"), Arc::new(|_| {}), RequestHeaderSettings::default());
-        let direct = ProxyEndpoint { mode: ProxyMode::Direct, ..Default::default() };
+        let runtime = BridgeRuntime::initialize(
+            PathBuf::from("fixture.mjs"),
+            Arc::new(|_| {}),
+            RequestHeaderSettings::default(),
+        );
+        let direct = ProxyEndpoint {
+            mode: ProxyMode::Direct,
+            ..Default::default()
+        };
         runtime.supervisor.lock().unwrap().starting = true;
-        let result = runtime.update_proxy(direct.clone(), || panic!("must not persist while starting"));
+        let result =
+            runtime.update_proxy(direct.clone(), || panic!("must not persist while starting"));
         assert_eq!(result.err().unwrap().code, "BRIDGE_STARTING");
         runtime.supervisor.lock().unwrap().starting = false;
-        assert!(runtime.update_proxy(direct.clone(), || Err(AppError::new("FIXTURE_WRITE_FAILED", "fixture"))).is_err());
+        assert!(
+            runtime
+                .update_proxy(direct.clone(), || Err(AppError::new(
+                    "FIXTURE_WRITE_FAILED",
+                    "fixture"
+                )))
+                .is_err()
+        );
         assert_eq!(*runtime.proxy.lock().unwrap(), ProxyEndpoint::default());
         let request = runtime.update_proxy(direct.clone(), || Ok(())).unwrap();
         assert!(request.is_some());

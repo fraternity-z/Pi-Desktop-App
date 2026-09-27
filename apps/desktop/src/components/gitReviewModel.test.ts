@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  addSplitWordSegments,
   buildGitApplyCommand,
   buildSplitDiffRows,
   buildUnifiedWordSegments,
@@ -61,6 +62,19 @@ describe("gitReviewModel", () => {
     expect(unified.get(changedRow!.left!)?.some((segment) => segment.changed)).toBe(true);
   });
 
+  it("分页只比较可见词级差异并保留跨页删除新增的配对", () => {
+    const lines = parseUnifiedDiff("@@ -1,2 +1,2 @@\n-first before\n-second before\n+first after\n+second after");
+    const visible = [lines[3]!];
+    const segments = buildUnifiedWordSegments(lines, visible);
+    expect(segments.get(lines[3]!)?.some((part) => !part.changed && part.text === "first " )).toBe(true);
+    expect(segments.has(lines[2]!)).toBe(false);
+    const rows = buildSplitDiffRows(lines, false).slice(1, 2);
+    const enhanced = addSplitWordSegments(rows);
+    expect(enhanced[0]?.left?.content).toBe("first before");
+    expect(enhanced[0]?.right?.content).toBe("first after");
+    expect(enhanced[0]?.rightSegments?.some((part) => part.changed)).toBe(true);
+  });
+
   it("超长行退化到共同前后缀算法", () => {
     const left = Array.from({ length: 361 }, (_, index) => `old${index}`).join(" ");
     const right = left.replace("old180", "new180");
@@ -72,6 +86,15 @@ describe("gitReviewModel", () => {
 
     expect(pair?.leftSegments?.some((segment) => segment.changed)).toBe(true);
     expect(pair?.rightSegments?.some((segment) => segment.changed)).toBe(true);
+  });
+
+  it("极长单行保留全部内容并退化到共同前后缀", () => {
+    const prefix = "token ".repeat(10000);
+    const rows = buildSplitDiffRows(parseUnifiedDiff(`@@ -1 +1 @@\n-${prefix}before\n+${prefix}after`), true);
+    const pair = rows.find((row) => row.left?.kind === "delete");
+    expect(pair?.leftSegments?.map((segment) => segment.text).join("")).toBe(`${prefix}before`);
+    expect(pair?.rightSegments?.map((segment) => segment.text).join("")).toBe(`${prefix}after`);
+    expect(pair?.leftSegments).toHaveLength(2);
   });
 
   it("生成 PowerShell git apply 命令并拒绝可提前闭合的 here-string", () => {

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { isSessionReviewSummary, type SessionReviewSummary } from "./sessionReview";
 
 /** Pi SDK 的标准思考强度顺序；模型能力只负责从中筛选可用项。 */
 export const THINKING_LEVELS = [
@@ -94,6 +95,7 @@ export interface AgentMessageSummary {
   toolOutput?: ToolDisplayPayload;
   isError?: boolean;
   timestamp?: string;
+  review?: SessionReviewSummary;
 }
 
 export interface SessionConfiguration {
@@ -188,6 +190,7 @@ export type AgentEventName =
   | "queue.updated"
   | "agent.settled"
   | "session.configurationChanged"
+  | "session.reviewChanged"
   | "session.usageChanged";
 
 const AGENT_EVENT_NAMES = new Set<AgentEventName>([
@@ -203,6 +206,7 @@ const AGENT_EVENT_NAMES = new Set<AgentEventName>([
   "queue.updated",
   "agent.settled",
   "session.configurationChanged",
+  "session.reviewChanged",
   "session.usageChanged",
 ]);
 const MAX_SESSION_ID_CHARS = 128;
@@ -406,10 +410,9 @@ function hasValidEventData(name: AgentEventName, data: unknown): boolean {
     const detailKey = name === "tool.started" ? "input" : "output";
     const keys = Object.keys(data);
     return (
-      (keys.length === 2 ||
-        (keys.length === 3 &&
-          detailKey in data &&
-          isToolDisplayPayload(data[detailKey]))) &&
+      keys.every((key) => key === "toolCallId" || key === "toolName" || key === detailKey || (name !== "tool.started" && key === "review")) &&
+      (!(detailKey in data) || isToolDisplayPayload(data[detailKey])) &&
+      (!("review" in data) || isSessionReviewSummary(data.review)) &&
       isBoundedText(data.toolCallId, MAX_TOOL_CALL_ID_CHARS) &&
       isBoundedText(data.toolName, MAX_TOOL_NAME_CHARS)
     );
@@ -422,6 +425,7 @@ function hasValidEventData(name: AgentEventName, data: unknown): boolean {
       isQueuedMessageList(data.followUp)
     );
   }
+  if (name === "session.reviewChanged") return isSessionReviewSummary(data);
   if (name === "session.configurationChanged") {
     if (!isRecord(data)) return false;
     const keys = Object.keys(data);

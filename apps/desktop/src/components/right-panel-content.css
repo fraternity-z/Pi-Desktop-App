@@ -232,6 +232,26 @@
   min-width: max-content;
 }
 
+.right-panel-file-pages {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.right-panel-file-pages input {
+  width: 50px;
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-ui);
+  background: var(--input-bg);
+  color: var(--text);
+}
+
 .right-panel-file-line-block {
   display: block;
 }

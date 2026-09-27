@@ -66,7 +66,7 @@ describe("GitReviewPanel", () => {
     });
   });
 
-  it("仅在激活时读取状态，并连续展开、惰性加载且安全渲染 diff", async () => {
+  it("仅在激活且展开时读取差异，并缓存结果安全渲染", async () => {
     const api = createApi();
     const { container, rerender } = render(
       <GitReviewPanel cwd={CWD} active={false} api={api} />,
@@ -77,10 +77,195 @@ describe("GitReviewPanel", () => {
     expect(await screen.findByText("main")).toBeInTheDocument();
     expect(screen.getByText("src/old.ts → src/a.ts")).toBeInTheDocument();
     expect(screen.getByText("conflict.ts")).toBeInTheDocument();
-    await waitFor(() => expect(api.gitDiff).toHaveBeenCalledTimes(3));
+    expect(api.gitDiff).not.toHaveBeenCalled();
+    expect(screen.queryByText("更新中…")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "展开 src/old.ts → src/a.ts" }));
+    await waitFor(() => expect(api.gitDiff).toHaveBeenCalledTimes(1));
+    await screen.findByText("已读取 1/3 个文件 · +1 -1");
     expect(container).toHaveTextContent("<script>safe</script>");
     expect(container.querySelector("script")).toBeNull();
-    expect(await screen.findByLabelText("当前分组新增 3 行，删除 3 行")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "折叠 src/old.ts → src/a.ts" }));
+    fireEvent.click(screen.getByRole("button", { name: "展开 src/old.ts → src/a.ts" }));
+    expect(api.gitDiff).toHaveBeenCalledTimes(1);
+    expect(container).toHaveTextContent("<script>safe</script>");
+  });
+
+  it("大量未展开文件不会读取任何差异，只读取用户选择的文件", async () => {
+    const entries = Array.from({ length: 250 }, (_, index) => ({
+      path: `file-${index}.ts`, originalPath: null, indexStatus: " ", worktreeStatus: "M",
+    }));
+    const api = createApi({ gitStatus: vi.fn().mockResolvedValue({ ...STATUS, unstaged: entries, untracked: [], conflicted: [] }) });
+    render(<GitReviewPanel cwd={CWD} api={api} />);
+    await screen.findByText("file-249.ts");
+    expect(api.gitDiff).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "展开 file-123.ts" }));
+    await waitFor(() => expect(api.gitDiff).toHaveBeenCalledTimes(1));
+    expect(api.gitDiff).toHaveBeenCalledWith(expect.objectContaining({ path: "file-123.ts" }));
+  });
+
+  it("刷新保留展开状态但使相同 Git 状态的旧差异失效", async () => {
+    const api = createApi();
+    render(<GitReviewPanel cwd={CWD} api={api} />);
+    await screen.findByText("main");
+    fireEvent.click(screen.getByRole("button", { name: "展开 new.ts" }));
+    await screen.findByText("已读取 1/3 个文件 · +1 -1");
+    fireEvent.click(screen.getByRole("button", { name: "折叠 new.ts" }));
+    fireEvent.click(screen.getByRole("button", { name: "展开 conflict.ts" }));
+    await screen.findByText("已读取 2/3 个文件 · +2 -2");
+    const trigger = screen.getByRole("button", { name: "折叠 conflict.ts" });
+    api.gitDiff.mockImplementation(async (input: GitDiffInput) => ({
+      ...diffFor(input.path ?? "changed.ts"), diff: "@@ -1 +1 @@\n-before refresh\n+updated after refresh",
+    }));
+    fireEvent.click(screen.getByRole("button", { name: "差异操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "刷新" }));
+    expect(await screen.findByText("updated after refresh")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "折叠 conflict.ts" })).toBe(trigger);
+    expect(api.gitDiff).toHaveBeenCalledTimes(3);
+    expect(screen.getByRole("button", { name: "展开 new.ts" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "展开 new.ts" }));
+    await waitFor(() => expect(api.gitDiff).toHaveBeenCalledTimes(4));
+    expect(api.gitDiff).toHaveBeenLastCalledWith(expect.objectContaining({ path: "new.ts" }));
+  });
+
+  it("刷新期间保留展开卡片并忽略较早请求的迟到结果", async () => {
+    let resolveOld: ((value: GitDiff) => void) | undefined;
+    const api = createApi();
+    api.gitDiff.mockImplementationOnce(() => new Promise<GitDiff>((resolve) => { resolveOld = resolve; }));
+    const { container } = render(<GitReviewPanel cwd={CWD} api={api} />);
+    await screen.findByText("main");
+    fireEvent.click(screen.getByRole("button", { name: "展开 new.ts" }));
+    await waitFor(() => expect(api.gitDiff).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "差异操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "刷新" }));
+    await screen.findByText("已读取 1/3 个文件 · +1 -1");
+    await act(async () => resolveOld?.({ ...diffFor("new.ts"), diff: "@@ -1 +1 @@\n-stale revision\n+wrong revision" }));
+    expect(api.gitDiff).toHaveBeenCalledTimes(2);
+    expect(container).not.toHaveTextContent("wrong revision");
+    expect(container).toHaveTextContent("<script>safe</script>");
+    expect(screen.getByRole("button", { name: "折叠 new.ts" })).toBeInTheDocument();
+  });
+
+  it("失败只影响展开文件并允许重试", async () => {
+    const api = createApi();
+    api.gitDiff.mockRejectedValueOnce({ code: "GIT_DIFF_FAILED", message: "temporary failure" });
+    render(<GitReviewPanel cwd={CWD} api={api} />);
+    await screen.findByText("main");
+    fireEvent.click(screen.getByRole("button", { name: "展开 new.ts" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("GIT_DIFF_FAILED: temporary failure");
+    expect(api.gitDiff).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    await screen.findByText("已读取 1/3 个文件 · +1 -1");
+    expect(api.gitDiff).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("范围切换后忽略迟到差异和统计，返回原范围重新读取", async () => {
+    let resolveOld: ((value: GitDiff) => void) | undefined;
+    const api = createApi();
+    api.gitDiff.mockImplementationOnce(() => new Promise<GitDiff>((resolve) => { resolveOld = resolve; }));
+    render(<GitReviewPanel cwd={CWD} api={api} />);
+    await screen.findByText("main");
+    fireEvent.click(screen.getByRole("button", { name: "展开 new.ts" }));
+    await waitFor(() => expect(api.gitDiff).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: /未暂存/ }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /已暂存/ }));
+    await act(async () => resolveOld?.({ ...diffFor("new.ts"), diff: "@@ -1 +1 @@\n-late scope\n+wrong scope" }));
+    expect(screen.queryByText("wrong scope")).toBeNull();
+    expect(screen.getByText("展开文件查看差异")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "展开 README.md" }));
+    await waitFor(() => expect(api.gitDiff).toHaveBeenCalledTimes(2));
+    expect(api.gitDiff).toHaveBeenLastCalledWith(expect.objectContaining({ path: "README.md", staged: true }));
+    fireEvent.click(screen.getByRole("button", { name: /已暂存/ }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /未暂存/ }));
+    fireEvent.click(screen.getByRole("button", { name: "展开 new.ts" }));
+    await waitFor(() => expect(api.gitDiff).toHaveBeenCalledTimes(3));
+  });
+
+  it("停用面板后丢弃在途结果且不读取差异", async () => {
+    let resolveOld: ((value: GitDiff) => void) | undefined;
+    const api = createApi();
+    api.gitDiff.mockImplementationOnce(() => new Promise<GitDiff>((resolve) => { resolveOld = resolve; }));
+    const { rerender } = render(<GitReviewPanel cwd={CWD} api={api} />);
+    await screen.findByText("main");
+    fireEvent.click(screen.getByRole("button", { name: "展开 new.ts" }));
+    await waitFor(() => expect(api.gitDiff).toHaveBeenCalledTimes(1));
+    rerender(<GitReviewPanel cwd={CWD} active={false} api={api} />);
+    await act(async () => resolveOld?.(diffFor("stale inactive.ts")));
+    expect(screen.queryByText(/stale inactive/)).toBeNull();
+    expect(api.gitDiff).toHaveBeenCalledTimes(1);
+    rerender(<GitReviewPanel cwd={CWD} api={api} />);
+    await screen.findByText("main");
+    await waitFor(() => expect(api.gitDiff).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: "折叠 new.ts" })).toBeInTheDocument();
+  });
+
+  it("隐藏重开保留已完成差异缓存与展开状态", async () => {
+    const api = createApi();
+    const { rerender } = render(<GitReviewPanel cwd={CWD} api={api} />);
+    await screen.findByText("main");
+    fireEvent.click(screen.getByRole("button", { name: "展开 new.ts" }));
+    await screen.findByText("已读取 1/3 个文件 · +1 -1");
+    const expanded = screen.getByRole("button", { name: "折叠 new.ts" });
+    rerender(<GitReviewPanel cwd={CWD} active={false} api={api} />);
+    rerender(<GitReviewPanel cwd={CWD} api={api} />);
+    expect(screen.getByRole("button", { name: "折叠 new.ts" })).toBe(expanded);
+    expect(api.gitStatus).toHaveBeenCalledTimes(1);
+    expect(api.gitDiff).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("已读取 1/3 个文件 · +1 -1")).toBeInTheDocument();
+  });
+
+  it.each([false, true])("隐藏重开期间的暂存完成仍刷新缓存，失败=%s", async (fails) => {
+    let finish: (() => void) | undefined;
+    const api = createApi({ gitStage: vi.fn(() => new Promise<void>((resolve, reject) => {
+      finish = () => fails ? reject(new Error("stage failed")) : resolve();
+    })) });
+    const { rerender } = render(<GitReviewPanel cwd={CWD} api={api} />);
+    await screen.findByText("main");
+    fireEvent.click(screen.getByRole("button", { name: "暂存 new.ts" }));
+    rerender(<GitReviewPanel cwd={CWD} active={false} api={api} />);
+    rerender(<GitReviewPanel cwd={CWD} api={api} />);
+    await waitFor(() => expect(api.gitStatus).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: "暂存 new.ts" })).toBeDisabled();
+    api.gitStatus.mockResolvedValue({ ...STATUS, untracked: [] });
+    await act(async () => finish?.());
+    await waitFor(() => expect(api.gitStatus).toHaveBeenCalledTimes(3));
+    expect(screen.queryByText("new.ts")).toBeNull();
+    expect(screen.getByRole("button", { name: "暂存 src/a.ts" })).toBeEnabled();
+    if (fails) expect(screen.getByRole("alert")).toHaveTextContent("stage failed");
+  });
+
+  it("旧工作区完成的操作不会刷新或解锁新工作区", async () => {
+    let finish: (() => void) | undefined;
+    const api = createApi({ gitStage: vi.fn(() => new Promise<void>((resolve) => { finish = resolve; })) });
+    const { rerender } = render(<GitReviewPanel cwd={CWD} api={api} />);
+    await screen.findByText("main");
+    fireEvent.click(screen.getByRole("button", { name: "暂存 new.ts" }));
+    rerender(<GitReviewPanel cwd="D:\other" api={api} />);
+    await waitFor(() => expect(api.gitStatus).toHaveBeenCalledTimes(2));
+    await act(async () => finish?.());
+    expect(api.gitStatus).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("new.ts")).toBeInTheDocument();
+  });
+
+  it("大差异分页保持渲染行数受限并可访问最后一行及上下文", async () => {
+    const diff = ["@@ -1,10 +1,610 @@", ...Array.from({ length: 10 }, (_, index) => ` context-${index}`), ...Array.from({ length: 600 }, (_, index) => `+added-${index}`)].join("\n");
+    const api = createApi({ gitDiff: vi.fn().mockResolvedValue({ ...diffFor("new.ts"), diff }) });
+    const { container } = render(<GitReviewPanel cwd={CWD} api={api} />);
+    await screen.findByText("main");
+    fireEvent.click(screen.getByRole("button", { name: "展开 new.ts" }));
+    const visibleContent = () => [...container.querySelectorAll(".git-review-code-content")].map((node) => node.textContent);
+    await waitFor(() => expect(visibleContent()).toContain("added-0"));
+    expect(container.querySelectorAll(".git-review-code-row")).toHaveLength(200);
+    expect(visibleContent()).not.toContain("added-599");
+    for (let page = 0; page < 3; page += 1) fireEvent.click(screen.getByRole("button", { name: "下一页差异" }));
+    expect(visibleContent()).toContain("added-599");
+    expect(container.querySelectorAll(".git-review-code-row").length).toBeLessThanOrEqual(200);
+    expect(screen.getByRole("button", { name: "下一页差异" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "显示全部上下文" }));
+    expect(visibleContent()).toContain("context-4");
+    fireEvent.click(screen.getByRole("button", { name: "切换到拆分布局" }));
+    expect(container.querySelectorAll(".git-review-code-row").length).toBeLessThanOrEqual(400);
+    expect(api.gitDiff).toHaveBeenCalledTimes(1);
   });
 
   it("切换范围并执行暂存、取消暂存、还原与未跟踪删除", async () => {
@@ -106,6 +291,7 @@ describe("GitReviewPanel", () => {
     const api = createApi();
     const { container } = render(<GitReviewPanel cwd={CWD} api={api} />);
     await screen.findByText("main");
+    expandAllFiles();
     await waitFor(() => expect(api.gitDiff).toHaveBeenCalledTimes(3));
 
     fireEvent.click(screen.getByRole("button", { name: "差异操作" }));
@@ -211,6 +397,8 @@ describe("GitReviewPanel", () => {
     });
     render(<GitReviewPanel cwd={CWD} api={api} />);
     await screen.findByText("file-0.ts");
+    expect(gitDiff).not.toHaveBeenCalled();
+    expandAllFiles();
 
     await waitFor(() => expect(gitDiff).toHaveBeenCalledTimes(4));
     await act(async () => {
@@ -253,10 +441,12 @@ describe("GitReviewPanel", () => {
     });
     const { rerender } = render(<GitReviewPanel cwd={CWD} api={api} />);
     await screen.findByText("old-0.ts");
+    expandAllFiles();
     await waitFor(() => expect(gitDiff).toHaveBeenCalledTimes(4));
 
     rerender(<GitReviewPanel cwd={"D:\\another-repo"} api={api} />);
     await screen.findByText("new-workspace.ts");
+    expandAllFiles();
     await act(async () => {
       pending.splice(0).forEach((resolve) => resolve(diffFor("old-running.ts")));
     });
@@ -298,12 +488,15 @@ describe("GitReviewPanel", () => {
     });
     const { rerender } = render(<GitReviewPanel cwd={CWD} api={api} />);
     await screen.findByText("first-a-0.ts");
+    expandAllFiles();
     await waitFor(() => expect(gitDiff).toHaveBeenCalledTimes(4));
 
     rerender(<GitReviewPanel cwd={"D:\\workspace-b"} api={api} />);
     await screen.findByText("workspace-b.ts");
+    expandAllFiles();
     rerender(<GitReviewPanel cwd={CWD} api={api} />);
     await screen.findByText("second-a.ts");
+    expandAllFiles();
     await act(async () => {
       pending.splice(0).forEach((resolve) => resolve(diffFor("first-a-running.ts")));
     });
@@ -324,7 +517,7 @@ describe("GitReviewPanel", () => {
     const api = createApi();
     const { rerender } = render(<GitReviewPanel cwd={CWD} api={api} />);
     await screen.findByText("main");
-    await waitFor(() => expect(api.gitDiff).toHaveBeenCalledTimes(3));
+    expect(api.gitDiff).not.toHaveBeenCalled();
 
     let resolveOldPatch: ((value: GitDiff) => void) | undefined;
     api.gitDiff.mockImplementationOnce(() => new Promise<GitDiff>((resolve) => {
@@ -332,7 +525,7 @@ describe("GitReviewPanel", () => {
     }));
     fireEvent.click(screen.getByRole("button", { name: "差异操作" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "复制 git apply 命令" }));
-    await waitFor(() => expect(api.gitDiff).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(api.gitDiff).toHaveBeenCalledTimes(1));
 
     rerender(<GitReviewPanel cwd={"D:\\another-repo"} api={api} />);
     resolveOldPatch?.(diffFor("old.ts"));
@@ -427,6 +620,8 @@ describe("GitReviewPanel", () => {
 
     const diffFailed = createApi({ gitDiff: vi.fn().mockRejectedValue(new Error("差异失败")) });
     rerender(<GitReviewPanel cwd={CWD} api={diffFailed} />);
+    await screen.findByText("main");
+    expandAllFiles();
     expect(await screen.findAllByRole("alert")).not.toHaveLength(0);
     expect(screen.getAllByText("差异失败")).not.toHaveLength(0);
 
@@ -458,4 +653,8 @@ function diffFor(path: string): GitDiff {
     staged: false,
     diff: `diff --git a/${path} b/${path}\n@@ -1 +1 @@\n-old\n+new`,
   };
+}
+
+function expandAllFiles(): void {
+  screen.getAllByRole("button", { name: /^展开 / }).forEach((button) => fireEvent.click(button));
 }

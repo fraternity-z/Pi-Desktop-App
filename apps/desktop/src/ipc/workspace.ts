@@ -46,6 +46,26 @@ export interface WorkspaceFileContent {
   size: number;
 }
 
+export interface WorkspaceEntry {
+  name: string;
+  relativePath: string;
+  kind: "file" | "folder";
+}
+
+export interface WorkspaceDirectoryPage {
+  entries: WorkspaceEntry[];
+  nextCursor: string | null;
+}
+
+export async function listWorkspaceEntries(
+  cwd: string,
+  directory = "",
+  cursor: string | null = null,
+  limit = 200,
+): Promise<WorkspaceDirectoryPage> {
+  return invoke<WorkspaceDirectoryPage>("workspace_list_entries", { cwd, directory, cursor, limit });
+}
+
 export async function getWorkspaceState(): Promise<WorkspaceState> {
   return invoke<WorkspaceState>("workspace_get_state");
 }

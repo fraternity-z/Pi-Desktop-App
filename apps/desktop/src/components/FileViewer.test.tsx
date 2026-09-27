@@ -4,6 +4,22 @@ import { describe, expect, it, vi } from "vitest";
 import { FileViewer, relativeFilePath, splitFileContent } from "./FileViewer";
 
 describe("FileViewer", () => {
+  it("源码按需分页但保留完整复制内容，末尾内容可访问", async () => {
+    const content = [...Array.from({ length: 5000 }, () => "line"), "not-rendered-tail"].join("\n");
+    const onCopy = vi.fn();
+    const { container } = render(<FileViewer path="large.log" content={content} onCopy={onCopy} />);
+    expect(container.querySelectorAll(".right-panel-file-line")).toHaveLength(200);
+    expect(screen.getByRole("status")).toHaveTextContent("共 5001 行");
+    expect(container.querySelector("pre")).not.toHaveTextContent("仅预览");
+    expect(screen.queryByText("not-rendered-tail")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole("spinbutton", { name: "源码页码" }), { target: { value: "26" } });
+    expect(screen.getByText("not-rendered-tail")).toBeInTheDocument();
+    expect(container.querySelectorAll(".right-panel-file-line")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "下一页" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "复制文件内容" }));
+    expect(onCopy).toHaveBeenCalledWith(content);
+    await waitFor(() => expect(screen.getByRole("button", { name: "复制文件内容" })).toBeEnabled());
+  });
   it("显示路径、行号、评论和外部操作", async () => {
     const onCopy = vi.fn();
     const onReveal = vi.fn();

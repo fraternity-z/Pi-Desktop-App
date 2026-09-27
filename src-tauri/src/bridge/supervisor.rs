@@ -19,8 +19,8 @@ use crate::{
         AgentModel, AgentSessionSummary, BridgeEvent, BridgeHello, BridgeResponse, CreatedSession,
         DeleteSessionsResult, PROTOCOL_VERSION, PackageScope, PackageSummary, PackageUpdateInfo,
         PromptStreamingBehavior, RequestHeaderSettings, ResourceSummary, SessionConfiguration,
-        SessionHistoryPage, SlashCommandSummary, parse_hello_frame, valid_session_configuration,
-        valid_slash_commands, validate_event, validate_frame_size,
+        SessionHistoryPage, SessionReviewRequest, SlashCommandSummary, parse_hello_frame,
+        valid_session_configuration, valid_slash_commands, validate_event, validate_frame_size,
     },
     error::AppError,
 };
@@ -375,7 +375,10 @@ impl BridgeSupervisor {
                     AppError::new("BRIDGE_HISTORY_INVALID", "Bridge 历史分页响应缺少数据")
                 })?;
             if data.get("nextHistoryCursor").is_none() {
-                return Err(AppError::new("BRIDGE_HISTORY_INVALID", "Bridge 历史分页缺少结束标记"));
+                return Err(AppError::new(
+                    "BRIDGE_HISTORY_INVALID",
+                    "Bridge 历史分页缺少结束标记",
+                ));
             }
             let page: SessionHistoryPage = serde_json::from_value(data).map_err(|_| {
                 AppError::new("BRIDGE_HISTORY_INVALID", "Bridge 历史分页响应字段无效")
@@ -404,9 +407,16 @@ impl BridgeSupervisor {
         })
     }
 
-    pub fn provider_settings(&self, request: &super::providers::ProviderRequest) -> Result<Value, AppError> {
+    pub fn provider_settings(
+        &self,
+        request: &super::providers::ProviderRequest,
+    ) -> Result<Value, AppError> {
         let fields = request.fields()?;
-        let data = self.request(request.operation(), fields, DEFAULT_SESSION_INITIALIZATION_TIMEOUT)?;
+        let data = self.request(
+            request.operation(),
+            fields,
+            DEFAULT_SESSION_INITIALIZATION_TIMEOUT,
+        )?;
         request.decode(data)
     }
 
@@ -509,6 +519,34 @@ impl BridgeSupervisor {
             "Bridge resource.list 响应字段无效",
             self.response_timeout,
         )
+    }
+
+    pub fn session_review(
+        &self,
+        session_id: &str,
+        cwd: &Path,
+        request: &SessionReviewRequest,
+    ) -> Result<Value, AppError> {
+        request.validate()?;
+        let mut fields = json!({"sessionId": session_id, "cwd": cwd});
+        match request {
+            SessionReviewRequest::List { cursor } => {
+                if let Some(cursor) = cursor {
+                    fields["cursor"] = json!(cursor);
+                }
+            }
+            SessionReviewRequest::Detail { review_id }
+            | SessionReviewRequest::Rollback { review_id } => {
+                fields["reviewId"] = json!(review_id);
+            }
+        }
+        let value = self
+            .request(request.operation(), fields, self.response_timeout)?
+            .filter(|value| request.validate_response(value))
+            .ok_or_else(|| {
+                AppError::new("BRIDGE_REVIEW_INVALID", "Bridge 审查响应字段无效或超过上限")
+            })?;
+        Ok(value)
     }
 
     pub fn list_commands(&self, session_id: &str) -> Result<Vec<SlashCommandSummary>, AppError> {
@@ -1505,7 +1543,14 @@ impl Drop for ProcessTransport {
 fn bridge_command(config: &BridgeLaunchConfig) -> Command {
     let mut command = Command::new(&config.node_path);
     config.proxy.apply_to_command(&mut command);
-    command.env("PI_DESKTOP_NETWORK_POLICY", if config.relaxed_network { "relaxed" } else { "strict" });
+    command.env(
+        "PI_DESKTOP_NETWORK_POLICY",
+        if config.relaxed_network {
+            "relaxed"
+        } else {
+            "strict"
+        },
+    );
     command
         .arg(&config.bridge_script)
         .arg("--sdk-root")
@@ -2770,9 +2815,19 @@ mod tests {
             PathBuf::from("agent"),
         );
         let command = bridge_command(&config);
-        assert!(command.get_envs().any(|(key, value)| key == "PI_DESKTOP_NETWORK_POLICY" && value == Some(std::ffi::OsStr::new("relaxed"))));
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| key == "PI_DESKTOP_NETWORK_POLICY"
+                    && value == Some(std::ffi::OsStr::new("relaxed")))
+        );
         let strict = bridge_command(&config.clone().with_relaxed_network(false));
-        assert!(strict.get_envs().any(|(key, value)| key == "PI_DESKTOP_NETWORK_POLICY" && value == Some(std::ffi::OsStr::new("strict"))));
+        assert!(
+            strict
+                .get_envs()
+                .any(|(key, value)| key == "PI_DESKTOP_NETWORK_POLICY"
+                    && value == Some(std::ffi::OsStr::new("strict")))
+        );
         let arguments: Vec<OsString> = command.get_args().map(OsString::from).collect();
 
         assert_eq!(command.get_program(), "node");

@@ -306,7 +306,7 @@ describe("AppSidebar", () => {
     expect(screen.queryByRole("dialog", { name: "创建 Git 工作树" })).not.toBeInTheDocument();
   });
 
-  it("为空项目提供创建动作，并在加载期间禁用边界操作", async () => {
+  it("为空项目显示暂无聊天，并在加载期间禁用边界操作", async () => {
     const onNewSession = vi.fn();
     const { rerender } = render(
       <AppSidebar
@@ -321,8 +321,11 @@ describe("AppSidebar", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "创建首个会话" }));
-    expect(onNewSession).toHaveBeenCalledWith("C:\\projects\\empty");
+    const emptyState = await screen.findByText("暂无聊天");
+    expect(emptyState.closest("button")).toBeNull();
+    expect(screen.queryByRole("button", { name: "创建首个会话" })).not.toBeInTheDocument();
+    fireEvent.click(emptyState);
+    expect(onNewSession).not.toHaveBeenCalled();
 
     rerender(
       <AppSidebar

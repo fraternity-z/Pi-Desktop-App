@@ -457,15 +457,9 @@ export function AppSidebar(props: AppSidebarProps) {
         {expanded && preferences.groupMode === "project" && (
           <div className="session-list project-session-list">
             {projectSessions.length === 0 ? (
-              <button
-                className="session-empty-action"
-                type="button"
-                disabled={switchingDisabled}
-                onClick={() => onNewSession(project.cwd)}
-              >
-                <Plus size={13} />
-                创建首个会话
-              </button>
+              <div className="sidebar-empty-state sidebar-empty-compact">
+                <span>暂无聊天</span>
+              </div>
             ) : (
               <>
                 {projectSessions.slice(0, visibleCount).map((session) =>

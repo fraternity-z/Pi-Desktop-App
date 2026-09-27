@@ -55,6 +55,7 @@ import type {
 import type { ToolPermissionMode } from "../stores/useToolPermissions";
 import type { GitBranchesState } from "../stores/useGitBranches";
 import { ComposerQueueCard } from "./ComposerQueueCard";
+import { ComposerProjectBar } from "./ComposerProjectBar";
 import { ComposerThinkingControl, thinkingLevelLabel } from "./ComposerThinkingControl";
 import { GitBranchMenu } from "./GitBranchMenu";
 import { isPromptImagePath, MAX_COMPOSER_ATTACHMENTS } from "./composerAttachments";
@@ -507,7 +508,7 @@ export function ChatComposer({
       />
 
       {showProjectBar && (
-        <div className="composer-project-bar">
+        <ComposerProjectBar>
           <div className="composer-project-picker">
             <button
               ref={projectTriggerRef}
@@ -614,7 +615,7 @@ export function ChatComposer({
               )}
             </div>
           )}
-        </div>
+        </ComposerProjectBar>
       )}
 
       <form

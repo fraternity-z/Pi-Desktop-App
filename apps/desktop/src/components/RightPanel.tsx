@@ -5,6 +5,7 @@ import {
   FolderOpen,
   Maximize2,
   Minimize2,
+  PanelRightClose,
   Plus,
   X,
 } from "lucide-react";
@@ -66,7 +67,6 @@ interface TabDefinition {
 }
 
 export function RightPanel(props: RightPanelProps): ReactElement | null {
-  const [menuOpen, setMenuOpen] = useState(false);
   const [order, setOrder] = useState<RightPanelTabId[]>(["review", "files", "file", "preview"]);
   const dragTab = useRef<RightPanelTabId | null>(null);
   const tabStripRef = useRef<HTMLDivElement>(null);
@@ -124,7 +124,6 @@ export function RightPanel(props: RightPanelProps): ReactElement | null {
   const pendingWidth = useRef<number | null>(null);
   const widthChange = useRef(props.onWidthChange);
   widthChange.current = props.onWidthChange;
-  const menuRef = useRef<HTMLDivElement>(null);
   const maxWidth = resolveRightPanelMaxWidth(typeof window === "undefined" ? null : window.innerWidth);
   const tabs: TabDefinition[] = [
     ...((props.toolTabs ?? ["review", "files"]).map((id): TabDefinition => ({ id, label: id === "review" ? "审查" : "文件", icon: id === "review" ? FileDiff : FolderOpen, close: props.onCloseToolTab ? () => props.onCloseToolTab?.(id) : undefined }))),
@@ -151,14 +150,15 @@ export function RightPanel(props: RightPanelProps): ReactElement | null {
     if (closedShell?.contains(document.activeElement)) focusAfterRender.current = (props.activeTab === tab.id ? next : props.activeTab) ?? "launcher";
     tab.close?.();
   }, [props, tabs, panelId]);
-  const openAction = useCallback((action?: () => void) => {
-    setMenuOpen(false);
-    action?.();
-  }, []);
 
   function handleTabListKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if ((event.target as HTMLElement).getAttribute("role") !== "tab") return;
     const currentIndex = tabs.findIndex((tab) => `${panelId}-tab-${tab.id}` === (event.target as HTMLElement).id);
+    if (currentIndex < 0 && props.activeTab === null && tabs.length > 0) {
+      const target = event.key === "ArrowLeft" || event.key === "End" ? tabs.at(-1) : event.key === "ArrowRight" || event.key === "Home" ? tabs[0] : undefined;
+      if (target) { event.preventDefault(); props.onActiveTabChange(target.id); focusAfterRender.current = target.id; }
+      return;
+    }
     if (currentIndex < 0) return;
     if (event.key === "Delete" || event.key === "Backspace") { event.preventDefault(); closeTab(tabs[currentIndex]!); return; }
     if (event.altKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
@@ -180,25 +180,6 @@ export function RightPanel(props: RightPanelProps): ReactElement | null {
     props.onActiveTabChange(nextTab);
     focusAfterRender.current = nextTab;
   }
-
-  useEffect(() => {
-    if (!menuOpen || !props.open || !props.available) return;
-    const dismiss = (event: MouseEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
-    };
-    const escape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") { setMenuOpen(false); launcherRef.current?.focus(); }
-    };
-    document.addEventListener("mousedown", dismiss);
-    window.addEventListener("keydown", escape);
-    return () => {
-      document.removeEventListener("mousedown", dismiss);
-      window.removeEventListener("keydown", escape);
-    };
-  }, [menuOpen, props.open, props.available]);
-  useEffect(() => {
-    if (!props.open || !props.available) setMenuOpen(false);
-  }, [props.open, props.available]);
 
   useEffect(() => {
     if (!props.open || !props.available || props.expanded) {
@@ -257,7 +238,7 @@ export function RightPanel(props: RightPanelProps): ReactElement | null {
   }
   function commitWidth(width: number) { props.onWidthChange(width); props.onWidthCommit?.(width); }
   function launchTool(tab: RightPanelToolTabId) {
-    openAction(() => props.onActiveTabChange(tab));
+    props.onActiveTabChange(tab);
     focusAfterRender.current = tab;
   }
 
@@ -288,25 +269,32 @@ export function RightPanel(props: RightPanelProps): ReactElement | null {
               {tab.close ? <button type="button" className="right-panel-icon-button right-panel-tab-close" aria-label={getCloseTabLabel(tab.id)} title={getCloseTabLabel(tab.id)} onClick={() => closeTab(tab)}><X aria-hidden="true" /></button> : null}
             </div>;
           })}
+          {props.activeTab === null ? <div className="right-panel-tab-shell is-active">
+            <button type="button" id={`${panelId}-tab-launcher`} className="right-panel-tab" role="tab" aria-selected="true" aria-controls={tabPanelId}><Plus aria-hidden="true" /><span>新标签页</span></button>
+            {tabs.length > 0 ? <button type="button" className="right-panel-icon-button right-panel-tab-close" aria-label="关闭新标签页" title="关闭新标签页" onClick={() => { const first = tabs[0]!; props.onActiveTabChange(first.id); focusAfterRender.current = first.id; }}><X aria-hidden="true" /></button> : null}
+          </div> : null}
         </div>
-          <div className="right-panel-add-wrap" ref={menuRef}>
-            <button ref={launcherRef} type="button" className="right-panel-icon-button" aria-label="打开右侧面板标签页" title="打开标签页" aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen((value) => !value)}><Plus aria-hidden="true" /></button>
-            {menuOpen ? <div className="right-panel-menu" role="menu">
-              <div className="right-panel-menu-heading">工具与面板</div>
-              {props.onOpenFile ? <button type="button" role="menuitem" onClick={() => openAction(props.onOpenFile)}><FileText aria-hidden="true" /><span>打开文件</span><kbd>{props.fileShortcut ?? ""}</kbd></button> : null}
-              <button type="button" role="menuitem" onClick={() => launchTool("files")}><FolderOpen aria-hidden="true" /><span>文件列表</span></button>
-              <button type="button" role="menuitem" onClick={() => launchTool("review")}><FileDiff aria-hidden="true" /><span>Git 审查</span></button>
-            </div> : null}
+          <div className="right-panel-add-wrap">
+            <button ref={launcherRef} type="button" className="right-panel-icon-button" aria-label="打开右侧面板标签页" title="新标签页" onClick={() => props.onActiveTabChange(null)}><Plus aria-hidden="true" /></button>
           </div>
         </div>
         <div className="right-panel-actions">
           <button type="button" className="right-panel-icon-button" aria-label={props.expanded ? "收起工作区侧边栏" : "展开工作区侧边栏"} aria-pressed={props.expanded} title={props.expanded ? "收起工作区侧边栏" : "展开工作区侧边栏"} onClick={() => props.onExpandedChange(!props.expanded)}>{props.expanded ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}</button>
-          <button type="button" className="right-panel-icon-button" aria-label="关闭差异侧栏" title="关闭差异侧栏" onClick={props.onClose}><X aria-hidden="true" /></button>
+          <button type="button" className="right-panel-icon-button" aria-label="关闭差异侧栏" title="关闭差异侧栏" onClick={props.onClose}><PanelRightClose aria-hidden="true" /></button>
         </div>
       </header>
-      <div id={tabPanelId} className="right-panel-content" role="tabpanel" aria-labelledby={props.activeTab ? `${panelId}-tab-${props.activeTab}` : undefined} aria-label={props.activeTab ? undefined : "打开工具"}>
-        {props.activeTab === null ? <div className="right-panel-content-state"><p>打开工具或文件以继续</p><button type="button" className="secondary-button" onClick={() => launchTool("files")}>文件列表</button><button type="button" className="secondary-button" onClick={() => launchTool("review")}>Git 审查</button></div> : null}
-        {props.children}
+      <div id={tabPanelId} className="right-panel-content" role="tabpanel" aria-labelledby={`${panelId}-tab-${props.activeTab ?? "launcher"}`}>
+        {props.activeTab === null ? <section className="right-panel-launcher" aria-label="工具">
+          <div className="right-panel-launcher-heading">
+            <h2>工具</h2>
+            {props.onOpenFile ? <button type="button" className="right-panel-launcher-open" onClick={props.onOpenFile}><FileText aria-hidden="true" /><span>打开文件</span>{props.fileShortcut ? <kbd>{props.fileShortcut}</kbd> : null}</button> : null}
+          </div>
+          <div className="right-panel-launcher-tools">
+            <button type="button" className="right-panel-launcher-tool" aria-label="Git 审查" onClick={() => launchTool("review")}><FileDiff aria-hidden="true" /><span><strong>审查</strong><small>查看项目中的 Git 更改</small></span></button>
+            <button type="button" className="right-panel-launcher-tool" aria-label="文件列表" onClick={() => launchTool("files")}><FolderOpen aria-hidden="true" /><span><strong>文件</strong><small>浏览项目文件与预览</small></span></button>
+          </div>
+        </section> : null}
+        <div className="right-panel-page" hidden={props.activeTab === null}>{props.children}</div>
       </div>
     </aside>
   );

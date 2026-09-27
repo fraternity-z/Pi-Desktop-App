@@ -168,6 +168,7 @@ export function ChatWorkbenchView() {
   const panelSession = useRightPanelSessionState(panelSessionKey);
   const rightPanelVisibility = useRightPanelVisibility(rightPanelEnabled, { key: panelSessionKey, open: panelSession.open, setOpen: panelSession.setOpen });
   const { activeTab: rightPanelTab, setActiveTab: setRightPanelTab, fileTab, setFileTab, previewTab, setPreviewTab, selectedFilePath, setSelectedFilePath } = panelSession;
+  const fileWorkspaceActive = rightPanelTab === "files" || rightPanelTab === "file" || rightPanelTab === "preview";
   const [fileSearchOpen, setFileSearchOpen] = useState(false);
   const [fileReloadKey, setFileReloadKey] = useState(0);
   const { reviewScope, setReviewScope } = panelSession;
@@ -1250,10 +1251,9 @@ export function ChatWorkbenchView() {
             onCloseFileTab={closeRightPanelFile}
             onClosePreviewTab={closeRightPanelPreview}
           >
-            <div className="right-panel-tool-surface" hidden={rightPanelTab !== "files"}>
-              <WorkspaceFilesPanel cwd={session.cwd} active={rightPanelVisibility.open && rightPanelTab === "files"} selectedPath={selectedFilePath} onOpenFile={openRightPanelFile} onSearch={openRightPanelFileSearch} />
-            </div>
-            {(rightPanelTab === "file" || rightPanelTab === "preview") && <button type="button" className="right-panel-preview-back" onClick={() => setRightPanelTab("files")}>返回文件列表</button>}
+            <div className="right-panel-file-workspace" hidden={!fileWorkspaceActive}>
+              <div className={`workspace-file-layout${rightPanelTab === "files" ? " workspace-file-layout-tree-only" : ""}`}>
+              <div className="workspace-file-reader" hidden={rightPanelTab === "files"}>
             {rightPanelTab === "file" && fileTab ? (
               <FileViewer
                 path={fileTab.path}
@@ -1270,6 +1270,8 @@ export function ChatWorkbenchView() {
               />
             ) : rightPanelTab === "preview" && previewTab && previewTab.previewKind ? (
               <QuickPreview
+                key={`${session.cwd}:${previewTab.path}`}
+                rootPath={session.cwd}
                 target={{
                   kind: previewTab.previewKind,
                   path: previewTab.path,
@@ -1285,6 +1287,12 @@ export function ChatWorkbenchView() {
                 onRetry={() => setFileReloadKey((current) => current + 1)}
               />
             ) : null}
+              </div>
+              <div className="workspace-file-sidebar">
+                <WorkspaceFilesPanel cwd={session.cwd} active={rightPanelVisibility.open && fileWorkspaceActive} selectedPath={activeRightPanelFile?.path ?? selectedFilePath} onOpenFile={openRightPanelFile} onSearch={openRightPanelFileSearch} />
+              </div>
+              </div>
+            </div>
             <div className="right-panel-tool-surface" hidden={rightPanelTab !== "review"}>
               <div className="review-scope-tabs" role="group" aria-label="审查范围">
                 <button type="button" aria-pressed={reviewScope === "git"} onClick={() => setReviewScope("git")}>Git 工作区</button>

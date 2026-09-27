@@ -173,7 +173,8 @@
 
 .right-panel-file-viewer > header,
 .right-panel-quick-preview > header {
-  min-height: 42px;
+  min-height: 44px;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -184,6 +185,10 @@
 
 .right-panel-file-viewer nav,
 .right-panel-quick-preview > header nav {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
   overflow: hidden;
   color: var(--muted);
   font-size: 13px;
@@ -203,6 +208,8 @@
 
 .right-panel-file-viewer nav span:last-child,
 .right-panel-quick-preview > header nav span:last-child {
+  flex-shrink: 0;
+  max-width: 100%;
   color: var(--text);
   font-weight: 650;
 }
@@ -214,8 +221,29 @@
 
 .right-panel-preview-actions {
   display: inline-flex;
+  align-items: center;
   gap: 4px;
 }
+
+.right-panel-content-text-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.right-panel-content-text-action:hover:not(:disabled) { background: var(--hover); }
+.right-panel-content-text-action:disabled { opacity: 0.48; cursor: default; }
+.right-panel-content-text-action svg { width: 15px; height: 15px; }
+.right-panel-open-action { border: 1px solid var(--line); }
 
 .right-panel-file-code {
   min-height: 0;
@@ -415,14 +443,19 @@
 }
 
 .right-panel-preview-markdown {
-  width: min(820px, 100%);
+  width: 100%;
   min-height: 0;
+  flex: 1 1 auto;
   overflow: auto;
   box-sizing: border-box;
-  padding: 22px;
-  font-size: 13px;
-  line-height: 1.6;
+  padding: 18px 24px 48px;
+  font-size: 16px;
+  line-height: 1.65;
 }
+
+.right-panel-preview-markdown h1 { font-size: 28px; line-height: 1.3; margin-top: 0; }
+.right-panel-preview-markdown h2 { font-size: 23px; line-height: 1.4; margin-top: 1.6em; }
+.right-panel-preview-markdown h3 { font-size: 19px; line-height: 1.45; }
 
 .right-panel-preview-text {
   min-height: 0;

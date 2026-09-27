@@ -8,6 +8,22 @@ const { renderDocx } = vi.hoisted(() => ({ renderDocx: vi.fn() }));
 vi.mock("docx-preview", () => ({ renderAsync: renderDocx }));
 
 describe("QuickPreview", () => {
+  it("在 Markdown 预览和源码之间切换，切换文件或工作区时重置", () => {
+    const target = { kind: "markdown" as const, name: "guide.md", path: "C:/work/docs/guide.md", content: "# Guide" };
+    const { rerender } = render(<QuickPreview target={target} rootPath="C:/work" />);
+    expect(screen.getByRole("navigation", { name: "预览文件路径" })).toHaveTextContent("work › docs › guide.md");
+    fireEvent.click(screen.getByRole("button", { name: "查看源代码" }));
+    expect(document.querySelector(".right-panel-file-code")).toHaveTextContent("# Guide");
+    expect(screen.queryByRole("heading", { name: "Guide" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "查看预览" }));
+    expect(screen.getByRole("heading", { name: "Guide" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "查看源代码" }));
+    rerender(<QuickPreview target={{ ...target, name: "next.md", path: "C:/work/next.md" }} rootPath="C:/work" />);
+    expect(screen.getByRole("heading", { name: "Guide" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "查看源代码" }));
+    rerender(<QuickPreview target={target} rootPath="C:/other" />);
+    expect(screen.getByRole("heading", { name: "Guide" })).toBeInTheDocument();
+  });
   it.each(["text", "markdown"] as const)("%s 长文本提示与正文分离", (kind) => {
     const content = [...Array.from({ length: 5000 }, () => "line"), "not-rendered-tail"].join("\n");
     const { container } = render(<QuickPreview target={{ kind, name: kind === "text" ? "long.txt" : "long.md", content }} />);

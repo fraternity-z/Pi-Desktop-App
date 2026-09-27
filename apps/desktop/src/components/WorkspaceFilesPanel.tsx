@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, FileText, Folder, RefreshCw, Search } from "lucide-react";
+import { ChevronDown, ChevronRight, FileCode2, FileImage, FileText, Folder, RefreshCw, Search, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactElement, type ReactNode } from "react";
 
 import { listWorkspaceEntries, type WorkspaceDirectoryPage } from "../ipc/workspace";
@@ -30,6 +30,8 @@ function WorkspaceTree({ cwd, active, selectedPath, onOpenFile, onSearch }: Work
   const alive = useRef(true);
   const tree = useRef<HTMLDivElement>(null);
   const [focusedPath, setFocusedPath] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
+  const query = filter.trim().toLocaleLowerCase();
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const load = useCallback(async (directory: string, more = false, retry = false) => {
     const previous = cache.current[directory];
@@ -64,11 +66,23 @@ function WorkspaceTree({ cwd, active, selectedPath, onOpenFile, onSearch }: Work
     setExpanded((current) => new Set([...current, ...ancestors]));
     for (const directory of ancestors) void load(directory);
   }, [active, cwd, load, selectedPath]);
+  const matchingPaths = new Set<string>();
+  if (query) {
+    for (const state of Object.values(directories)) {
+      for (const entry of state.entries) {
+        if (!entry.relativePath.toLocaleLowerCase().includes(query)) continue;
+        const parts = entry.relativePath.split("/");
+        for (let index = 1; index <= parts.length; index += 1) matchingPaths.add(parts.slice(0, index).join("/"));
+      }
+    }
+  }
+  const directoryEntries = (directory: string) => (directories[directory]?.entries ?? []).filter((entry) => !query || matchingPaths.has(entry.relativePath));
+  const directoryOpen = (path: string) => expanded.has(path) || Boolean(query && directories[path]);
   const visiblePaths: string[] = [];
   function collectVisible(directory: string) {
-    for (const entry of directories[directory]?.entries ?? []) {
+    for (const entry of directoryEntries(directory)) {
       visiblePaths.push(entry.relativePath);
-      if (entry.kind === "folder" && expanded.has(entry.relativePath)) collectVisible(entry.relativePath);
+      if (entry.kind === "folder" && directoryOpen(entry.relativePath)) collectVisible(entry.relativePath);
     }
   }
   collectVisible("");
@@ -85,9 +99,9 @@ function WorkspaceTree({ cwd, active, selectedPath, onOpenFile, onSearch }: Work
   function renderDirectory(directory: string, depth: number): ReactNode {
     const state = directories[directory];
     return <div role={depth ? "group" : undefined}>
-      {state?.entries.map((entry) => {
+      {directoryEntries(directory).map((entry) => {
         const folder = entry.kind === "folder";
-        const open = expanded.has(entry.relativePath);
+        const open = directoryOpen(entry.relativePath);
         return <div key={entry.relativePath}>
           <button type="button" className="workspace-file-row" role="treeitem" tabIndex={tabStopPath === entry.relativePath ? 0 : -1} onFocus={() => setFocusedPath(entry.relativePath)} aria-level={depth + 1} aria-expanded={folder ? open : undefined} aria-selected={!folder && relativeFilePath(selectedPath ?? "", cwd) === entry.relativePath} style={{ paddingLeft: 12 + depth * 16 }} title={entry.relativePath} onClick={() => {
             if (!folder) { onOpenFile({ path: `${cwd.replace(/[\\/]+$/, "")}/${entry.relativePath}` }); return; }
@@ -95,14 +109,14 @@ function WorkspaceTree({ cwd, active, selectedPath, onOpenFile, onSearch }: Work
             if (!open) void load(entry.relativePath);
           }}>
             {folder ? open ? <ChevronDown /> : <ChevronRight /> : <span className="workspace-file-indent" />}
-            {folder ? <Folder /> : <FileText />}<span>{entry.name}</span>
+            {folder ? <Folder className="workspace-file-icon-folder" /> : /\.(?:png|jpe?g|gif|webp|svg)$/i.test(entry.name) ? <FileImage className="workspace-file-icon-image" /> : /\.(?:[cm]?[jt]sx?|json|css|html|rs|py|ya?ml)$/i.test(entry.name) ? <FileCode2 className="workspace-file-icon-code" /> : <FileText className={/\.(?:md|markdown)$/i.test(entry.name) ? "workspace-file-icon-markdown" : undefined} />}<span>{entry.name}</span>
           </button>
           {folder && open ? renderDirectory(entry.relativePath, depth + 1) : null}
         </div>;
       })}
       {!state || state.loading ? <p className="workspace-file-note" role="status">正在读取目录…</p> : null}
       {state?.error ? <div className="workspace-file-note" role="alert">{state.error}<button type="button" onClick={() => void load(directory, state.nextCursor !== null, true)}>重试</button></div> : null}
-      {state && !state.loading && !state.error && state.entries.length === 0 ? <p className="workspace-file-note">空文件夹</p> : null}
+      {state && !state.loading && !state.error && state.entries.length === 0 && !query ? <p className="workspace-file-note">空文件夹</p> : null}
       {state?.nextCursor && !state.loading && !state.error ? <button className="workspace-file-more" type="button" onClick={() => void load(directory, true)}>加载更多文件</button> : null}
     </div>;
   }
@@ -128,6 +142,8 @@ function WorkspaceTree({ cwd, active, selectedPath, onOpenFile, onSearch }: Work
   }
   return <section className="workspace-files" aria-label="工作区文件列表">
     <header><span title={cwd}>{cwd.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1) || "文件"}</span><button type="button" aria-label="搜索工作区文件" title="搜索文件" onClick={onSearch}><Search /></button><button type="button" aria-label="刷新文件列表" title="刷新文件列表" onClick={refresh}><RefreshCw /></button></header>
-    <div ref={tree} className="workspace-file-tree" role="tree" aria-label="文件树" onKeyDown={navigate}>{cwd ? renderDirectory("", 0) : <p className="workspace-file-note">请选择工作区</p>}</div>
+    <div className="workspace-file-filter"><Search aria-hidden="true" /><input aria-label="筛选文件" placeholder="筛选文件…" value={filter} onChange={(event) => setFilter(event.currentTarget.value)} />{filter ? <button type="button" aria-label="清除文件筛选" onClick={() => setFilter("")}><X /></button> : null}</div>
+    {query ? <p className="workspace-file-filter-hint">仅筛选已加载的文件与目录</p> : null}
+    <div ref={tree} className="workspace-file-tree" role="tree" aria-label="文件树" onKeyDown={navigate}>{cwd ? <>{renderDirectory("", 0)}{query && visiblePaths.length === 0 && !directories[""]?.loading ? <p className="workspace-file-note" role="status">没有匹配的已加载文件</p> : null}</> : <p className="workspace-file-note">请选择工作区</p>}</div>
   </section>;
 }

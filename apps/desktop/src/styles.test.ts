@@ -18,6 +18,9 @@ const modelProviderStyles = readFileSync(
 const appearanceSettingsStyles = readFileSync(
   resolve(process.cwd(), "src/components/AppearanceSettings.css"), "utf8",
 );
+const workspaceFileStyles = readFileSync(
+  resolve(process.cwd(), "src/components/workspace-files.css"), "utf8",
+);
 const radiusSectionMarker = "/* Unified rectangular UI corners */";
 const radiusSection = stylesheet.slice(
   stylesheet.indexOf(radiusSectionMarker) + radiusSectionMarker.length,
@@ -80,6 +83,33 @@ describe("输入区域焦点提示", () => {
     expect(stylesheet).toMatch(/button:focus-visible,\s*input:is\(\[type="checkbox"\], \[type="radio"\], \[type="range"\], \[type="color"\]\):focus-visible,\s*select:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--focus\);/s);
     expect(appearanceSettingsStyles).not.toContain(":is(button, select, input):focus-visible");
     expect(appearanceSettingsStyles).toContain('input[type="range"], input[type="color"]):focus-visible { outline: 2px solid var(--focus);');
+  });
+});
+
+describe("文件工作区横向布局", () => {
+  it("外层网格跟随侧栏宽度即时更新，避免拖拽时右缘出现空白", () => {
+    const shellRules = [...stylesheet.matchAll(/([^{}]+)\{([^{}]+)\}/g)]
+      .filter((rule) => rule[1].includes(".desktop-shell"));
+    expect(shellRules.length).toBeGreaterThan(0);
+    for (const rule of shellRules) {
+      expect(rule[2]).not.toMatch(/transition(?:-property)?\s*:[^;]*(?:\bgrid-template-columns\b|\ball\b)/);
+    }
+  });
+
+  it("所有宽度都保持正文在左、目录在右，不因容器变窄改为上下堆叠", () => {
+    const layoutRules = [...workspaceFileStyles.matchAll(/([^{}]+)\{([^{}]+)\}/g)]
+      .filter((rule) => rule[1].includes(".workspace-file-layout"));
+    expect(layoutRules.some((rule) => /flex-direction:\s*row;/.test(rule[2]))).toBe(true);
+    for (const rule of layoutRules) {
+      expect(rule[2]).not.toMatch(/flex-direction:\s*column|flex-wrap:\s*wrap/);
+    }
+    expect(workspaceFileStyles).toMatch(/\.workspace-file-reader\s*\{[^}]*flex:\s*1 1 0;[^}]*min-width:\s*0;/s);
+    expect(workspaceFileStyles).toMatch(/\.workspace-file-sidebar\s*\{[^}]*flex:\s*0 0 clamp\(220px, 28%, 280px\);[^}]*border-left:/s);
+  });
+
+  it("文件工具栏跨越正文和目录，不受左侧正文宽度压缩", () => {
+    expect(workspaceFileStyles).toMatch(/\.workspace-file-layout:not\(\.workspace-file-layout-tree-only\)\s*\{[^}]*position:\s*relative;[^}]*padding-top:\s*44px;/s);
+    expect(workspaceFileStyles).toMatch(/\.workspace-file-reader :is\([^}]+> header\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0 0 auto;/s);
   });
 });
 

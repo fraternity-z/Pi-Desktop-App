@@ -1,15 +1,34 @@
 .workspace-files { display: flex; flex-direction: column; min-height: 0; height: 100%; }
-.workspace-files > header { display: flex; align-items: center; gap: 6px; min-height: 40px; padding: 6px 12px; border-bottom: 1px solid var(--line); }
+.workspace-files > header { display: flex; align-items: center; gap: 6px; height: 44px; flex-shrink: 0; box-sizing: border-box; padding: 6px 12px; border-bottom: 1px solid var(--line); }
 .workspace-files > header > span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
 .workspace-files > header > button { display: grid; place-items: center; width: 26px; height: 26px; border: 0; border-radius: 5px; background: transparent; color: inherit; cursor: pointer; }
 .workspace-files svg { width: 14px; height: 14px; flex-shrink: 0; }
 .workspace-file-tree { flex: 1; min-height: 0; overflow: auto; padding: 6px 0; }
-.workspace-file-row { width: 100%; display: flex; align-items: center; gap: 6px; height: 30px; padding-right: 12px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; font-size: 12px; }
+.workspace-file-row { width: 100%; display: flex; align-items: center; gap: 6px; height: 32px; padding-right: 12px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; font-size: 13px; }
 .workspace-file-row:hover, .workspace-file-row[aria-selected="true"], .workspace-files > header > button:hover { background: var(--hover); }
 .workspace-file-row > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-file-indent { width: 14px; flex-shrink: 0; }
 .workspace-file-note { padding: 8px 16px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .workspace-file-note button, .workspace-file-more { margin: 4px 12px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 5px; background: transparent; color: inherit; cursor: pointer; }
-.right-panel-preview-back { display: flex; align-items: center; width: 100%; min-height: 32px; padding: 6px 12px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; text-align: left; font-size: 12px; }
+.workspace-file-filter { display: flex; align-items: center; gap: 6px; margin: 10px 10px 4px; padding: 0 8px; min-height: 32px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); }
+.workspace-file-filter:focus-within { border-color: var(--focus); }
+.workspace-file-filter input { min-width: 0; width: 100%; padding: 5px 0; border: 0; outline: none; background: transparent; color: var(--text); font: inherit; font-size: 13px; }
+.workspace-file-filter button { display: grid; place-items: center; padding: 2px; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+.workspace-file-filter-hint { margin: 3px 12px; color: var(--muted); font-size: 11px; }
+.workspace-file-icon-folder { color: var(--muted); }
+.workspace-file-icon-code { color: var(--focus); }
+.workspace-file-icon-markdown { color: var(--success); }
+.workspace-file-icon-image { color: var(--warning); }
+.right-panel-file-workspace { height: 100%; min-height: 0; container-type: inline-size; }
+.right-panel-file-workspace[hidden], .workspace-file-reader[hidden] { display: none; }
+.workspace-file-layout { display: flex; flex-direction: row; min-height: 0; height: 100%; background: var(--canvas); }
+.workspace-file-layout:not(.workspace-file-layout-tree-only) { position: relative; padding-top: 44px; box-sizing: border-box; }
+.workspace-file-reader { flex: 1 1 0; min-width: 0; min-height: 0; }
+.workspace-file-reader :is(.right-panel-file-viewer, .right-panel-quick-preview) > header { position: absolute; inset: 0 0 auto; height: 44px; box-sizing: border-box; background: var(--canvas); }
+.workspace-file-sidebar { flex: 0 0 clamp(220px, 28%, 280px); min-width: 0; min-height: 0; border-left: 1px solid var(--line); }
+.workspace-file-layout-tree-only > .workspace-file-sidebar { flex: 1; border-left: 0; }
+@container (max-width: 640px) {
+  .workspace-file-reader .right-panel-preview-markdown { padding: 16px 18px 32px; }
+}
 .right-panel-tool-surface { height: 100%; min-height: 0; display: flex; flex-direction: column; }
 .right-panel-tool-surface[hidden] { display: none; }

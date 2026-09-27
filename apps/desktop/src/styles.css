@@ -1,29 +1,29 @@
 :root,
 :root[data-theme="light"] {
   color: #1f1f1f;
-  background: #f7f7f7;
+  background: #ffffff;
   color-scheme: light;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --canvas: #f7f7f7;
+  --canvas: #ffffff;
   --panel: #ffffff;
-  --sidebar: #f5f5f5;
+  --sidebar: #fafafa;
   --surface: #ffffff;
   --surface-raised: #ffffff;
   --surface-raised-translucent: rgb(255 255 255 / 96%);
   --surface-subtle: #f6f6f6;
   --surface-panel: #ffffff;
   --radius-ui: 12px;
-  --line: #e5e5e5;
+  --line: #e8e8e6;
   --line-strong: #c7c7c7;
   --text: #1f1f1f;
   --muted: #5f5f5f;
   --subtle: #707070;
-  --hover: #e8e8e8;
-  --selected: #e8e8e8;
+  --hover: #f0f0ee;
+  --selected: #ededeb;
   --input-bg: #ffffff;
   --input-border: #c7c7c7;
   --input-placeholder: #707070;
@@ -51,7 +51,7 @@
   --overlay: rgb(0 0 0 / 36%);
   --shadow: 0 2px 4px rgb(0 0 0 / 3%), 0 6px 16px rgb(0 0 0 / 4%);
   --shadow-strong: 0 3px 8px rgb(0 0 0 / 4%), 0 12px 28px rgb(0 0 0 / 7%);
-  --sidebar-translucent: rgb(245 245 245 / 92%);
+  --sidebar-translucent: rgb(250 250 250 / 92%);
   --scrollbar: #b5b5b5;
   --disabled-opacity: 0.46;
   --success: #24754b;
@@ -1332,7 +1332,7 @@ body {
   grid-template-columns: var(--sidebar-width, 272px) minmax(0, 1fr);
   min-width: 0;
   background: var(--canvas);
-  transition: grid-template-columns 160ms ease;
+  /* Keep grid tracks in sync with panel widths during pointer resizing. */
 }
 
 .app-sidebar {
@@ -7392,7 +7392,7 @@ body,
 
 .composer-project-bar {
   border-color: var(--line);
-  background: var(--surface-raised-translucent);
+  background: var(--surface-subtle);
   color: var(--text);
 }
 
@@ -7828,7 +7828,7 @@ body,
 }
 
 .topbar {
-  min-height: 54px;
+  min-height: 48px;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 65%, transparent);
 }
 
@@ -8668,7 +8668,18 @@ samp,
    and a softly surfaced user message. Keep the existing semantic structure and states. */
 .message-stream,
 .composer-dock {
-  width: min(736px, calc(100% - 64px));
+  width: min(860px, calc(100% - 64px));
+}
+
+.conversation-shell { container-type: inline-size; container-name: conversation; }
+
+@container conversation (max-width: 560px) {
+  .composer-actions { flex-wrap: wrap; gap: 4px; }
+  .composer-context { flex: 1 1 auto; }
+  .composer-controls { margin-left: auto; }
+  .composer-project-trigger { max-width: 200px; }
+  .composer-environment-chip { max-width: 100px; }
+  .composer-operation-status { display: none; }
 }
 
 .message-stream {

@@ -36,13 +36,17 @@ describe("RightPanel", () => {
     expect(screen.getByRole("tabpanel")).toHaveTextContent("审查内容");
   });
 
-  it("菜单、关闭、展开走受控回调，快捷键由工作台统一分发", () => {
+  it("启动页、关闭、展开走受控回调，快捷键由工作台统一分发", () => {
     const props = panelProps({ activeTab: "file", fileShortcut: "Ctrl+O" });
-    render(<RightPanel {...props} />);
+    const { rerender } = render(<RightPanel {...props} />);
     fireEvent.click(screen.getByRole("button", { name: "打开右侧面板标签页" }));
-    expect(screen.getByRole("menuitem", { name: /打开文件/ })).toHaveTextContent("Ctrl+O");
-    fireEvent.click(screen.getByRole("menuitem", { name: /打开文件/ }));
+    expect(props.onActiveTabChange).toHaveBeenCalledWith(null);
+    rerender(<RightPanel {...props} activeTab={null} />);
+    expect(screen.getByRole("tab", { name: "新标签页" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: /打开文件/ })).toHaveTextContent("Ctrl+O");
+    fireEvent.click(screen.getByRole("button", { name: /打开文件/ }));
     expect(props.onOpenFile).toHaveBeenCalledOnce();
+    rerender(<RightPanel {...props} />);
     fireEvent.click(screen.getByRole("button", { name: "关闭文件标签页" }));
     expect(props.onActiveTabChange).toHaveBeenCalledWith("preview");
     expect(props.onCloseFileTab).toHaveBeenCalledOnce();
@@ -109,7 +113,7 @@ describe("RightPanel", () => {
     expect(document.querySelector(".right-panel")).toHaveAttribute("aria-hidden", "true");
   });
 
-  it("关闭后保留子组件状态，隐藏菜单不抢走外部焦点", () => {
+  it("关闭后保留子组件状态，隐藏面板不抢走外部焦点", () => {
     const props = panelProps();
     const content = <input aria-label="缓存草稿" defaultValue="" />;
     const { rerender } = render(<><button type="button">外部焦点</button><RightPanel {...props}>{content}</RightPanel></>);
@@ -130,33 +134,38 @@ describe("RightPanel", () => {
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
-  it("动态标签缺失、展开和菜单外点击时维持稳定状态", () => {
+  it("动态标签缺失、展开和启动页外点击时维持稳定状态", () => {
     const props = panelProps({ fileTab: null, previewTab: null, expanded: true });
-    render(<><button type="button">外部</button><RightPanel {...props} /></>);
+    const { rerender } = render(<><button type="button">外部</button><RightPanel {...props} /></>);
     expect(screen.queryByRole("separator")).not.toBeInTheDocument();
+    expect(screen.getByRole("complementary")).toHaveClass("right-panel-expanded");
     expect(screen.queryByRole("tab", { name: "index.ts" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "打开右侧面板标签页" }));
-    expect(screen.getByRole("menu")).toBeInTheDocument();
+    expect(props.onActiveTabChange).toHaveBeenCalledWith(null);
+    rerender(<><button type="button">外部</button><RightPanel {...props} activeTab={null} /></>);
+    expect(screen.getByRole("tabpanel", { name: "新标签页" })).toBeInTheDocument();
     fireEvent.mouseDown(screen.getByRole("button", { name: "外部" }));
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "打开右侧面板标签页" }));
+    expect(screen.getByRole("tabpanel", { name: "新标签页" })).toBeInTheDocument();
     fireEvent.keyDown(window, { key: "Escape" });
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(screen.getByRole("tabpanel", { name: "新标签页" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "收起工作区侧边栏" }));
     expect(props.onExpandedChange).toHaveBeenCalledWith(false);
   });
 
   it("只展示已经接线的新增动作，并关联标签与内容", () => {
     const props = panelProps({ onOpenFile: undefined });
-    render(<RightPanel {...props} />);
+    const { rerender } = render(<RightPanel {...props} />);
     const reviewTab = screen.getByRole("tab", { name: "审查" });
     const tabPanel = screen.getByRole("tabpanel");
     expect(reviewTab).toHaveAttribute("aria-controls", tabPanel.id);
     expect(tabPanel).toHaveAttribute("aria-labelledby", reviewTab.id);
 
     fireEvent.click(screen.getByRole("button", { name: "打开右侧面板标签页" }));
-    expect(screen.queryByRole("menuitem", { name: /打开文件/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: /文件列表/ })).toBeInTheDocument();
+    rerender(<RightPanel {...props} activeTab={null} />);
+    expect(screen.queryByRole("button", { name: /打开文件/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "文件列表" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Git 审查" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /终端|浏览器/ })).not.toBeInTheDocument();
   });
 
   it("支持标签页方向键与首尾键导航", () => {
@@ -223,24 +232,45 @@ describe("RightPanel", () => {
     render(<Harness />);
     fireEvent.click(screen.getByRole("button", { name: "文件列表" }));
     fireEvent.click(screen.getByRole("button", { name: "打开右侧面板标签页" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Git 审查" }));
+    fireEvent.click(screen.getByRole("button", { name: "Git 审查" }));
     const review = screen.getByRole("tab", { name: "审查" });
     review.focus();
     fireEvent.keyDown(review, { key: "Delete" });
     expect(screen.queryByRole("tab", { name: "审查" })).not.toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "文件" })).toHaveFocus();
     fireEvent.keyDown(screen.getByRole("tab", { name: "文件" }), { key: "Backspace" });
-    expect(screen.queryAllByRole("tab")).toHaveLength(0);
+    expect(screen.getAllByRole("tab")).toHaveLength(1);
+    expect(screen.getByRole("tab", { name: "新标签页" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("button", { name: "打开右侧面板标签页" })).toHaveFocus();
-    expect(screen.getByRole("tabpanel", { name: "打开工具" })).toBeInTheDocument();
+    expect(screen.getByRole("tabpanel", { name: "新标签页" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "打开右侧面板标签页" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Git 审查" }));
+    fireEvent.click(screen.getByRole("button", { name: "Git 审查" }));
     expect(screen.getByRole("tab", { name: "审查" })).toHaveFocus();
     fireEvent.click(screen.getByRole("button", { name: "打开右侧面板标签页" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "文件列表" }));
+    fireEvent.click(screen.getByRole("button", { name: "文件列表" }));
     const files = screen.getByRole("tab", { name: "文件" });
     fireEvent.keyDown(files, { key: "ArrowLeft", altKey: true, shiftKey: true });
     expect(files).toHaveFocus();
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["文件", "审查"]);
+  });
+
+  it("启动页保持内容状态且支持键盘返回现有标签", () => {
+    const props = panelProps();
+    const content = <input aria-label="工作区草稿" defaultValue="保留草稿" />;
+    const { rerender } = render(<RightPanel {...props}>{content}</RightPanel>);
+    const input = screen.getByRole("textbox", { name: "工作区草稿" });
+    rerender(<RightPanel {...props} activeTab={null}>{content}</RightPanel>);
+    expect(input).toBeInTheDocument();
+    expect(input).not.toBeVisible();
+    const launcher = screen.getByRole("tab", { name: "新标签页" });
+    fireEvent.keyDown(launcher, { key: "ArrowRight" });
+    expect(props.onActiveTabChange).toHaveBeenLastCalledWith("review");
+    fireEvent.keyDown(launcher, { key: "End" });
+    expect(props.onActiveTabChange).toHaveBeenLastCalledWith("preview");
+    fireEvent.click(screen.getByRole("button", { name: "关闭新标签页" }));
+    expect(props.onActiveTabChange).toHaveBeenLastCalledWith("review");
+    rerender(<RightPanel {...props}>{content}</RightPanel>);
+    expect(screen.getByRole("textbox", { name: "工作区草稿" })).toBe(input);
+    expect(input).toHaveValue("保留草稿");
   });
 });

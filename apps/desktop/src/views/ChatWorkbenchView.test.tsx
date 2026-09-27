@@ -1251,7 +1251,7 @@ describe("ChatWorkbenchView", () => {
     const initialGitRequests = vi.mocked(gitStatus).mock.calls.length;
     fireEvent.click(toggle);
     expect(await screen.findByRole("complementary", { name: "工作区侧边栏" })).toBeInTheDocument();
-    expect(screen.getByText("打开工具或文件以继续")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "新标签页" })).toHaveAttribute("aria-selected", "true");
     expect(screen.queryByRole("tab", { name: "审查" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "文件" })).not.toBeInTheDocument();
     expect(gitStatus).toHaveBeenCalledTimes(initialGitRequests);
@@ -1261,7 +1261,7 @@ describe("ChatWorkbenchView", () => {
     await waitFor(() => expect(gitStatus).toHaveBeenCalledWith("C:\\work"));
 
     fireEvent.click(screen.getByRole("button", { name: "打开右侧面板标签页" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: /文件列表/ }));
+    fireEvent.click(screen.getByRole("button", { name: "文件列表" }));
     expect(screen.getByRole("tab", { name: "文件" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tree", { name: "文件树" })).toBeInTheDocument();
     await waitFor(() => expect(listWorkspaceEntries).toHaveBeenCalledWith("C:\\work", "", null));
@@ -1283,7 +1283,7 @@ describe("ChatWorkbenchView", () => {
     expect(screen.getByRole("tab", { name: "文件" })).toHaveAttribute("aria-selected", "true");
     expect(listWorkspaceEntries).toHaveBeenCalledTimes(directoryRequests);
     fireEvent.click(screen.getByRole("button", { name: "关闭文件列表标签页" }));
-    expect(screen.getByText("打开工具或文件以继续")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "新标签页" })).toHaveAttribute("aria-selected", "true");
     expect(screen.queryByRole("tab", { name: "文件" })).not.toBeInTheDocument();
   });
 
@@ -1332,7 +1332,7 @@ describe("ChatWorkbenchView", () => {
     fireEvent.click(await screen.findByRole("button", { name: "显示工作区侧栏" }));
 
     fireEvent.click(screen.getByRole("button", { name: "打开右侧面板标签页" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: /打开文件/ }));
+    fireEvent.click(screen.getByRole("button", { name: /打开文件/ }));
     fireEvent.change(screen.getByRole("searchbox", { name: "输入内容搜索文件" }), {
       target: { value: "main" },
     });
@@ -1343,6 +1343,8 @@ describe("ChatWorkbenchView", () => {
       expect(readWorkspaceFile).toHaveBeenCalledWith("C:\\work", "C:\\work\\src\\main.ts"),
     );
     expect(screen.getByRole("tab", { name: "main.ts" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tree", { name: "文件树" })).toBeVisible();
+    expect(document.querySelectorAll('[role="tree"][aria-label="文件树"]')).toHaveLength(1);
     await waitFor(() =>
       expect(document.querySelector(".right-panel-file-code")).toHaveTextContent("const value = true;"),
     );
@@ -1398,7 +1400,7 @@ describe("ChatWorkbenchView", () => {
     await addProject("C:\\work");
     fireEvent.click(await screen.findByRole("button", { name: "显示工作区侧栏" }));
     fireEvent.click(screen.getByRole("button", { name: "打开右侧面板标签页" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: /打开文件/ }));
+    fireEvent.click(screen.getByRole("button", { name: /打开文件/ }));
     fireEvent.change(screen.getByRole("searchbox", { name: "输入内容搜索文件" }), {
       target: { value: "logo" },
     });
@@ -1407,6 +1409,7 @@ describe("ChatWorkbenchView", () => {
     expect(await screen.findByRole("tab", { name: "logo.png" })).toHaveAttribute("aria-selected", "true");
     const image = await screen.findByRole("img", { name: "logo.png" });
     expect(image).toHaveAttribute("src", "data:image/png;base64,AA==");
+    expect(screen.getByRole("tree", { name: "文件树" })).toBeVisible();
     const reads = vi.mocked(readWorkspaceFile).mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
     expect(screen.getByRole("tab", { name: "logo.png" })).toHaveAttribute("aria-selected", "true");
@@ -1414,7 +1417,7 @@ describe("ChatWorkbenchView", () => {
     await addProject("C:/other");
     await waitFor(() => expect(screen.queryByRole("tab", { name: "logo.png" })).not.toBeInTheDocument());
     expect(screen.queryByRole("img", { name: "logo.png" })).not.toBeInTheDocument();
-    expect(screen.getByText("打开工具或文件以继续")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "新标签页" })).toHaveAttribute("aria-selected", "true");
     expect(readWorkspaceFile).toHaveBeenCalledTimes(reads);
   });
 

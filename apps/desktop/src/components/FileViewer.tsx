@@ -39,6 +39,7 @@ export interface FileViewerProps {
   readonly onCopy?: (content: string) => void | Promise<void>;
   readonly onOpenExternal?: AsyncAction;
   readonly onReveal?: AsyncAction;
+  readonly onPreview?: () => void;
   readonly onMore?: AsyncAction;
   readonly onCreateComment?: (input: CreateFileViewerComment) => void | Promise<void>;
   readonly onDeleteComment?: (commentId: string) => void | Promise<void>;
@@ -55,6 +56,12 @@ export function relativeFilePath(path: string, rootPath?: string | null): string
 
 export function splitFileContent(content: string): ReadonlyArray<string> {
   return content ? content.replace(/\r\n?/g, "\n").split("\n") : [""];
+}
+
+export function fileBreadcrumbSegments(path: string, rootPath?: string | null): ReadonlyArray<string> {
+  const parts = relativeFilePath(path, rootPath).split("/").filter(Boolean);
+  const workspace = rootPath?.replaceAll(String.fromCharCode(92), "/").replace(/\/+$/, "").split("/").at(-1);
+  return workspace ? [workspace, ...parts] : parts;
 }
 
 export function FileViewer(props: FileViewerProps): ReactElement {
@@ -111,7 +118,7 @@ export function FileViewer(props: FileViewerProps): ReactElement {
     <section className="right-panel-file-viewer" aria-label={`文件 ${relativePath}`}>
       <header>
         <nav aria-label="文件路径">
-          {relativePath.split("/").filter(Boolean).map((part, index) => (
+          {fileBreadcrumbSegments(props.path, props.rootPath).map((part, index) => (
             <span key={`${index}:${part}`}>
               {index ? <b aria-hidden="true">›</b> : null}
               {part}
@@ -119,6 +126,7 @@ export function FileViewer(props: FileViewerProps): ReactElement {
           ))}
         </nav>
         <div className="right-panel-file-actions" aria-label="文件操作">
+          {props.onPreview ? <button type="button" className="right-panel-content-text-action" onClick={props.onPreview}>查看预览</button> : null}
           <Action icon={<MoreHorizontal />} label="更多文件操作" disabled={pending} onClick={props.onMore} execute={execute} />
           <Action
             icon={<Copy />}
@@ -127,8 +135,8 @@ export function FileViewer(props: FileViewerProps): ReactElement {
             onClick={props.onCopy ? () => props.onCopy?.(props.content) : undefined}
             execute={execute}
           />
-          <Action icon={<ExternalLink />} label="在外部打开文件" disabled={pending} onClick={props.onOpenExternal} execute={execute} />
           <Action icon={<FolderOpen />} label="显示文件所在文件夹" disabled={pending} onClick={props.onReveal} execute={execute} />
+          {props.onOpenExternal ? <button type="button" className="right-panel-content-text-action right-panel-open-action" aria-label="在外部打开文件" title="使用系统默认应用打开" disabled={pending} onClick={() => void execute(props.onOpenExternal!)}><ExternalLink aria-hidden="true" />打开</button> : null}
         </div>
       </header>
       {actionError ? (

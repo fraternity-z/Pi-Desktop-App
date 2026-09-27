@@ -1,8 +1,9 @@
-import { AlertTriangle, FileText, FolderOpen, LoaderCircle, Maximize2 } from "lucide-react";
+import { AlertTriangle, ExternalLink, FileText, FolderOpen, LoaderCircle } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 
 import { decodeBase64Bytes, getImageMimeType } from "../stores/rightPanelFiles";
 import { MarkdownContent } from "./MarkdownContent";
+import { FileViewer, fileBreadcrumbSegments } from "./FileViewer";
 import "./right-panel-content.css";
 
 export type QuickPreviewKind = "image" | "markdown" | "text" | "document";
@@ -20,6 +21,7 @@ type AsyncAction = () => void | Promise<void>;
 
 export interface QuickPreviewProps {
   readonly target: QuickPreviewTarget;
+  readonly rootPath?: string | null;
   readonly dataBase64?: string;
   readonly content?: string;
   readonly loading?: boolean;
@@ -40,6 +42,7 @@ export function previewPathSegments(target: QuickPreviewTarget): ReadonlyArray<s
 
 export function QuickPreview(props: QuickPreviewProps): ReactElement {
   const [pending, setPending] = useState(false);
+  const [showSource, setShowSource] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const extension = (props.target.extension ?? props.target.name.split(".").pop() ?? "").toLowerCase();
   const content = props.content ?? props.target.content ?? "";
@@ -56,7 +59,8 @@ export function QuickPreview(props: QuickPreviewProps): ReactElement {
   useEffect(() => {
     setActionError(null);
     setPending(false);
-  }, [props.target.name, props.target.path]);
+    setShowSource(false);
+  }, [props.target.name, props.target.path, props.rootPath]);
 
   async function execute(action: AsyncAction): Promise<void> {
     if (pending) return;
@@ -78,20 +82,14 @@ export function QuickPreview(props: QuickPreviewProps): ReactElement {
     return <PreviewState icon={<AlertTriangle />} message={props.error} error retry={props.onRetry} />;
   }
 
-  const actions = props.onOpenExternal || props.onReveal ? (
+  const isMarkdown = props.target.kind === "markdown" || extension === "md" || extension === "markdown";
+  if (isMarkdown && showSource) {
+    return <FileViewer path={props.target.path ?? props.target.name} rootPath={props.rootPath} content={content} onPreview={() => setShowSource(false)} onOpenExternal={props.onOpenExternal} onReveal={props.onReveal} />;
+  }
+
+  const actions = isMarkdown || props.onOpenExternal || props.onReveal ? (
     <div className="right-panel-preview-actions">
-      {props.onOpenExternal ? (
-        <button
-          type="button"
-          className="right-panel-content-icon"
-          disabled={pending}
-          aria-label="在外部打开预览"
-          title="在外部打开"
-          onClick={() => void execute(props.onOpenExternal!)}
-        >
-          <Maximize2 aria-hidden="true" />
-        </button>
-      ) : null}
+      {isMarkdown ? <button type="button" className="right-panel-content-text-action" onClick={() => setShowSource(true)}>查看源代码</button> : null}
       {props.onReveal ? (
         <button
           type="button"
@@ -104,6 +102,7 @@ export function QuickPreview(props: QuickPreviewProps): ReactElement {
           <FolderOpen aria-hidden="true" />
         </button>
       ) : null}
+      {props.onOpenExternal ? <button type="button" className="right-panel-content-text-action right-panel-open-action" disabled={pending} aria-label="在外部打开预览" title="使用系统默认应用打开" onClick={() => void execute(props.onOpenExternal!)}><ExternalLink aria-hidden="true" />打开</button> : null}
     </div>
   ) : null;
 
@@ -136,7 +135,7 @@ export function QuickPreview(props: QuickPreviewProps): ReactElement {
     <section className="right-panel-quick-preview" aria-label={`${props.target.name}预览`}>
       <header>
         <nav aria-label="预览文件路径" title={props.target.path}>
-          {previewPathSegments(props.target).map((part, index) => (
+          {fileBreadcrumbSegments(props.target.path ?? props.target.name, props.rootPath).map((part, index) => (
             <span key={`${index}:${part}`}>{index ? " › " : ""}{part}</span>
           ))}
         </nav>

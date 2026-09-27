@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { FileViewer, relativeFilePath, splitFileContent } from "./FileViewer";
+import { FileViewer, fileBreadcrumbSegments, relativeFilePath, splitFileContent } from "./FileViewer";
 
 describe("FileViewer", () => {
   it("源码按需分页但保留完整复制内容，末尾内容可访问", async () => {
@@ -44,6 +44,8 @@ describe("FileViewer", () => {
   });
 
   it("导出的文本辅助函数覆盖路径边界", () => {
+    expect(fileBreadcrumbSegments("C:/work/docs/a.md", "C:/work/")).toEqual(["work", "docs", "a.md"]);
+    expect(fileBreadcrumbSegments("a.md")).toEqual(["a.md"]);
     expect(relativeFilePath("/repo/src/a.ts", "/repo")).toBe("src/a.ts");
     expect(relativeFilePath("/other/a.ts", "/repo")).toBe("/other/a.ts");
     expect(splitFileContent("")).toEqual([""]);

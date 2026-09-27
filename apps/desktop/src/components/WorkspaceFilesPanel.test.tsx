@@ -12,6 +12,25 @@ const props = () => ({ cwd: "C:/work", active: true, onOpenFile: vi.fn(), onSear
 describe("WorkspaceFilesPanel", () => {
   beforeEach(() => vi.mocked(listWorkspaceEntries).mockReset().mockResolvedValue({ entries: [], nextCursor: null }));
 
+  it("filters cached descendants, shows empty results and clears without new requests", async () => {
+    vi.mocked(listWorkspaceEntries).mockResolvedValueOnce({ entries: [folder, { name: "readme.md", relativePath: "readme.md", kind: "file" }], nextCursor: null }).mockResolvedValueOnce({ entries: [file], nextCursor: null });
+    render(<WorkspaceFilesPanel {...props()} />);
+    fireEvent.click(await screen.findByRole("treeitem", { name: "src" }));
+    await screen.findByRole("treeitem", { name: "main.ts" });
+    fireEvent.click(screen.getByRole("treeitem", { name: "src" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "筛选文件" }), { target: { value: "MAIN" } });
+    expect(screen.getByRole("treeitem", { name: "main.ts" })).toBeInTheDocument();
+    expect(screen.queryByRole("treeitem", { name: "readme.md" })).not.toBeInTheDocument();
+    expect(screen.getByText("仅筛选已加载的文件与目录")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: "筛选文件" }), { target: { value: "missing" } });
+    expect(screen.getByRole("status")).toHaveTextContent("没有匹配的已加载文件");
+    fireEvent.click(screen.getByRole("button", { name: "清除文件筛选" }));
+    expect(screen.getByRole("treeitem", { name: "readme.md" })).toBeInTheDocument();
+    expect(screen.getByRole("treeitem", { name: "src" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("仅筛选已加载的文件与目录")).not.toBeInTheDocument();
+    expect(listWorkspaceEntries).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps one initial request under StrictMode and rejects responses preceding refresh", async () => {
     let finish!: (value: WorkspaceDirectoryPage) => void;
     vi.mocked(listWorkspaceEntries).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; })).mockResolvedValueOnce({ entries: [folder], nextCursor: null });

@@ -539,3 +539,69 @@ final result: blocked
 - [x] 本节范围内视觉与交互验收通过；保留原生集成手测限制。
 
 final result: passed
+
+## 对话输入区渐进式模型选择器
+
+### 视觉依据与证据
+
+- Source visual truth: 用户提供的三张截图：`C:/Users/Administrator/AppData/Local/Temp/codex-clipboard-70b55a1e-1ad2-4127-a5c6-f9a69b420104.png`、`C:/Users/Administrator/AppData/Local/Temp/codex-clipboard-17da2bb4-4628-4334-ac46-f8338db07bca.png`、`C:/Users/Administrator/AppData/Local/Temp/codex-clipboard-ecb3e9d4-3f16-4e86-8208-68e283c67701.png`。
+- Implementation screenshots: `C:/Users/Administrator/AppData/Local/Temp/pi-selector-qa/summary.png`、`thinking.png`、`models.png`；后两者与前者在同一目录。
+- Viewport: 1280 × 720；实际 Composer 组件使用隔离的 Mock 配置，未连接或修改用户真实会话。
+- States: 收起的模型/强度摘要、极高档位的思考面板、四个模型且第二项选中的模型列表。额外检查深色主题和滑杆键盘输入。
+- Full-view evidence: 上述完整浏览器截图保留输入框、弹层、摘要和发送按钮的上下文。
+- Focused comparison: `C:/Users/Administrator/AppData/Local/Temp/pi-selector-qa/comparison.png`，将用户图二/图三与对应最终局部截图以原生像素并排对比；`result.png` 是实现预览。
+
+### 视觉检查与修复
+
+- Fonts/typography: 保留项目系统字体，模型文字 14 px、菜单标题 16 px、强度标题 17 px；长名称省略、强度文字不压缩。中文强度标签取代原先英文缩写。
+- Spacing/layout: 面板宽 282 px，思考面板约 123 px 高、四项模型列表约 190 px 高；22 px 面板圆角、36 px 模型行、圆形滑块和胶囊摘要符合参考层级。
+- Colors/tokens: 蓝色轨道/强度文字、浅灰卡片与选中行；底色与文字接入既有主题 token，深色主题保持可辨识。修复全局 hover 样式覆盖选中行浅灰的问题。
+- Image/icon quality: 此目标无照片或生成式图像资产；沿用项目 Lucide 勾选与右箭头，未增加图片依赖。
+- Copy/content: 生产界面仍显示 SDK 返回的真实模型，不硬编码参考图的模型目录；强度档位由当前模型能力去重、排序并等距生成。
+- Patches since initial comparison: 合并两个独立入口；新增分档滑杆和逐层菜单；缩减模型标题间距；统一选中/悬停灰度；补充保存失败回退与能力读取失败提示。
+- Findings: 无未解决的 P0/P1/P2 视觉或交互问题。P3：浏览器与原生 WebView 的字体抗锯齿可能略有差异。
+
+### 交互验收边界
+
+- 拖动时预览，松开/键盘操作后提交；保持档位与后端确认值同步，避免连续配置请求中断拖动。
+- 覆盖模型切换、能力变化、单档禁用、空目录、加载失败、请求失败恢复、键盘导航、逐层 Escape、点击外部关闭以及流式阶段禁用。
+- 不更改 IPC、Rust、Bridge、模型能力定义或用户配置；原有侧边栏样式及测试修改保持不动。临时视觉 fixture 已移除，浏览器验证不能替代原生运行时端到端验收。
+
+### 最终验证
+
+- Renderer 全量：76 个测试文件、760 项测试通过；运行时准备 8 项、Bridge 268 项通过／1 项既有跳过，Rust 191 项通过／1 项既有忽略。
+- 首次 `pnpm test` 在高并发下有一项既有快捷键测试达到 5000 ms 超时；保留原超时和覆盖率门槛，以 `pnpm --dir apps/desktop exec vitest run --coverage --maxWorkers=2` 重跑全量 Renderer 后全部通过，未修改无关测试。
+- `pnpm check`、`pnpm build` 与 Rust 测试通过。默认 Cargo 目录首次校验受运行中应用的 Windows 资源锁影响，后续仅为验证命令设置独立 `CARGO_TARGET_DIR=src-tauri/target/provider-settings`，没有关闭用户应用或更改项目配置。
+- 全局 Renderer 覆盖率：语句 88.94%、分支 84.40%、函数 89.94%、行 91.58%；新增 `ComposerThinkingControl` 四项均为 100%，`ChatComposer` 四项均超过 80%。
+- 生产构建保留既有的大体积 chunk 提示；本次不进行无关的打包拆分。
+
+### 后续修复：切换闪烁与卡片悬停
+
+- 用户反馈：切换思考强度时面板闪烁；顶部强度/模型卡片的深色底框应仅在鼠标悬停时出现。沿用原始图二的悬停视觉，其余布局不变。
+- 根因与修复：短暂配置保存之前复用原生 `disabled`，导致滑杆及卡片置灰、焦点变化；同时“正在应用配置”可见文字挤动底栏。现在用独立 `saving` 状态和 `aria-disabled` 锁定重复操作，保留 DOM、焦点及透明度；保存播报改为屏幕阅读器文本，不占据布局。真正不可用或仅单档时仍使用原生禁用。
+- 卡片默认透明，仅 `:hover` 使用既有 `--composer-protrusion` 色值；保留键盘 `:focus-visible` 轮廓，避免把键盘可访问性一并移除。
+- 浏览器量化：1280 × 720 视口、真实 `ChatComposer` 与隔离 Mock 保存响应。保存前/中/后输入框均为 696 × 115.8 px，弹层均为 282 × 122.6 px，位置不变，卡片与滑杆透明度均为 1；保存开始后焦点仍在滑杆，重复按键不改变已提交档位，失败恢复后端确认值。
+- 状态色：浅色卡片默认透明、悬停 `rgb(240,240,240)`；深色悬停 `rgb(32,32,32)`。字体、间距、圆角、现有图标和真实模型内容来源不变；没有新增图片资产。
+- 完整截图：`C:/Users/Administrator/AppData/Local/Temp/pi-selector-regression/` 下 `before.png`、`saving.png`、`idle.png`、`hover.png`、`dark-idle.png`、`dark-hover.png`。同尺度同图对照为 `reference-comparison.png`、`state-comparison.png` 与 `dark-comparison.png`；`result.png` 展示修复后的默认/悬停状态。
+- 视觉验收：两项问题已修复，无新增 P0–P2 问题。键盘焦点轮廓与发送按钮保存锁定仍属预期反馈，不视为整块闪烁。临时页面、浏览器页签及预览服务已移除；未操作真实会话，保留原生 WebView 端到端验证限制。
+- 定向回归 80 项通过；完整 `pnpm test` 通过：Renderer 762 项、运行时准备 8 项、Bridge 268 项／1 项既有跳过、Rust 191 项／1 项既有忽略。仅为本次测试设置 `VITEST_MAX_WORKERS=2`，没有修改测试门槛或超时。
+- 最新 Renderer 覆盖率：语句 88.95%、分支 84.47%、函数 89.95%、行 91.59%；`ComposerThinkingControl` 四项均为 100%，`ChatComposer` 四项均超过 80%。
+- `pnpm check`、`pnpm build`、`git diff --check` 及敏感内容/冲突标记扫描通过。原生验证继续使用独立 Cargo 目录，不关闭用户应用；保留既有大体积 chunk 提示，本次构建产生的 TypeScript 缓存已还原。
+
+final result: passed
+
+## 2026-09-27：聊天输入框边框与阴影对齐参考图一
+
+- 范围：用户选择图一的轻描边和柔和阴影，授权在已有未提交修改上继续。仅调整输入框边框、圆角、主题阴影及对应样式回归断言，保留既有组件功能和其他任务改动。
+- 参考：`C:/Users/Administrator/AppData/Local/Temp/codex-clipboard-f450f3d6-795a-46c2-8b6a-d2be6038512b.png`。图二的深色边线和聚焦加重感是本次需要减弱的部分。
+- 实现：四边统一 1px 浅灰描边；圆角从 18px 调整为 22px；新增输入框专用 `--composer-shadow`，使用低透明度的两层扩散阴影。聚焦仅小幅加深边框，保持相同阴影；深色主题使用独立透明度。
+- 视觉证据：实际 `ChatComposer` 与生产 `styles.css`，通过临时 Mock props 预览，未改写边框、阴影或圆角。文件保存在 `C:/Users/Administrator/AppData/Local/Temp/pi-composer-border-qa/`：`light-normal-root.png`、`light-focus-root.png`、`narrow-focus-root.png`、`dark-normal-root.png`。
+- 同尺度比较：`reference-vs-implementation.png` 上方为参考图一下方为实现截图；`composer-after.png` 为修改后局部。对照确认轻描边、饱满圆角和柔和向外扩散的阴影达到目标，内容、字体和工具按钮不属于本次视觉复刻范围。
+- 默认视口 1280 × 720 CSS px，缩放恢复为 100%；默认浅色边线约为 #EEEEEE，聚焦约为 #E9E9E9，深色边线约为 #2E2E2E。DPR 1.25 时 1px CSS 边线会量化为 0.8px 计算值，属于设备像素取整。
+- 窄屏 390 × 700 CSS px 的真实组件宽约 322px，边框和阴影未裁切，水平溢出为 0；宽屏浅色默认、聚焦及深色状态同样无水平溢出。
+- 验证边界：浏览器截图证据覆盖真实组件和样式；不等同于原生 WebView 全链路验收。首次工具截图受 50% 浏览器缩放影响，已校准重拍；早期 `*-local.png` 裁切不作为验收证据。临时预览文件和页签已删除，视口已恢复，用户已有 Vite 服务保持运行。
+- 测试：样式定向回归 60 项通过；完整 `pnpm test` 中 Renderer 812 项、Bridge 268 项（另 1 项既有跳过）、Rust 191 项（另 1 项既有忽略）通过。测试使用 `VITEST_MAX_WORKERS=2`，未修改超时或覆盖率门槛。
+- `pnpm test`、`pnpm check`、`pnpm build` 完整流程退出码均为 0，包含原生编译；仅保留既有的大体积 chunk 提示。使用独立 `CARGO_TARGET_DIR=src-tauri/target/provider-settings`，不关闭用户应用；两份 TypeScript 缓存均与验证前备份字节一致。
+- `git diff --check` 通过；本次三个样式/测试文件的冲突标记和明显敏感凭据模式扫描为零。
+
+final result: passed

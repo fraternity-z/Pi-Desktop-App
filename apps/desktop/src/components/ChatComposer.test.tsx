@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { useState } from "react";
+import type { ThinkingLevel } from "../ipc/agent";
 
 import { ChatComposer, isImeCompositionEvent } from "./ChatComposer";
 
@@ -27,6 +28,111 @@ const permissionProps = {
   onUseDefaultTools: vi.fn(),
   onToolSelectionChange: vi.fn(),
 };
+
+function openModelMenu() {
+  fireEvent.click(screen.getByRole("button", { name: "模型与思考强度" }));
+  fireEvent.click(screen.getByRole("button", { name: "选择模型" }));
+}
+
+function modelPickerProps() {
+  const models = [
+    { provider: "test", id: "first", name: "First", reasoning: true },
+    { provider: "test", id: "second", name: "Second", reasoning: true },
+  ];
+  return {
+    workspaceName: "workspace", draft: "", phase: "ready" as const, eventConnection: "ready" as const,
+    models, configuration: { model: models[0], thinkingLevel: "medium" as const, availableThinkingLevels: ["off", "medium", "high"] as ThinkingLevel[], ...toolConfiguration },
+    configuring: false, canSend: false, queuedMessages: { steering: [], followUp: [] }, queuePaused: false,
+    ...permissionProps, onDraftChange: vi.fn(), onModelChange: vi.fn(), onThinkingLevelChange: vi.fn(),
+    onSend: vi.fn(), onClearQueue: vi.fn(), onAbort: vi.fn(),
+  };
+}
+
+describe("渐进式模型选择器", () => {
+  it("点击摘要只展示滑杆，选中模型可使用方向键导航，选择后返回上层", () => {
+    const options = modelPickerProps();
+    render(<ChatComposer {...options} />);
+    const summary = screen.getByRole("button", { name: "模型与思考强度" });
+    expect(summary).toHaveTextContent("First中");
+    fireEvent.click(summary);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "选择模型" }));
+    const first = screen.getByRole("menuitemradio", { name: "First" });
+    const second = screen.getByRole("menuitemradio", { name: "Second" });
+    expect(first).toHaveFocus();
+    expect(first).toHaveAttribute("aria-checked", "true");
+    fireEvent.keyDown(first, { key: "ArrowDown" });
+    expect(second).toHaveFocus();
+    fireEvent.keyDown(second, { key: "Home" });
+    expect(first).toHaveFocus();
+    fireEvent.keyDown(first, { key: "ArrowUp" });
+    expect(second).toHaveFocus();
+    fireEvent.keyDown(second, { key: "End" });
+    expect(second).toHaveFocus();
+    fireEvent.click(first);
+    expect(options.onModelChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("slider")).toBeInTheDocument();
+    fireEvent.click(summary);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    openModelMenu();
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("配置保存期间保持面板、焦点和布局，仅锁定重复操作", () => {
+    const options = modelPickerProps();
+    const { rerender } = render(<ChatComposer {...options} />);
+    const summary = screen.getByRole("button", { name: "模型与思考强度" });
+    fireEvent.click(summary);
+    const dialog = screen.getByRole("dialog");
+    const slider = screen.getByRole("slider");
+    expect(slider).toHaveFocus();
+    rerender(<ChatComposer {...options} configuring />);
+    expect(screen.getByRole("dialog")).toBe(dialog);
+    expect(screen.getByRole("slider")).toBe(slider);
+    expect(slider).toBeEnabled();
+    expect(slider).toHaveFocus();
+    expect(slider).toHaveAttribute("aria-disabled", "true");
+    expect(slider.parentElement).toHaveAttribute("data-disabled", "false");
+    expect(summary).toBeEnabled();
+    expect(summary).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByText("正在应用配置")).toHaveClass("sr-only");
+    fireEvent.click(summary);
+    fireEvent.click(screen.getByRole("button", { name: "选择模型" }));
+    expect(screen.getByRole("dialog")).toBe(dialog);
+    rerender(<ChatComposer {...options} configuration={{ ...options.configuration, thinkingLevel: "high" }} />);
+    expect(slider).not.toHaveAttribute("aria-disabled");
+    expect(slider).toHaveFocus();
+    expect(slider).toHaveAttribute("aria-valuetext", "高");
+    expect(screen.queryByText("正在应用配置")).not.toBeInTheDocument();
+    rerender(<ChatComposer {...options} eventConnection="connecting" />);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it.each([false, "reject"])("草稿能力读取失败（%s）不永久加载，可重新打开重试", async (result) => {
+    const options = modelPickerProps();
+    const prepare = vi.fn(() => result === "reject" ? Promise.reject(new Error("internal details")) : Promise.resolve(false));
+    render(<ChatComposer {...options} configuration={null} onPrepareConfiguration={prepare} />);
+    const summary = screen.getByRole("button", { name: "模型与思考强度" });
+    fireEvent.click(summary);
+    expect(await screen.findByRole("alert")).toHaveTextContent("无法读取思考强度，请关闭后重试");
+    expect(screen.queryByText("internal details")).not.toBeInTheDocument();
+    expect(screen.queryByText("正在读取思考强度")).not.toBeInTheDocument();
+    fireEvent.click(summary);
+    fireEvent.click(summary);
+    await screen.findByRole("alert");
+    expect(prepare).toHaveBeenCalledTimes(2);
+  });
+
+  it("空目录加载时保留反馈，并在目录到达后展示选项", () => {
+    const options = modelPickerProps();
+    const { rerender } = render(<ChatComposer {...options} models={[]} catalogPhase="loading" />);
+    openModelMenu();
+    expect(screen.getByText("正在加载模型")).toBeInTheDocument();
+    rerender(<ChatComposer {...options} catalogPhase="ready" />);
+    expect(screen.getAllByRole("menuitemradio")).toHaveLength(2);
+  });
+});
 
 describe("ChatComposer", () => {
   it("隐藏项目栏时移除整行及已打开菜单，恢复显示时仍可选择项目", () => {
@@ -77,7 +183,7 @@ describe("ChatComposer", () => {
     expect(screen.queryByTitle("本机 Pi Runtime")).not.toBeInTheDocument();
     expect(screen.queryByTitle("Git 分支：main")).not.toBeInTheDocument();
     expect(screen.getByLabelText("发送给 Pi 的消息")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "选择模型" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "模型与思考强度" })).toBeInTheDocument();
 
     rerender(<ChatComposer {...baseProps} showProjectBar />);
 
@@ -124,11 +230,13 @@ describe("ChatComposer", () => {
       />,
     );
 
-    const modelTrigger = screen.getByRole("button", { name: "选择模型" });
+    const modelTrigger = screen.getByRole("button", { name: "模型与思考强度" });
     expect(modelTrigger).toBeEnabled();
     fireEvent.click(modelTrigger);
+    expect(screen.getByText("此模型未提供思考强度")).toBeInTheDocument();
+    expect(screen.queryByRole("slider")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "选择模型" }));
     expect(screen.getByText("当前 Pi 配置中没有可用模型")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "选择思考强度" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "选择工具权限" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
     const emptyMeter = screen.getByRole("meter", { name: "上下文占用量" });
@@ -162,7 +270,7 @@ describe("ChatComposer", () => {
     );
 
     expect(screen.getByText("GPT")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "选择模型" }));
+    openModelMenu();
     fireEvent.click(screen.getByRole("menuitemradio", { name: "GPT" }));
     expect(onModelChange).toHaveBeenCalledWith("openai", "gpt");
   });
@@ -228,7 +336,7 @@ describe("ChatComposer", () => {
     expect(onPrepareConfiguration).toHaveBeenCalledOnce();
     expect(screen.getByText("正在读取权限")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "选择工具权限" }));
-    fireEvent.click(screen.getByRole("button", { name: "选择思考强度" }));
+    fireEvent.click(screen.getByRole("button", { name: "模型与思考强度" }));
     expect(onPrepareConfiguration).toHaveBeenCalledTimes(2);
     expect(screen.getByText("正在读取思考强度")).toBeInTheDocument();
   });
@@ -259,7 +367,7 @@ describe("ChatComposer", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "选择思考强度" })).toHaveTextContent("Max");
+    expect(screen.getByRole("button", { name: "模型与思考强度" })).toHaveTextContent("最高");
     expect(onPrepareConfiguration).not.toHaveBeenCalled();
   });
 
@@ -290,7 +398,7 @@ describe("ChatComposer", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "选择模型" }));
+    openModelMenu();
     expect(screen.getByText("MODEL_LIST_FAILED: 无法读取模型")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "重新加载" }));
     expect(onRetryModels).toHaveBeenCalledOnce();
@@ -419,11 +527,12 @@ describe("ChatComposer", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "选择模型" }));
+    openModelMenu();
     fireEvent.click(screen.getByRole("menuitemradio", { name: "Claude" }));
     expect(onModelChange).toHaveBeenCalledWith("anthropic", "claude");
-    fireEvent.click(screen.getByRole("button", { name: "选择思考强度" }));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "High" }));
+    const slider = screen.getByRole("slider", { name: "思考强度" });
+    fireEvent.change(slider, { target: { value: "2" } });
+    fireEvent.pointerUp(slider);
     expect(onThinkingLevelChange).toHaveBeenCalledWith("high");
 
     const textarea = screen.getByLabelText("发送给 Pi 的消息");
@@ -661,7 +770,7 @@ describe("ChatComposer", () => {
     expect(screen.getByLabelText("发送给 Pi 的消息")).toBeDisabled();
   });
 
-  it("按 Escape 关闭已打开的配置菜单", () => {
+  it("按 Escape 逐层返回，再关闭配置菜单并恢复入口焦点", () => {
     render(
       <ChatComposer
         workspaceName="workspace"
@@ -689,10 +798,14 @@ describe("ChatComposer", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "选择模型" }));
+    openModelMenu();
     expect(screen.getByRole("menu", { name: "模型列表" })).toBeInTheDocument();
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("menu", { name: "模型列表" })).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "模型与思考强度设置" })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "模型与思考强度" })).toHaveFocus();
   });
 
   it("将模型和思考强度菜单渲染到顶层，避免被输入框裁切", () => {
@@ -727,18 +840,23 @@ describe("ChatComposer", () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole("button", { name: "模型与思考强度" }));
+    expect(screen.queryByRole("menu", { name: "模型列表" })).not.toBeInTheDocument();
+    const thinkingMenu = screen.getByRole("dialog", { name: "模型与思考强度设置" });
+    expect(thinkingMenu.parentElement).toBe(document.body);
+    expect(thinkingMenu).toHaveAttribute("data-floating-menu");
+    expect(thinkingMenu.querySelectorAll(".composer-thinking-stops span")).toHaveLength(7);
+    const slider = screen.getByRole("slider", { name: "思考强度" });
+    fireEvent.change(slider, { target: { value: "6" } });
+    fireEvent.pointerUp(slider);
+    expect(onThinkingLevelChange).toHaveBeenCalledWith("max");
     fireEvent.click(screen.getByRole("button", { name: "选择模型" }));
     const modelMenu = screen.getByRole("menu", { name: "模型列表" });
     expect(modelMenu.parentElement).toBe(document.body);
     expect(modelMenu).toHaveAttribute("data-floating-menu");
 
-    fireEvent.click(screen.getByRole("button", { name: "选择思考强度" }));
-    const thinkingMenu = screen.getByRole("menu", { name: "思考强度列表" });
-    expect(thinkingMenu.parentElement).toBe(document.body);
-    expect(thinkingMenu).toHaveAttribute("data-floating-menu");
-    expect(screen.getAllByRole("menuitemradio")).toHaveLength(7);
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "Max" }));
-    expect(onThinkingLevelChange).toHaveBeenCalledWith("max");
+    expect(screen.queryByRole("slider")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("menuitemradio")).toHaveLength(2);
   });
 
   it("流式阶段允许追加输入并提供停止操作", () => {
@@ -775,8 +893,7 @@ describe("ChatComposer", () => {
     expect(textarea).toBeEnabled();
     expect(textarea).toHaveAttribute("placeholder", "继续输入可加入后续队列");
     expect(screen.queryByText("Pi 正在处理")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "选择模型" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "选择思考强度" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "模型与思考强度" })).toBeDisabled();
     fireEvent.keyDown(textarea, { key: "Enter" });
     fireEvent.keyDown(textarea, { key: "Enter", altKey: true });
     expect(onSend).toHaveBeenNthCalledWith(1, undefined, "steer");

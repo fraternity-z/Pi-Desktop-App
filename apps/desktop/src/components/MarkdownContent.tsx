@@ -1,15 +1,9 @@
-import { Check, Copy, ExternalLink, TriangleAlert } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import {
-  Children,
-  isValidElement,
   memo,
-  useEffect,
   useMemo,
-  useRef,
-  useState,
   type ComponentProps,
   type MouseEvent,
-  type ReactNode,
 } from "react";
 import ReactMarkdown, { defaultUrlTransform, type Options } from "react-markdown";
 import rehypeKatex from "rehype-katex";
@@ -17,7 +11,7 @@ import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
-import { HighlightedCodeLine } from "./CodeHighlight";
+import { MarkdownCodeBlock } from "./MarkdownCodeBlock";
 import { prepareMarkdownMath, remarkLatexBracketDisplay, remarkRestoreMathPipes } from "./markdown-math";
 
 interface MarkdownContentProps {
@@ -52,7 +46,7 @@ function rehypeMath() {
 const MARKDOWN_COMPONENTS = {
   a: MarkdownLink,
   img: MarkdownImage,
-  pre: MarkdownPre,
+  pre: MarkdownCodeBlock,
   input: MarkdownInput,
   table: MarkdownTable,
 };
@@ -122,56 +116,4 @@ function MarkdownTable({ children, ...props }: ComponentProps<"table">) {
       <table {...props}>{children}</table>
     </div>
   );
-}
-
-function MarkdownPre({ children, ...props }: ComponentProps<"pre">) {
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
-  const resetTimer = useRef<number | undefined>(undefined);
-  useEffect(() => () => window.clearTimeout(resetTimer.current), []);
-  const code = nodeText(children).replace(/\n$/, "");
-  const language = codeLanguage(children);
-  const copyLabel = copyState === "copied" ? "代码已复制" : copyState === "error" ? "复制失败，点击重试" : "复制代码";
-  async function copyCode() {
-    window.clearTimeout(resetTimer.current);
-    try {
-      await navigator.clipboard.writeText(code);
-      setCopyState("copied");
-      resetTimer.current = window.setTimeout(() => setCopyState("idle"), 1_200);
-    } catch {
-      setCopyState("error");
-    }
-  }
-  return (
-    <div className="markdown-code-block">
-      <div className="markdown-code-toolbar">
-        <span>{language ?? "代码"}</span>
-        <button
-          type="button"
-          className="icon-button markdown-code-copy"
-          onClick={() => void copyCode()}
-          aria-label={copyLabel}
-          title={copyLabel}
-        >
-          {copyState === "copied" ? <Check size={14} /> : copyState === "error" ? <TriangleAlert size={14} /> : <Copy size={14} />}
-        </button>
-      </div>
-      <pre {...props}><code><HighlightedCodeLine content={code} path={language ?? undefined} /></code></pre>
-    </div>
-  );
-}
-
-function codeLanguage(node: ReactNode): string | null {
-  for (const child of Children.toArray(node)) {
-    if (!isValidElement<{ className?: string }>(child)) continue;
-    const match = /(?:^|\s)language-([\w-]+)/.exec(child.props.className ?? "");
-    if (match?.[1]) return match[1];
-  }
-  return null;
-}
-
-function nodeText(node: ReactNode): string {
-  if (typeof node === "string" || typeof node === "number") return String(node);
-  if (Array.isArray(node)) return node.map(nodeText).join("");
-  if (isValidElement<{ children?: ReactNode }>(node)) return nodeText(node.props.children);
-  return Children.toArray(node).map(nodeText).join("");
 }

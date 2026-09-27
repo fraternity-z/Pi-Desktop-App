@@ -1,0 +1,124 @@
+.app-sidebar:not(.settings-sidebar) .project-row.project-row-with-compose {
+  grid-template-columns: minmax(0, 1fr) 28px 28px;
+}
+
+.app-sidebar:not(.settings-sidebar) .project-row[data-preview-open="true"] .sidebar-row-menu {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.app-sidebar:not(.settings-sidebar) .sidebar-project-compose:disabled {
+  cursor: not-allowed;
+}
+
+.app-sidebar:not(.settings-sidebar) .project-row:hover .sidebar-project-compose:disabled,
+.app-sidebar:not(.settings-sidebar) .project-row:focus-within .sidebar-project-compose:disabled,
+.app-sidebar:not(.settings-sidebar) .project-row[data-preview-open="true"] .sidebar-project-compose:disabled {
+  opacity: var(--disabled-opacity);
+}
+
+.sidebar-project-preview {
+  position: fixed;
+  z-index: 110;
+  width: min(calc(380px * 6 / 7), calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: var(--shadow-strong);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.sidebar-project-preview-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+}
+
+.sidebar-project-preview-header strong {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.sidebar-project-preview svg {
+  flex: 0 0 auto;
+}
+
+.sidebar-project-preview button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.sidebar-project-preview-header button {
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--muted);
+}
+
+.sidebar-project-preview button:hover {
+  background: var(--hover);
+}
+
+.sidebar-project-preview button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.sidebar-project-preview-summary,
+.sidebar-project-preview-path {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 5px 0;
+}
+
+.sidebar-project-preview-summary svg,
+.sidebar-project-preview-path svg,
+.sidebar-project-preview-edit svg {
+  margin-top: 2px;
+  color: var(--muted);
+}
+
+.sidebar-project-preview-path {
+  margin-top: 6px;
+  padding-block: 10px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.sidebar-project-preview-path span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sidebar-project-preview .sidebar-project-preview-edit {
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px 0;
+  text-align: left;
+}
+
+@media (hover: none) {
+  .app-sidebar:not(.settings-sidebar) .project-row-with-compose .sidebar-row-menu {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}

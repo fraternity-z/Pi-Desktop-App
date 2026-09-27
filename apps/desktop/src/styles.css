@@ -40,6 +40,7 @@
   --switch-active-border: #2f2f2f;
   --switch-active-thumb: #ffffff;
   --composer: #ffffff;
+  --composer-shadow: 0 2px 8px rgb(0 0 0 / 4%), 0 8px 24px rgb(0 0 0 / 2%);
   --composer-protrusion: #f0f0f0;
   --user-bubble: #eeeeee;
   --code-bg: #f7f7f7;
@@ -48,8 +49,8 @@
   --link: #315f9e;
   --link-hover: #214978;
   --overlay: rgb(0 0 0 / 36%);
-  --shadow: 0 18px 48px rgb(0 0 0 / 16%);
-  --shadow-strong: 0 24px 64px rgb(0 0 0 / 24%);
+  --shadow: 0 2px 4px rgb(0 0 0 / 3%), 0 6px 16px rgb(0 0 0 / 4%);
+  --shadow-strong: 0 3px 8px rgb(0 0 0 / 4%), 0 12px 28px rgb(0 0 0 / 7%);
   --sidebar-translucent: rgb(245 245 245 / 92%);
   --scrollbar: #b5b5b5;
   --disabled-opacity: 0.46;
@@ -104,6 +105,7 @@
   --switch-active-border: #f0f0f0;
   --switch-active-thumb: #202020;
   --composer: #252525;
+  --composer-shadow: 0 2px 8px rgb(0 0 0 / 12%), 0 8px 24px rgb(0 0 0 / 8%);
   --composer-protrusion: #202020;
   --user-bubble: #2b2b2b;
   --code-bg: #232323;
@@ -112,8 +114,8 @@
   --link: #a9c9f5;
   --link-hover: #d0e2fb;
   --overlay: rgb(0 0 0 / 62%);
-  --shadow: 0 18px 48px rgb(0 0 0 / 42%);
-  --shadow-strong: 0 28px 72px rgb(0 0 0 / 52%);
+  --shadow: 0 2px 4px rgb(0 0 0 / 8%), 0 6px 16px rgb(0 0 0 / 10%);
+  --shadow-strong: 0 3px 8px rgb(0 0 0 / 12%), 0 12px 28px rgb(0 0 0 / 16%);
   --sidebar-translucent: rgb(32 32 32 / 88%);
   --scrollbar: #555555;
   --disabled-opacity: 0.48;
@@ -4741,7 +4743,7 @@ body {
   height: 36px;
   align-items: center;
   gap: 8px;
-  padding: 0 3px 0 0;
+  padding: 0 3px 0 10px;
   border: 0;
   background: transparent;
   color: #343434;
@@ -4775,7 +4777,7 @@ body {
 }
 
 .app-sidebar:not(.settings-sidebar) .project-session-list {
-  padding: 1px 0 4px 28px;
+  padding: 1px 0 4px;
 }
 
 .app-sidebar:not(.settings-sidebar) .conversation-session-list {
@@ -4890,6 +4892,12 @@ body {
   font-size: 12px;
 }
 
+.app-sidebar:not(.settings-sidebar) .session-row[data-indent="true"] .session-row-select,
+.app-sidebar:not(.settings-sidebar) .project-session-list .session-empty-action,
+.app-sidebar:not(.settings-sidebar) .project-session-list .sidebar-show-more {
+  padding-left: 34px;
+}
+
 .app-sidebar:not(.settings-sidebar) .sidebar-show-more:hover,
 .app-sidebar:not(.settings-sidebar) .session-empty-action:hover,
 .app-sidebar:not(.settings-sidebar) .sidebar-empty-state button:hover {
@@ -4915,7 +4923,7 @@ body {
 .app-sidebar:not(.settings-sidebar) .sidebar-footer {
   display: grid;
   min-width: 0;
-  grid-template-columns: minmax(0, 1fr) 36px;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: 4px;
   padding: 9px 16px 11px;
@@ -7249,6 +7257,12 @@ body,
   box-shadow: var(--shadow-strong);
 }
 
+/* Keep compact popovers on the same elevation even when their CSS loads later. */
+:root .composer-menu.composer-model-popover,
+:root .markdown-code-tooltip {
+  box-shadow: var(--shadow);
+}
+
 .sidebar-dialog-backdrop,
 .dialog-backdrop,
 .sidebar-scrim {
@@ -7797,7 +7811,8 @@ body,
 }
 
 .app-sidebar:not(.settings-sidebar) .sidebar-primary-actions,
-.app-sidebar:not(.settings-sidebar) .sidebar-scroll {
+.app-sidebar:not(.settings-sidebar) .sidebar-scroll,
+.app-sidebar:not(.settings-sidebar) .sidebar-footer {
   padding-inline: 12px;
 }
 
@@ -7959,9 +7974,9 @@ body,
 }
 
 .composer-frame {
-  border-color: var(--line-strong);
-  border-radius: 18px;
-  box-shadow: 0 2px 5px rgb(0 0 0 / 3%), 0 8px 24px rgb(0 0 0 / 6%);
+  border: 1px solid color-mix(in srgb, var(--line) 65%, var(--composer));
+  border-radius: 22px;
+  box-shadow: var(--composer-shadow);
   backdrop-filter: none;
 }
 
@@ -7980,8 +7995,8 @@ body,
 }
 
 .composer-frame:focus-within {
-  border-color: color-mix(in srgb, var(--muted) 65%, var(--line));
-  box-shadow: 0 2px 5px rgb(0 0 0 / 4%), 0 8px 24px rgb(0 0 0 / 8%);
+  border-color: color-mix(in srgb, var(--line) 85%, var(--composer));
+  box-shadow: var(--composer-shadow);
 }
 
 .settings-main,
@@ -8469,7 +8484,7 @@ samp,
   border-radius: 10px;
   background: rgb(255 255 255 / 78%);
   backdrop-filter: blur(10px) saturate(108%);
-  box-shadow: 0 6px 16px rgb(0 0 0 / 14%);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 8%);
 }
 
 .appearance-theme-swatch {
@@ -8477,7 +8492,7 @@ samp,
   height: 6px;
   border: 1px solid rgb(255 255 255 / 48%);
   border-radius: 999px;
-  box-shadow: 0 2px 10px rgb(0 0 0 / 24%);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 10%);
 }
 
 .appearance-theme-applied {

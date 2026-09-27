@@ -9,7 +9,6 @@ import {
   ExternalLink,
   Folder,
   FolderGit2,
-  FolderOpen,
   FolderPlus,
   Layers3,
   List,
@@ -65,6 +64,7 @@ import {
   CreateWorktreeDialog,
   RenameSidebarDialog,
 } from "./SidebarDialog";
+import { SidebarProjectRow } from "./SidebarProjectRow";
 
 const PAGE_SIZE = 5;
 const CONVERSATION_TARGET = "__pix_conversation__";
@@ -435,42 +435,25 @@ export function AppSidebar(props: AppSidebarProps) {
           setDraggedProject(null);
         }}
       >
-        <div
-          className="project-row"
-          data-active={samePath(project.cwd, activeCwd) || undefined}
-          role="button"
-          tabIndex={0}
-          aria-label={`${expanded ? "折叠" : "展开"}${project.name}`}
-          aria-expanded={expanded}
-          onClick={() => sidebar.toggleExpandedProject(project.cwd)}
-          onKeyDown={(event) => {
-            if (event.key !== "Enter" && event.key !== " ") return;
-            event.preventDefault();
-            sidebar.toggleExpandedProject(project.cwd);
-          }}
+        <SidebarProjectRow
+          name={project.name}
+          cwd={project.cwd}
+          expanded={expanded}
+          active={samePath(project.cwd, activeCwd)}
+          pinned={preferences.pinnedProjects.includes(project.key)}
+          sessionCount={project.sessions.length}
+          runningCount={project.sessions.filter((session) => runningIds.has(session.id)).length}
+          creationDisabled={switchingDisabled || !runtimeReady}
+          previewEnabled={open && !menu && !renameTarget && !confirmTarget && !worktreeTarget && !draggedProject}
+          onToggle={() => sidebar.toggleExpandedProject(project.cwd)}
+          onNewSession={() => onNewSession(project.cwd)}
+          onMenu={(event) => openMenuFromButton(event, { kind: "project", cwd: project.cwd })}
           onContextMenu={(event) => openContextMenu(event, { kind: "project", cwd: project.cwd })}
-        >
-          <div
-            className="project-select"
-            aria-current={samePath(project.cwd, activeCwd) ? "page" : undefined}
-            title={project.cwd}
-          >
-            {expanded ? <FolderOpen size={16} /> : <Folder size={16} />}
-            <span>{project.name}</span>
-          </div>
-          <button
-            className="sidebar-row-menu"
-            type="button"
-            aria-label={`${project.name}更多操作`}
-            title="更多"
-            onClick={(event) => {
-              event.stopPropagation();
-              openMenuFromButton(event, { kind: "project", cwd: project.cwd });
-            }}
-          >
-            <Ellipsis size={15} />
-          </button>
-        </div>
+          onTogglePinned={() => sidebar.togglePinnedProject(project.cwd)}
+          onEdit={() => setRenameTarget({ kind: "project", cwd: project.cwd, value: project.name })}
+          onPreviewEnter={cancelAutoClose}
+          onPreviewLeave={scheduleAutoClose}
+        />
         {expanded && preferences.groupMode === "project" && (
           <div className="session-list project-session-list">
             {projectSessions.length === 0 ? (

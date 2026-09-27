@@ -55,6 +55,7 @@ import type {
 import type { ToolPermissionMode } from "../stores/useToolPermissions";
 import type { GitBranchesState } from "../stores/useGitBranches";
 import { ComposerQueueCard } from "./ComposerQueueCard";
+import { ComposerThinkingControl, thinkingLevelLabel } from "./ComposerThinkingControl";
 import { GitBranchMenu } from "./GitBranchMenu";
 import { isPromptImagePath, MAX_COMPOSER_ATTACHMENTS } from "./composerAttachments";
 import {
@@ -177,8 +178,8 @@ export function ChatComposer({
   const resourcesTriggerRef = useRef<HTMLButtonElement>(null);
   const permissionTriggerRef = useRef<HTMLButtonElement>(null);
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
-  const thinkingTriggerRef = useRef<HTMLButtonElement>(null);
   const [openMenu, setOpenMenu] = useState<ComposerMenu | null>(null);
+  const [configurationPreparation, setConfigurationPreparation] = useState<"idle" | "loading" | "error">("idle");
   const [resourceResults, setResourceResults] = useState<WorkspacePathMatch[]>([]);
   const [resourcePhase, setResourcePhase] = useState<ResourcePhase>("idle");
   const [resourceError, setResourceError] = useState<string | null>(null);
@@ -189,13 +190,6 @@ export function ChatComposer({
   const streaming = phase === "streaming";
   const disabled = eventConnection !== "ready";
   const modelDisabled = disabled || streaming || configuring;
-  const thinkingDisabled =
-    disabled ||
-    streaming ||
-    configuring ||
-    (configuration
-      ? configuration.availableThinkingLevels.length <= 1
-      : !onPrepareConfiguration);
   const permissionDisabled =
     disabled || streaming || configuring || (availableTools.length === 0 && !onPrepareConfiguration);
   const modelGroups = useMemo(() => groupModelsByProvider(models), [models]);
@@ -253,6 +247,16 @@ export function ChatComposer({
   const slashPanelOpen =
     openMenu === null && composerTrigger !== null && !suggestionsDismissed && !disabled;
 
+  async function prepareThinkingConfiguration() {
+    setConfigurationPreparation("loading");
+    try {
+      const ready = await onPrepareConfiguration?.();
+      setConfigurationPreparation(ready ? "idle" : "error");
+    } catch {
+      setConfigurationPreparation("error");
+    }
+  }
+
   useLayoutEffect(() => {
     if (composerFormRef.current) {
       setComposerAnchor(composerFormRef.current);
@@ -301,8 +305,9 @@ export function ChatComposer({
     }
     function closeOnEscape(event: globalThis.KeyboardEvent) {
       if (event.key === "Escape") {
-        setOpenMenu(null);
+        setOpenMenu(openMenu === "model" ? "thinking" : null);
         if (openMenu === "branch") branchTriggerRef.current?.focus();
+        if (openMenu === "thinking") modelTriggerRef.current?.focus();
       }
     }
     function closeOnViewportChange(event: Event) {
@@ -321,6 +326,13 @@ export function ChatComposer({
       window.removeEventListener("resize", closeOnViewportChange);
     };
   }, [openMenu]);
+
+  useEffect(() => {
+    if (openMenu !== "model") return;
+    const menu = floatingMenuRef.current;
+    const selected = menu?.querySelector<HTMLButtonElement>('[aria-checked="true"]');
+    (selected ?? menu?.querySelector<HTMLButtonElement>("button:not(:disabled)"))?.focus();
+  }, [openMenu, catalogPhase]);
 
   useEffect(() => {
     if (!slashPanelOpen) return;
@@ -349,8 +361,9 @@ export function ChatComposer({
     if (
       (!showProjectBar && (openMenu === "project" || openMenu === "branch")) ||
       ((streaming || phase === "creating") && openMenu === "branch") ||
-      ((disabled || configuring || streaming) &&
-        (openMenu === "permission" || openMenu === "model" || openMenu === "thinking"))
+      ((disabled || streaming) &&
+        (openMenu === "permission" || openMenu === "model" || openMenu === "thinking")) ||
+      (configuring && openMenu === "permission")
     ) {
       setOpenMenu(null);
     }
@@ -868,10 +881,7 @@ export function ChatComposer({
 
             <div className="composer-operation-status" aria-live="polite">
               {configuring ? (
-                <>
-                  <LoaderCircle className="spin" size={14} />
-                  <span>正在应用配置</span>
-                </>
+                <span className="sr-only">正在应用配置</span>
               ) : eventConnection !== "ready" ? (
                 <span>正在连接</span>
               ) : null}
@@ -884,30 +894,48 @@ export function ChatComposer({
             <div className="composer-picker">
               <button
                 ref={modelTriggerRef}
-                className="composer-picker-trigger composer-model-trigger"
+                className="composer-picker-trigger composer-model-summary"
                 type="button"
-                disabled={modelDisabled}
-                aria-label="选择模型"
-                aria-haspopup="menu"
-                aria-expanded={openMenu === "model"}
-                aria-controls={openMenu === "model" ? "composer-model-menu" : undefined}
-                onClick={() => setOpenMenu((current) => (current === "model" ? null : "model"))}
+                disabled={disabled || streaming}
+                aria-disabled={configuring || undefined}
+                aria-label="模型与思考强度"
+                aria-haspopup="dialog"
+                aria-expanded={openMenu === "model" || openMenu === "thinking"}
+                aria-controls={openMenu === "model" ? "composer-model-menu" : openMenu === "thinking" ? "composer-thinking-menu" : undefined}
+                onClick={() => {
+                  if (configuring) return;
+                  const opening = openMenu !== "model" && openMenu !== "thinking";
+                  setOpenMenu(opening ? "thinking" : null);
+                  if (opening && !configuration && onPrepareConfiguration) void prepareThinkingConfiguration();
+                }}
               >
-                <span>
+                <span className="composer-model-summary-name">
                   {selectedModel?.name ??
                     (catalogPhase === "loading" ? "正在加载模型" : "选择模型")}
                 </span>
-                <ChevronDown size={13} aria-hidden="true" />
+                {selectedThinkingLevel && <span className="composer-model-summary-level">{thinkingLevelLabel(selectedThinkingLevel)}</span>}
               </button>
               {openMenu === "model" && (
                 <AnchoredComposerMenu
+                  key="model"
                   id="composer-model-menu"
                   anchor={modelTriggerRef.current}
                   menuRef={floatingMenuRef}
-                  className="composer-model-menu"
+                  className="composer-model-popover composer-model-options"
                   ariaLabel="模型列表"
-                  defaultWidth={330}
+                  defaultWidth={282}
                 >
+                  <div onKeyDown={(event) => {
+                    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+                    const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button[role="menuitemradio"]:not(:disabled)'));
+                    if (!items.length) return;
+                    const index = items.indexOf(document.activeElement as HTMLButtonElement);
+                    const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+                      : (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+                    event.preventDefault();
+                    items[next]?.focus();
+                  }}>
+                  <p className="composer-menu-title">选择模型</p>
                   {catalogPhase === "loading" && models.length === 0 ? (
                     <p className="composer-menu-state">
                       <LoaderCircle className="spin" size={15} aria-hidden="true" />
@@ -926,90 +954,56 @@ export function ChatComposer({
                   ) : (
                     modelGroups.map(([provider, providerModels]) => (
                       <div className="composer-menu-group" key={provider}>
-                        <p>{provider}</p>
+                        {modelGroups.length > 1 && <p>{provider}</p>}
                         {providerModels.map((model) => {
                           const selected =
-                            model.provider === configuration?.model?.provider &&
-                            model.id === configuration.model.id;
+                            model.provider === selectedModel?.provider &&
+                            model.id === selectedModel.id;
                           return (
                             <button
                               type="button"
                               role="menuitemradio"
                               aria-checked={selected}
+                              disabled={modelDisabled}
                               key={`${model.provider}/${model.id}`}
                               onClick={() => {
-                                setOpenMenu(null);
-                                onModelChange(model.provider, model.id);
+                                setOpenMenu("thinking");
+                                if (!selected || !configuration) onModelChange(model.provider, model.id);
                               }}
                             >
                               <span>{model.name}</span>
-                              {selected && <Check size={14} aria-hidden="true" />}
+                              {selected && <Check size={18} aria-hidden="true" />}
                             </button>
                           );
                         })}
                       </div>
                     ))
                   )}
+                  </div>
                 </AnchoredComposerMenu>
               )}
-            </div>
-
-            <div className="composer-picker">
-              <button
-                ref={thinkingTriggerRef}
-                className="composer-picker-trigger composer-thinking-trigger"
-                type="button"
-                disabled={thinkingDisabled}
-                aria-label="选择思考强度"
-                aria-haspopup="menu"
-                aria-expanded={openMenu === "thinking"}
-                aria-controls={openMenu === "thinking" ? "composer-thinking-menu" : undefined}
-                onClick={() => {
-                  const opening = openMenu !== "thinking";
-                  setOpenMenu(opening ? "thinking" : null);
-                  if (opening && !configuration) void onPrepareConfiguration?.();
-                }}
-              >
-                <span>{selectedThinkingLevel ? thinkingLevelShortLabel(selectedThinkingLevel) : "思考"}</span>
-                <ChevronDown size={13} aria-hidden="true" />
-              </button>
               {openMenu === "thinking" && (
                 <AnchoredComposerMenu
+                  key="thinking"
                   id="composer-thinking-menu"
-                  anchor={thinkingTriggerRef.current}
+                  anchor={modelTriggerRef.current}
                   menuRef={floatingMenuRef}
-                  className="composer-thinking-menu"
-                  ariaLabel="思考强度列表"
-                  defaultWidth={240}
+                  className="composer-model-popover"
+                  role="dialog"
+                  ariaLabel="模型与思考强度设置"
+                  defaultWidth={282}
                 >
-                  {configuration ? (
-                    <>
-                      <p className="composer-menu-title">思考强度</p>
-                      {configuration.availableThinkingLevels.map((level) => {
-                        const selected = level === configuration.thinkingLevel;
-                        return (
-                          <button
-                            type="button"
-                            role="menuitemradio"
-                            aria-checked={selected}
-                            key={level}
-                            onClick={() => {
-                              setOpenMenu(null);
-                              onThinkingLevelChange(level);
-                            }}
-                          >
-                            <span>{thinkingLevelLabel(level)}</span>
-                            {selected && <Check size={14} aria-hidden="true" />}
-                          </button>
-                        );
-                      })}
-                    </>
-                  ) : (
-                    <p className="composer-menu-state">
-                      <LoaderCircle className="spin" size={15} aria-hidden="true" />
-                      正在读取思考强度
-                    </p>
-                  )}
+                  <ComposerThinkingControl
+                    modelName={selectedModel?.name ?? "选择模型"}
+                    level={selectedThinkingLevel}
+                    availableLevels={configuration?.availableThinkingLevels}
+                    disabled={disabled || streaming}
+                    saving={configuring}
+                    loading={!configuration && configurationPreparation === "loading"}
+                    error={!configuration && configurationPreparation === "error" ? "无法读取思考强度，请关闭后重试" : null}
+                    onSelectModel={() => setOpenMenu("model")}
+                    onChange={onThinkingLevelChange}
+                  />
                 </AnchoredComposerMenu>
               )}
             </div>
@@ -1175,6 +1169,7 @@ interface AnchoredComposerMenuProps {
   align?: "left" | "right";
   defaultWidth?: number;
   maximumHeight?: number;
+  role?: "menu" | "dialog";
 }
 
 function AnchoredComposerMenu({
@@ -1187,6 +1182,7 @@ function AnchoredComposerMenu({
   align = "right",
   defaultWidth = 280,
   maximumHeight = 420,
+  role = "menu",
 }: AnchoredComposerMenuProps) {
   const [menuSize, setMenuSize] = useState({ width: defaultWidth, height: 0 });
 
@@ -1240,7 +1236,7 @@ function AnchoredComposerMenu({
       ref={menuRef}
       id={id}
       className={`composer-menu ${className}`}
-      role="menu"
+      role={role}
       aria-label={ariaLabel}
       data-floating-menu=""
       style={style}
@@ -1339,28 +1335,4 @@ function formatError(error: unknown): string {
     return `${error.code}: ${error.message}`;
   }
   return error instanceof Error ? error.message : String(error);
-}
-
-function thinkingLevelShortLabel(level: ThinkingLevel): string {
-  return {
-    off: "Off",
-    minimal: "Minimal",
-    low: "Low",
-    medium: "Medium",
-    high: "High",
-    xhigh: "XHigh",
-    max: "Max",
-  }[level];
-}
-
-function thinkingLevelLabel(level: ThinkingLevel): string {
-  return {
-    off: "Off",
-    minimal: "Minimal",
-    low: "Low",
-    medium: "Medium",
-    high: "High",
-    xhigh: "XHigh",
-    max: "Max",
-  }[level];
 }

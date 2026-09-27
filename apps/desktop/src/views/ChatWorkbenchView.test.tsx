@@ -1098,6 +1098,7 @@ describe("ChatWorkbenchView", () => {
       ...defaultSession.configuration,
       model: { provider: "anthropic", id: "claude", name: "Claude", reasoning: true },
     });
+    fireEvent.click(screen.getByRole("button", { name: "模型与思考强度" }));
     fireEvent.click(screen.getByRole("button", { name: "选择模型" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: "Claude" }));
     await waitFor(() =>
@@ -1110,8 +1111,10 @@ describe("ChatWorkbenchView", () => {
       ...defaultSession.configuration,
       thinkingLevel: "high",
     });
-    fireEvent.click(screen.getByRole("button", { name: "选择思考强度" }));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "High" }));
+    const slider = screen.getByRole("slider", { name: "思考强度" });
+    await waitFor(() => expect(slider).not.toHaveAttribute("aria-disabled", "true"));
+    fireEvent.change(slider, { target: { value: "2" } });
+    fireEvent.pointerUp(slider);
     await waitFor(() =>
       expect(configureAgentSession).toHaveBeenCalledWith("saved", { thinkingLevel: "high" }),
     );

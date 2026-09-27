@@ -1,0 +1,98 @@
+.composer-picker .composer-model-summary {
+  max-width: min(320px, 48vw);
+  gap: 7px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  color: color-mix(in srgb, var(--text) 50%, var(--surface-raised));
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.composer-model-summary .composer-model-summary-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-model-summary .composer-model-summary-level { flex-shrink: 0; }
+
+.composer-picker .composer-model-summary:not(:disabled):hover,
+.composer-picker .composer-model-summary[aria-expanded="true"] {
+  background: var(--composer-protrusion);
+  color: color-mix(in srgb, var(--text) 50%, var(--surface-raised));
+}
+
+.composer-menu.composer-model-popover {
+  width: 282px;
+  max-width: calc(100vw - 16px);
+  padding: 10px 14px 12px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: var(--surface-raised);
+  box-shadow: 0 6px 16px rgb(0 0 0 / 9%);
+}
+
+.composer-thinking-control { display: grid; justify-items: center; gap: 12px; }
+
+.composer-model-popover .composer-model-card {
+  display: flex;
+  width: auto;
+  min-width: 136px;
+  max-width: 100%;
+  min-height: 50px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  padding: 5px 14px;
+  border-radius: 9px;
+  background: transparent;
+  text-align: center;
+}
+
+.composer-menu.composer-model-popover .composer-model-card:not(:disabled):hover {
+  background: var(--composer-protrusion);
+}
+
+.composer-model-card strong { color: #3298ff; font-size: 17px; font-weight: 600; line-height: 22px; }
+.composer-model-card > span { display: flex; min-width: 0; max-width: 100%; align-items: center; color: var(--subtle); font-size: 14px; line-height: 18px; }
+.composer-model-card > span > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-model-card svg { flex-shrink: 0; }
+
+.composer-thinking-slider { position: relative; width: 100%; height: 36px; }
+.composer-thinking-track { position: absolute; inset: 3px 0; overflow: hidden; border-radius: 999px; background: var(--hover); }
+.composer-thinking-fill { width: var(--thinking-progress); height: 100%; background: #3298ff; border-radius: inherit; }
+.composer-thinking-stops { position: absolute; inset: 0 17px; display: flex; align-items: center; justify-content: space-between; }
+.composer-thinking-stops span { width: 5px; height: 5px; border-radius: 50%; background: #b8b8b8; }
+.composer-thinking-stops span[data-filled="true"] { background: #87c3ff; }
+
+.composer-thinking-slider input {
+  appearance: none;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 36px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+.composer-thinking-slider input::-webkit-slider-runnable-track { height: 36px; background: transparent; }
+.composer-thinking-slider input::-webkit-slider-thumb { appearance: none; width: 34px; height: 34px; margin-top: 1px; border: 1px solid #e6e6e6; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / 14%); }
+.composer-thinking-slider input::-moz-range-track { height: 36px; background: transparent; }
+.composer-thinking-slider input::-moz-range-thumb { width: 32px; height: 32px; border: 1px solid #e6e6e6; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / 14%); }
+.composer-thinking-slider input:focus-visible { outline: 2px solid #3298ff; outline-offset: 3px; }
+.composer-thinking-slider[data-disabled="true"] { opacity: .5; }
+.composer-thinking-slider input:disabled { cursor: not-allowed; }
+
+.composer-menu.composer-model-options { padding: 8px 6px; }
+.composer-model-options .composer-menu-title { margin: 0; padding: 4px 10px 4px; color: color-mix(in srgb, var(--text) 50%, var(--surface-raised)); font-size: 16px; font-weight: 400; line-height: 20px; }
+.composer-model-options .composer-menu-group > p { padding-inline: 10px; }
+.composer-model-options .composer-menu-group > button { min-height: 36px; gap: 10px; padding: 7px 10px; border-radius: 16px; font-size: 14px; font-weight: 400; }
+.composer-model-options button > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-model-options button > svg { flex-shrink: 0; }
+.composer-menu.composer-model-options button[aria-checked="true"],
+.composer-menu.composer-model-options button:not(:disabled):hover { background: var(--composer-protrusion); }
+.composer-model-popover button:focus-visible { outline: 2px solid #3298ff; outline-offset: -2px; }

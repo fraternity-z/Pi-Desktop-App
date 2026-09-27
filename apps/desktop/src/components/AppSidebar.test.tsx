@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
 
@@ -152,6 +152,51 @@ describe("AppSidebar", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
     expect(props.onNewConversation).toHaveBeenCalledWith(undefined);
+  });
+
+  it("项目笔形按钮在目标工作区新建，不受当前活动项目影响", () => {
+    const props = sidebarProps({ recentWorkspaces: [savedSession.cwd, "C:/projects/beta"] });
+    render(<AppSidebar {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "在beta中新建会话" }));
+    expect(props.onNewSession).toHaveBeenCalledWith("C:/projects/beta");
+    expect(props.onNewConversation).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "展开beta" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: "折叠alpha" })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("创建中或运行时不可用时禁用项目快速新建", () => {
+    const props = sidebarProps({ phase: "creating" });
+    const { rerender } = render(<AppSidebar {...props} />);
+    expect(screen.getByRole("button", { name: "在alpha中新建会话" })).toBeDisabled();
+    rerender(<AppSidebar {...props} phase="ready" runtime={{ phase: "loading", refresh: vi.fn() }} />);
+    expect(screen.getByRole("button", { name: "在alpha中新建会话" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "在alpha中新建会话" }));
+    expect(props.onNewSession).not.toHaveBeenCalled();
+  });
+
+  it("悬浮信息按整个项目统计并复用置顶和编辑项目操作", () => {
+    vi.useFakeTimers();
+    const sessions = Array.from({ length: 7 }, (_, index) => ({
+      ...savedSession, id: `session-${index}`, firstMessage: `会话 ${index}`,
+    }));
+    const props = sidebarProps({ sessions, runningSessionIds: ["session-0", "session-6"] });
+    render(<AppSidebar {...props} />);
+    fireEvent.pointerEnter(screen.getByRole("button", { name: "折叠alpha" }));
+    act(() => vi.advanceTimersByTime(400));
+    const card = screen.getByRole("dialog", { name: "alpha" });
+    expect(card).toHaveTextContent("7 个会话 · 2 个运行中");
+    expect(within(card).getByText(savedSession.cwd)).toBeInTheDocument();
+    fireEvent.click(within(card).getByRole("button", { name: "置顶alpha" }));
+    expect(JSON.parse(window.localStorage.getItem("pix.projects.pinned")!)).toEqual(["c:/projects/alpha"]);
+    fireEvent.click(screen.getByRole("button", { name: "在alpha中新建会话" }));
+    expect(props.onNewSession).toHaveBeenCalledWith(savedSession.cwd);
+    fireEvent.pointerEnter(screen.getByRole("button", { name: "折叠alpha" }));
+    act(() => vi.advanceTimersByTime(400));
+    fireEvent.click(screen.getByRole("button", { name: "编辑项目" }));
+    expect(screen.getByRole("dialog", { name: "重命名项目" })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: "名称" }), { target: { value: "Alpha 工作区" } });
+    fireEvent.click(screen.getByRole("button", { name: "确定" }));
+    expect(screen.getByRole("button", { name: "在Alpha 工作区中新建会话" })).toBeInTheDocument();
   });
 
   it("移除最近项目后不会被活动草稿重新加入", async () => {

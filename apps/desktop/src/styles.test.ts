@@ -68,10 +68,11 @@ describe("输入区域焦点提示", () => {
     expect(declarations).not.toMatch(/outline:|var\(--focus\)|0 0 0 2px/);
   });
 
-  it("聊天输入框保留已有中性边框和阴影，不添加蓝色光晕", () => {
+  it("聊天输入框聚焦时仅略微加深浅色边框，不添加蓝色光晕", () => {
     const rules = [...stylesheet.matchAll(/\.composer-frame:focus-within\s*\{([^}]*)\}/g)];
     const declarations = rules.at(-1)?.[1];
-    expect(declarations).toContain("border-color: color-mix(in srgb, var(--muted) 65%, var(--line));");
+    expect(declarations).toContain("border-color: color-mix(in srgb, var(--line) 85%, var(--composer));");
+    expect(declarations).toContain("box-shadow: var(--composer-shadow);");
     expect(declarations).not.toMatch(/outline:|var\(--focus\)|0 0 0 2px/);
   });
 
@@ -79,6 +80,46 @@ describe("输入区域焦点提示", () => {
     expect(stylesheet).toMatch(/button:focus-visible,\s*input:is\(\[type="checkbox"\], \[type="radio"\], \[type="range"\], \[type="color"\]\):focus-visible,\s*select:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--focus\);/s);
     expect(appearanceSettingsStyles).not.toContain(":is(button, select, input):focus-visible");
     expect(appearanceSettingsStyles).toContain('input[type="range"], input[type="color"]):focus-visible { outline: 2px solid var(--focus);');
+  });
+});
+
+describe("侧边栏工作区行对齐", () => {
+  it("项目会话列表不在外层缩进，让会话与文件夹高亮等宽", () => {
+    expect(stylesheet).toMatch(
+      /\.app-sidebar:not\(\.settings-sidebar\) \.project-session-list\s*\{\s*padding:\s*1px 0 4px;\s*\}/s,
+    );
+  });
+
+  it("文件夹图标与高亮框左边缘保留 10px 留白", () => {
+    expect(stylesheet).toMatch(
+      /\.app-sidebar:not\(\.settings-sidebar\) \.project-select\s*\{[^}]*padding:\s*0 3px 0 10px;/s,
+    );
+  });
+
+  it.each([
+    '.session-row[data-indent="true"] .session-row-select',
+    ".project-session-list .session-empty-action",
+    ".project-session-list .sidebar-show-more",
+  ])("%s 只缩进内容，与文件夹标题对齐", (selector) => {
+    const rules = [...stylesheet.matchAll(/([^{}]+)\{([^{}]+)\}/g)]
+      .filter((rule) => rule[1].split(",").some(
+        (part) => part.trim() === `.app-sidebar:not(.settings-sidebar) ${selector}`,
+      ));
+    expect(rules.at(-1)?.[2]).toContain("padding-left: 34px;");
+  });
+});
+
+describe("侧边栏底部系统设置布局", () => {
+  it("使用单列填满底部，不为不存在的按钮预留空列", () => {
+    expect(stylesheet).toMatch(
+      /\.app-sidebar:not\(\.settings-sidebar\) \.sidebar-footer\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/s,
+    );
+  });
+
+  it("与主导航和会话区域共用对称的 12px 左右边距", () => {
+    expect(stylesheet).toMatch(
+      /\.app-sidebar:not\(\.settings-sidebar\) \.sidebar-primary-actions,\s*\.app-sidebar:not\(\.settings-sidebar\) \.sidebar-scroll,\s*\.app-sidebar:not\(\.settings-sidebar\) \.sidebar-footer\s*\{\s*padding-inline:\s*12px;/s,
+    );
   });
 });
 

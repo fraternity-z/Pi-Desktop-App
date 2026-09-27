@@ -205,7 +205,7 @@ $\htmlClass{unsafe}{x}$`}</MarkdownContent>,
     );
 
     expect(screen.getByText("[图片：预览]")).toBeInTheDocument();
-    expect(screen.getByText("ts")).toBeInTheDocument();
+    expect(screen.getByText("TypeScript")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "复制代码" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("const value = 1;"));
   });
@@ -219,7 +219,7 @@ $\htmlClass{unsafe}{x}$`}</MarkdownContent>,
 
     expect(container.querySelector(".markdown-code-block")).toBe(codeBlock);
     expect(codeBlock).toHaveTextContent("const value = 1;");
-    expect(screen.getByText("ts")).toBeInTheDocument();
+    expect(screen.getByText("TypeScript")).toBeInTheDocument();
   });
 
   it("高亮多行代码且未知语言安全降级", () => {

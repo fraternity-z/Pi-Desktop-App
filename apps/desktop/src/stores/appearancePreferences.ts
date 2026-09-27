@@ -113,10 +113,12 @@ export function applyAppearanceColors(profile: AppearanceProfile, mode: Resolved
   const { background, foreground, accent } = appearanceColors(profile, mode);
   const mix = (amount: number) => blendHex(background, foreground, amount);
   const surface = mix(0.025);
+  const raisedSurface = blendHex(mode === "dark" ? mix(0.04) : background, accent, 0.01);
   const tokens: Record<string, string> = {
-    canvas: background, panel: background, surface: background, "surface-panel": background,
-    "surface-raised": background, "surface-raised-translucent": `${background}F5`,
-    sidebar: surface, "surface-subtle": surface, composer: background, "input-bg": background,
+    canvas: background, panel: background, surface: blendHex(background, accent, 0.015),
+    "surface-panel": blendHex(background, accent, 0.01),
+    "surface-raised": raisedSurface, "surface-raised-translucent": `${raisedSurface}F5`,
+    sidebar: surface, "surface-subtle": blendHex(surface, accent, 0.02), composer: background, "input-bg": background,
     "composer-protrusion": surface, "user-bubble": mix(0.055), "code-bg": surface,
     text: foreground, "code-text": foreground, muted: mix(0.65), subtle: mix(0.56),
     line: mix(0.05 + profile.contrast * 0.0008), "line-strong": mix(0.15 + profile.contrast * 0.002),

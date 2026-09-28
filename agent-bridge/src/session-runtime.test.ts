@@ -6,6 +6,17 @@ import { performance } from "node:perf_hooks";
 import { describe, expect, it, vi } from "vitest";
 import { readPackageVersion } from "./package-version.js";
 import { REVIEW_ENTRY, type ReviewExtensionApi, type ReviewExtensionFactory, type SessionReviewSummary } from "./session-review.js";
+import { PERMISSION_ENTRY, type PermissionExtensionApi, type PermissionExtensionFactory, type PermissionToolEvent } from "./tool-permissions.js";
+
+type PermissionLoaderOptions = ConstructorParameters<NonNullable<PiSdkLike["DefaultResourceLoader"]>>[0];
+function registerPermissions(options: PermissionLoaderOptions): void {
+  const factory = options.extensionFactories.find((extension) => extension.name === "pi-desktop-tool-permissions")?.factory as PermissionExtensionFactory | undefined;
+  factory?.({ on: () => undefined });
+}
+class PermissionLoaderMock {
+  constructor(protected readonly options: PermissionLoaderOptions) {}
+  async reload(): Promise<void> { registerPermissions(this.options); }
+}
 
 vi.mock("./package-version.js", () => ({ readPackageVersion: vi.fn(async () => undefined) }));
 
@@ -239,6 +250,7 @@ function sdkReturning(...sessions: SessionMock[]): PiSdkLike & {
   });
   return {
     createAgentSession,
+    DefaultResourceLoader: PermissionLoaderMock,
     ModelRuntime: { create: vi.fn(async () => modelRuntime) },
     SessionManager: {
       create: vi.fn((cwd: string) => ({ getCwd: () => cwd })),
@@ -251,10 +263,132 @@ function sdkReturning(...sessions: SessionMock[]): PiSdkLike & {
 }
 
 describe("PiSessionRuntime", () => {
+  function permissionRuntime(entries: unknown[] = []) {
+    const cwd = process.cwd();
+    const mock = createSessionMock("permission-session", { sessionFile: join(cwd, "permissions.jsonl") });
+    const sdk = sdkReturning(mock);
+    const manager = {
+      getCwd: () => cwd,
+      getSessionId: () => "permission-session",
+      getBranch: () => entries,
+      appendCustomEntry: vi.fn((customType: string, data: unknown) => { entries.push({ type: "custom", customType, data: structuredClone(data) }); }),
+    };
+    sdk.SessionManager.create = () => manager;
+    sdk.SessionManager.open = () => manager;
+    let hook!: Parameters<PermissionExtensionApi["on"]>[1];
+    sdk.DefaultResourceLoader = class {
+      constructor(private readonly options: PermissionLoaderOptions) {}
+      async reload(): Promise<void> {
+        const extension = this.options.extensionFactories.find((item) => item.name === "pi-desktop-tool-permissions")!;
+        expect(extension.hidden).toBe(true);
+        (extension.factory as PermissionExtensionFactory)({ on: (event, handler) => { expect(event).toBe("tool_call"); hook = handler; } });
+      }
+    };
+    const runtime = new PiSessionRuntime(sdk, cwd);
+    const events: RuntimeEvent[] = [];
+    runtime.subscribe((event) => events.push(event));
+    const execute = vi.fn();
+    const call = (event: PermissionToolEvent) => hook(event, { sessionManager: manager });
+    mock.prompt.mockImplementation(async () => {
+      const result = await call({ toolName: "bash", toolCallId: "run-1", input: { command: "echo approved" } });
+      if (!result?.block) execute();
+    });
+    return { runtime, mock, manager, events, execute, call, cwd };
+  }
+
+  it("通过实际隐藏扩展暂停 prompt，回复后执行，并拒绝审批期间变更模式", async () => {
+    const f = permissionRuntime();
+    try {
+      await f.runtime.createSession(f.cwd);
+      const pending = f.runtime.prompt("permission-session", "run");
+      await vi.waitFor(() => expect(f.runtime.listPermissions("permission-session")).toHaveLength(1));
+      expect(f.execute).not.toHaveBeenCalled();
+      const request = f.runtime.listPermissions("permission-session")[0]!;
+      expect(request.summary).toContain("echo approved");
+      expect(f.events).toContainEqual({ sessionId: "permission-session", name: "permission.requested", data: request });
+      await expect(f.runtime.configureSession("permission-session", { permissionMode: "auto" })).rejects.toMatchObject({ code: "SESSION_BUSY" });
+      await expect(f.runtime.prompt("permission-session", "elevate", undefined, undefined, undefined, "auto")).rejects.toMatchObject({ code: "SESSION_BUSY" });
+      expect(f.manager.appendCustomEntry).not.toHaveBeenCalled();
+      f.runtime.replyPermission("permission-session", request.requestId, "allow-once");
+      await pending;
+      expect(f.execute).toHaveBeenCalledOnce();
+      expect(f.runtime.listPermissions("permission-session")).toEqual([]);
+      expect(f.events).toContainEqual({ sessionId: "permission-session", name: "permission.resolved", data: { requestId: request.requestId, decision: "allow-once" } });
+      expect(() => f.runtime.replyPermission("permission-session", request.requestId, "allow-once")).toThrowError(expect.objectContaining({ code: "PERMISSION_REQUEST_EXPIRED" }));
+    } finally { await f.runtime.shutdown(); }
+  });
+
+  it("停止任务取消审批，旧回复不能执行工具，后续 prompt 重新审批", async () => {
+    const f = permissionRuntime();
+    try {
+      await f.runtime.createSession(f.cwd);
+      const pending = f.runtime.prompt("permission-session", "run");
+      await vi.waitFor(() => expect(f.runtime.listPermissions("permission-session")).toHaveLength(1));
+      const id = f.runtime.listPermissions("permission-session")[0]!.requestId;
+      await f.runtime.abort("permission-session");
+      await pending;
+      expect(f.mock.abort).toHaveBeenCalledOnce();
+      expect(f.execute).not.toHaveBeenCalled();
+      expect(() => f.runtime.replyPermission("permission-session", id, "allow-session")).toThrowError(expect.objectContaining({ code: "PERMISSION_REQUEST_EXPIRED" }));
+      const next = f.runtime.prompt("permission-session", "retry");
+      await vi.waitFor(() => expect(f.runtime.listPermissions("permission-session")).toHaveLength(1));
+      f.runtime.replyPermission("permission-session", f.runtime.listPermissions("permission-session")[0]!.requestId, "deny");
+      await next;
+      expect(f.execute).not.toHaveBeenCalled();
+    } finally { await f.runtime.shutdown(); }
+  });
+
+  it("保存并恢复原生会话权限模式，内存授权不会写入记录", async () => {
+    const entries: unknown[] = [];
+    const initial = permissionRuntime(entries);
+    try {
+      await initial.runtime.createSession(initial.cwd);
+      expect(await initial.runtime.configureSession("permission-session", { permissionMode: "ask" })).toMatchObject({ permissionMode: "ask" });
+      const pending = initial.runtime.prompt("permission-session", "run");
+      await vi.waitFor(() => expect(initial.runtime.listPermissions("permission-session")).toHaveLength(1));
+      initial.runtime.replyPermission("permission-session", initial.runtime.listPermissions("permission-session")[0]!.requestId, "allow-session");
+      await pending;
+      expect(entries).toEqual([{ type: "custom", customType: PERMISSION_ENTRY, data: { permissionMode: "ask" } }]);
+    } finally { await initial.runtime.shutdown(); }
+    const restored = permissionRuntime(entries);
+    try {
+      expect(await restored.runtime.openSession(join(restored.cwd, "permissions.jsonl"))).toMatchObject({ configuration: { permissionMode: "ask" } });
+      const pending = restored.runtime.prompt("permission-session", "run");
+      await vi.waitFor(() => expect(restored.runtime.listPermissions("permission-session")).toHaveLength(1));
+      await restored.runtime.abort("permission-session");
+      await pending;
+      expect(restored.execute).not.toHaveBeenCalled();
+    } finally { await restored.runtime.shutdown(); }
+  });
+
+  it("审批仅包含脱敏的命令或路径，省略文件内容并限制摘要长度", async () => {
+    const f = permissionRuntime();
+    try {
+      await f.runtime.createSession(f.cwd);
+      const pending = f.call({ toolName: "bash", toolCallId: "secrets", input: { command: 'curl https://demo:URL_PRIVATE@example.invalid --token CLI_PRIVATE --api-key=KEY_PRIVATE --password "TWO PRIVATE" -u BASIC_PRIVATE token=ASSIGN_PRIVATE', content: "FILE_PRIVATE", apiKey: "FIELD_PRIVATE" } });
+      const summary = f.runtime.listPermissions("permission-session")[0]!.summary;
+      expect(summary).toContain("curl");
+      expect(summary).toContain("example.invalid");
+      expect(summary).toContain("[REDACTED]");
+      expect(summary).not.toMatch(/URL_PRIVATE|CLI_PRIVATE|KEY_PRIVATE|TWO PRIVATE|BASIC_PRIVATE|ASSIGN_PRIVATE|FILE_PRIVATE|FIELD_PRIVATE/);
+      f.runtime.replyPermission("permission-session", f.runtime.listPermissions("permission-session")[0]!.requestId, "deny");
+      await pending;
+      const pathCall = f.call({ toolName: "custom_write", toolCallId: "path", input: { path: "review.txt", content: "FILE_PRIVATE", oldText: "OLD_PRIVATE", newText: "NEW_PRIVATE" } });
+      expect(f.runtime.listPermissions("permission-session")[0]!.summary).toContain("review.txt");
+      expect(f.runtime.listPermissions("permission-session")[0]!.summary).not.toMatch(/PRIVATE|content|oldText|newText/);
+      f.runtime.replyPermission("permission-session", f.runtime.listPermissions("permission-session")[0]!.requestId, "deny");
+      await pathCall;
+      const largeCall = f.call({ toolName: "bash", toolCallId: "large", input: { command: "echo " + "x".repeat(5000) } });
+      expect(f.runtime.listPermissions("permission-session")[0]!.summary).toHaveLength(4096);
+      await f.runtime.abort("permission-session");
+      await largeCall;
+    } finally { await f.runtime.shutdown(); }
+  });
+
   it.each(["identity", "branch"])("审查恢复 %s 失败时释放会话并隐藏 SDK 错误细节", async (failure) => {
     const mock = createSessionMock();
     const sdk = sdkReturning(mock);
-    sdk.DefaultResourceLoader = class { async reload(): Promise<void> {} };
+    sdk.DefaultResourceLoader = PermissionLoaderMock;
     sdk.SessionManager.create = () => ({
       getCwd: () => "C:\\work",
       getSessionId: () => failure === "identity" ? "other-session" : "s-1",
@@ -288,6 +422,7 @@ describe("PiSessionRuntime", () => {
       sdk.DefaultResourceLoader = class {
         constructor(private readonly options: LoaderOptions) {}
         async reload(): Promise<void> {
+          registerPermissions(this.options);
           const factory = this.options.extensionFactories.find((extension) => extension.name === "pi-desktop-file-review")!.factory as ReviewExtensionFactory;
           factory({
             on: (event, handler) => { handlers.set(event, handler); },
@@ -446,10 +581,8 @@ describe("PiSessionRuntime", () => {
     type LoaderOptions = ConstructorParameters<
       NonNullable<PiSdkLike["DefaultResourceLoader"]>
     >[0];
-    sdk.DefaultResourceLoader = class {
-      constructor(_options: LoaderOptions) {}
-
-      async reload(): Promise<void> {}
+    sdk.DefaultResourceLoader = class extends PermissionLoaderMock {
+      constructor(options: LoaderOptions) { super(options); }
 
       getSkills() {
         return {
@@ -1147,12 +1280,14 @@ describe("PiSessionRuntime", () => {
     >[0];
     let extensionFactory: RequestHeaderExtensionFactory | undefined;
     const reload = vi.fn(async () => undefined);
-    sdk.DefaultResourceLoader = class {
+    sdk.DefaultResourceLoader = class extends PermissionLoaderMock {
       constructor(options: LoaderOptions) {
-        extensionFactory = options.extensionFactories[0]?.factory as RequestHeaderExtensionFactory;
+        super(options);
+        extensionFactory = options.extensionFactories.find((extension) => extension.name === "pi-desktop-request-headers")?.factory as RequestHeaderExtensionFactory;
       }
 
       reload(): Promise<void> {
+        registerPermissions(this.options);
         return reload();
       }
     };
@@ -1190,6 +1325,7 @@ describe("PiSessionRuntime", () => {
   it("开启请求头伪装时拒绝不支持资源加载器的 SDK", () => {
     const runtime = new PiSessionRuntime(sdkReturning(createSessionMock()), "C:\\agent");
 
+    delete (runtime as unknown as { sdk: PiSdkLike }).sdk.DefaultResourceLoader;
     expect(() =>
       runtime.configureRequestHeaders({ enabled: true, client: "claude-code" }),
     ).toThrowError(expect.objectContaining<Partial<RuntimeError>>({ code: "REQUEST_HEADERS_UNSUPPORTED" }));
@@ -1197,7 +1333,7 @@ describe("PiSessionRuntime", () => {
 
   it("通过官方 SDK 管理插件、启用状态、更新与资源清单", async () => {
     const sessionMock = createSessionMock();
-    const reloadSession = vi.fn(async () => undefined);
+    const reloadSession = vi.fn(async () => { await sessionMock.session.resourceLoader?.reload(); });
     sessionMock.session.reload = reloadSession;
     const sdk = sdkReturning(sessionMock);
     let globalPackages: unknown[] = ["npm:pi-global"];
@@ -1246,8 +1382,9 @@ describe("PiSessionRuntime", () => {
       checkForAvailableUpdates = checkForAvailableUpdates;
     };
     const reloadResource = vi.fn(async () => undefined);
-    sdk.DefaultResourceLoader = class {
-      reload = reloadResource;
+    sdk.DefaultResourceLoader = class extends PermissionLoaderMock {
+      constructor(options: PermissionLoaderOptions) { super(options); Object.defineProperty(sessionMock.session, "resourceLoader", { value: this, configurable: true }); }
+      async reload(): Promise<void> { registerPermissions(this.options); await reloadResource(); }
       getExtensions = () => ({
         extensions: [
           {
@@ -1320,7 +1457,7 @@ describe("PiSessionRuntime", () => {
       { kind: "context", name: "AGENTS.md", path: "C:\\work\\AGENTS.md" },
     ]);
     expect(reloadSession).toHaveBeenCalledTimes(5);
-    expect(reloadResource).toHaveBeenCalledOnce();
+    expect(reloadResource).toHaveBeenCalledTimes(6);
   });
 
   it("打开持久会话、恢复富文本历史并保留此前会话", async () => {
@@ -1555,6 +1692,7 @@ describe("PiSessionRuntime", () => {
       }),
     ).resolves.toEqual({
       model: { ...plainModel, name: "plain" },
+      permissionMode: "accept-edits",
       thinkingLevel: "off",
       availableThinkingLevels: ["off"],
       availableTools: [
@@ -1754,6 +1892,7 @@ describe("PiSessionRuntime", () => {
         streaming: false,
         configuration: {
           model: null,
+          permissionMode: "accept-edits",
           thinkingLevel: "off",
           availableThinkingLevels: ["off"],
           availableTools: [

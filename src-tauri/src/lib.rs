@@ -228,6 +228,8 @@ pub fn run() {
             commands::runtime::agent_list_resources,
             commands::runtime::agent_list_commands,
             commands::runtime::agent_configure_session,
+            commands::runtime::agent_reply_permission,
+            commands::runtime::agent_list_permission_requests,
             commands::runtime::agent_prompt,
             commands::runtime::agent_clear_queue,
             commands::runtime::agent_abort,

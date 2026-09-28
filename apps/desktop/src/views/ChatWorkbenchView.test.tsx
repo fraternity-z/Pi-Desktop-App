@@ -15,12 +15,14 @@ import {
   installAgentPackage,
   listAgentCommands,
   listAgentModels,
+  listAgentPermissionRequests,
   listAgentPackages,
   listAgentResources,
   listAgentSessions,
   listenToAgentEvents,
   openAgentSession,
   promptAgent,
+  replyAgentPermission,
   removeAgentPackage,
   setAgentPackageEnabled,
   type AgentEvent,
@@ -80,7 +82,8 @@ function finishStartupWriting() {
   }
 }
 
-vi.mock("../ipc/agent", () => ({
+vi.mock("../ipc/agent", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../ipc/agent")>(),
   abortAgent: vi.fn(),
   clampThinkingLevel: (requested: unknown, available: string[]) => {
     const ordered = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -105,6 +108,8 @@ vi.mock("../ipc/agent", () => ({
   installAgentPackage: vi.fn(),
   listAgentCommands: vi.fn(),
   listAgentModels: vi.fn(),
+  listAgentPermissionRequests: vi.fn(),
+  replyAgentPermission: vi.fn(),
   listAgentPackages: vi.fn(),
   listAgentResources: vi.fn(),
   listAgentSessions: vi.fn(),
@@ -217,6 +222,8 @@ describe("ChatWorkbenchView", () => {
   let unlisten: Mock<() => void>;
 
   beforeEach(() => {
+    vi.mocked(listAgentPermissionRequests).mockReset().mockResolvedValue([]);
+    vi.mocked(replyAgentPermission).mockReset().mockResolvedValue(undefined);
     window.localStorage.clear();
     vi.mocked(selectAttachmentFiles).mockReset().mockResolvedValue([]);
     vi.mocked(getProxySettings).mockReset().mockResolvedValue(DEFAULT_PROXY_SETTINGS);
@@ -1233,7 +1240,7 @@ describe("ChatWorkbenchView", () => {
     );
   });
 
-  it("将用户选择的 SDK 工具权限随提示提交并持久化", async () => {
+  it("通过会话配置确认权限模式，并保持工具白名单独立", async () => {
     vi.mocked(getWorkspaceState).mockResolvedValueOnce({
       recentWorkspaces: ["C:\\work"],
       lastWorkspace: null,
@@ -1256,18 +1263,37 @@ describe("ChatWorkbenchView", () => {
     fireEvent.click(await screen.findByTitle("权限任务"));
     await screen.findByText("saved prompt");
     fireEvent.click(screen.getByRole("button", { name: "选择工具权限" }));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: /自动审核/ }));
+    vi.mocked(configureAgentSession).mockResolvedValueOnce({
+      ...defaultSession.configuration, permissionMode: "ask",
+    });
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /每次询问/ }));
+    await waitFor(() => expect(configureAgentSession).toHaveBeenCalledWith("saved", { permissionMode: "ask" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "选择工具权限" })).toHaveTextContent("每次询问"));
     fireEvent.change(screen.getByLabelText("发送给 Pi 的消息"), {
       target: { value: "只读检查" },
     });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
 
     await waitFor(() =>
-      expect(promptAgent).toHaveBeenCalledWith("saved", "只读检查", undefined, ["read"]),
+      expect(promptAgent).toHaveBeenCalledWith("saved", "只读检查", undefined, defaultToolNames),
     );
-    expect(window.localStorage.getItem("pi-desktop.tool-permissions.v1")).toContain(
-      '"mode":"custom"',
-    );
+    expect(window.localStorage.getItem("pi-desktop.tool-permissions.v1")).not.toContain('"mode":"custom"');
+  });
+
+  it("将真实授权事件展示为弹窗并按会话回复", async () => {
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    await addProject("C:\\work");
+    fireEvent.change(await screen.findByLabelText("发送给 Pi 的消息"), { target: { value: "run tests" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(listAgentPermissionRequests).toHaveBeenCalledWith("s-1"));
+    act(() => emitAgentEvent?.(agentEvent("permission.requested", { requestId: "r-1", toolCallId: "t-1", toolName: "bash",
+      summary: "pnpm test", expiresAt: new Date(Date.now() + 120_000).toISOString() }, 1)));
+    const dialog = await screen.findByRole("dialog", { name: "工具执行需要授权" });
+    expect(dialog).toHaveTextContent("pnpm test");
+    fireEvent.click(within(dialog).getByRole("button", { name: "仅允许一次" }));
+    await waitFor(() => expect(replyAgentPermission).toHaveBeenCalledExactlyOnceWith("s-1", "r-1", "allow-once"));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "工具执行需要授权" })).not.toBeInTheDocument());
   });
 
   it("任务完成但没有文本时展示明确空结果", async () => {

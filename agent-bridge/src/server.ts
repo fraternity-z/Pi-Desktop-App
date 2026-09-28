@@ -9,6 +9,7 @@ import {
 import { RuntimeError, type SessionRuntime } from "./session-runtime.js";
 import { ProviderSettingsError } from "./provider-config.js";
 import { ReviewError } from "./session-review.js";
+import { PermissionError } from "./tool-permissions.js";
 
 export class BridgeServer {
   private sequence = 0;
@@ -45,6 +46,14 @@ export class BridgeServer {
       let data: unknown;
 
       switch (request.op) {
+        case "permission.list":
+          if (!this.runtime.listPermissions) throw new RuntimeError("TOOL_PERMISSIONS_UNSUPPORTED", "当前运行时不支持工具审批");
+          data = this.runtime.listPermissions(request.sessionId);
+          break;
+        case "permission.reply":
+          if (!this.runtime.replyPermission) throw new RuntimeError("TOOL_PERMISSIONS_UNSUPPORTED", "当前运行时不支持工具审批");
+          this.runtime.replyPermission(request.sessionId, request.requestId, request.decision);
+          break;
         case "provider.list":
           data = await this.providers().snapshot(request.refresh);
           break;
@@ -133,6 +142,7 @@ export class BridgeServer {
           break;
         case "session.configure":
           data = await this.runtime.configureSession(request.sessionId, {
+            ...(request.permissionMode === undefined ? {} : { permissionMode: request.permissionMode }),
             ...(request.model === undefined ? {} : { model: request.model }),
             ...(request.thinkingLevel === undefined
               ? {}
@@ -158,6 +168,7 @@ export class BridgeServer {
             request.streamingBehavior,
             request.activeTools,
             request.imagePaths,
+            request.permissionMode,
           );
           data = { finalSeq: this.sequence };
           break;
@@ -196,7 +207,7 @@ export class BridgeServer {
   }
 
   private failureResponse(id: string, error: unknown): BridgeResponse {
-    if (error instanceof ProtocolError || error instanceof RuntimeError || error instanceof ProviderSettingsError || error instanceof ReviewError) {
+    if (error instanceof ProtocolError || error instanceof RuntimeError || error instanceof ProviderSettingsError || error instanceof ReviewError || error instanceof PermissionError) {
       return {
         v: PROTOCOL_VERSION,
         kind: "response",

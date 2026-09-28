@@ -59,6 +59,8 @@ export const BRIDGE_OPERATIONS = [
   "session.review.detail",
   "session.review.rollback",
   "session.configure",
+  "permission.list",
+  "permission.reply",
   "prompt",
   "queue.clear",
   "abort",
@@ -92,6 +94,8 @@ export type BridgeOperation = (typeof BRIDGE_OPERATIONS)[number];
 export type BridgeCapability = (typeof BRIDGE_CAPABILITIES)[number];
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export type PromptStreamingBehavior = "steer" | "followUp";
+export type PermissionMode = "ask" | "accept-edits" | "auto";
+export type PermissionDecision = "deny" | "allow-once" | "allow-session";
 export type PackageScope = "global" | "project";
 export type SlashCommandSource = "extension" | "prompt" | "skill";
 
@@ -113,6 +117,8 @@ interface RequestBase {
 }
 
 export type BridgeRequest =
+  | (RequestBase & { op: "permission.list"; sessionId: string })
+  | (RequestBase & { op: "permission.reply"; sessionId: string; requestId: string; decision: PermissionDecision })
   | (RequestBase & { op: "provider.list"; refresh: boolean })
   | (RequestBase & { op: "provider.login.start" | "provider.logout"; provider: string })
   | (RequestBase & { op: "provider.login.status" | "provider.login.cancel"; loginId: string })
@@ -148,6 +154,7 @@ export type BridgeRequest =
       sessionId: string;
       model?: ModelSelection;
       thinkingLevel?: ThinkingLevel;
+      permissionMode?: PermissionMode;
     })
   | (RequestBase & {
       op: "prompt";
@@ -156,6 +163,7 @@ export type BridgeRequest =
       streamingBehavior?: PromptStreamingBehavior;
       activeTools?: string[];
       imagePaths?: string[];
+      permissionMode?: PermissionMode;
     })
   | (RequestBase & { op: "queue.clear"; sessionId: string })
   | (RequestBase & { op: "abort"; sessionId: string });
@@ -263,6 +271,14 @@ function readThinkingLevel(value: Record<string, unknown>): ThinkingLevel | unde
     throw new ProtocolError("INVALID_REQUEST", "thinkingLevel 不是受支持的思考强度");
   }
   return value.thinkingLevel as ThinkingLevel;
+}
+
+function readPermissionMode(value: Record<string, unknown>): PermissionMode | undefined {
+  if (value.permissionMode === undefined) return undefined;
+  if (value.permissionMode !== "ask" && value.permissionMode !== "accept-edits" && value.permissionMode !== "auto") {
+    throw new ProtocolError("INVALID_REQUEST", "permissionMode 必须为 ask、accept-edits 或 auto");
+  }
+  return value.permissionMode;
 }
 
 function readStreamingBehavior(
@@ -420,6 +436,13 @@ export function parseRequest(line: string): BridgeRequest {
   }
 
   switch (value.op as BridgeOperation) {
+    case "permission.list":
+      return { v: PROTOCOL_VERSION, id, op: "permission.list", sessionId: requireSessionId(value) };
+    case "permission.reply": {
+      const requestId = requireString(value, "requestId", 128);
+      if (!requestId.trim() || /[\x00-\x1f]/.test(requestId) || (value.decision !== "deny" && value.decision !== "allow-once" && value.decision !== "allow-session")) throw new ProtocolError("INVALID_REQUEST", "审批请求或决定无效");
+      return { v: PROTOCOL_VERSION, id, op: "permission.reply", sessionId: requireSessionId(value), requestId, decision: value.decision };
+    }
     case "provider.list":
       if (value.refresh !== undefined && typeof value.refresh !== "boolean") throw new ProtocolError("INVALID_REQUEST", "refresh 必须为布尔值");
       return { v: PROTOCOL_VERSION, id, op: "provider.list", refresh: value.refresh === true };
@@ -536,7 +559,8 @@ export function parseRequest(line: string): BridgeRequest {
     case "session.configure": {
       const model = readModelSelection(value);
       const thinkingLevel = readThinkingLevel(value);
-      if (model === undefined && thinkingLevel === undefined) {
+      const permissionMode = readPermissionMode(value);
+      if (model === undefined && thinkingLevel === undefined && permissionMode === undefined) {
         throw new ProtocolError("INVALID_REQUEST", "会话配置至少需要一个变更项");
       }
       return {
@@ -546,12 +570,14 @@ export function parseRequest(line: string): BridgeRequest {
         sessionId: requireSessionId(value),
         ...(model === undefined ? {} : { model }),
         ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+        ...(permissionMode === undefined ? {} : { permissionMode }),
       };
     }
     case "prompt": {
       const streamingBehavior = readStreamingBehavior(value);
       const activeTools = readActiveTools(value);
       const imagePaths = readImagePaths(value);
+      const permissionMode = readPermissionMode(value);
       return {
         v: PROTOCOL_VERSION,
         id,
@@ -561,6 +587,7 @@ export function parseRequest(line: string): BridgeRequest {
         ...(streamingBehavior === undefined ? {} : { streamingBehavior }),
         ...(activeTools === undefined ? {} : { activeTools }),
         ...(imagePaths === undefined ? {} : { imagePaths }),
+        ...(permissionMode === undefined ? {} : { permissionMode }),
       };
     }
     case "queue.clear":

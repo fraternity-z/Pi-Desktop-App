@@ -16,9 +16,10 @@ use crate::{
     bridge::{
         protocol::{
             AgentModel, AgentSessionSummary, CreatedSession, DeleteSessionsResult, PackageScope,
-            PackageSummary, PackageUpdateInfo, PromptStreamingBehavior, RequestHeaderSettings,
-            ResourceSummary, SessionConfiguration, SessionConfigurationUpdate,
-            SessionReviewRequest, SlashCommandSummary, THINKING_LEVELS,
+            PackageSummary, PackageUpdateInfo, PermissionDecision, PermissionMode,
+            PermissionRequest, PromptStreamingBehavior, RequestHeaderSettings, ResourceSummary,
+            SessionConfiguration, SessionConfigurationUpdate, SessionReviewRequest,
+            SlashCommandSummary, THINKING_LEVELS, valid_permission_id,
         },
         supervisor::{
             BridgeEventSink, BridgeFaultSink, BridgeLaunchConfig, BridgeSupervisor,
@@ -586,6 +587,7 @@ impl BridgeRuntime {
                     .as_ref()
                     .map(|model| (model.provider.as_str(), model.id.as_str())),
                 update.thinking_level.as_deref(),
+                update.permission_mode,
             )
         })
     }
@@ -598,6 +600,7 @@ impl BridgeRuntime {
         active_tools: Option<Vec<String>>,
         image_paths: Option<Vec<String>>,
         image_root: Option<PathBuf>,
+        permission_mode: Option<PermissionMode>,
     ) -> Result<u64, AppError> {
         ensure_valid_prompt(&text)?;
         validate_active_tools(active_tools.as_deref())?;
@@ -611,8 +614,35 @@ impl BridgeRuntime {
                 streaming_behavior.as_ref(),
                 active_tools.as_deref(),
                 image_paths.as_deref(),
+                permission_mode,
             )
         })
+    }
+
+    pub fn reply_permission(
+        &self,
+        session_id: String,
+        request_id: String,
+        decision: PermissionDecision,
+    ) -> Result<(), AppError> {
+        self.ensure_known_session(&session_id)?;
+        if !valid_permission_id(&request_id) {
+            return Err(AppError::new(
+                "PERMISSION_REQUEST_INVALID",
+                "审批请求 id 无效",
+            ));
+        }
+        self.with_supervisor(|supervisor| {
+            supervisor.reply_permission(&session_id, &request_id, decision)
+        })
+    }
+
+    pub fn list_permission_requests(
+        &self,
+        session_id: String,
+    ) -> Result<Vec<PermissionRequest>, AppError> {
+        self.ensure_known_session(&session_id)?;
+        self.with_supervisor(|supervisor| supervisor.list_permission_requests(&session_id))
     }
 
     pub fn clear_queue(&self, session_id: String) -> Result<(), AppError> {
@@ -1096,7 +1126,8 @@ fn canonical_session_path(path: &Path) -> Result<PathBuf, AppError> {
 fn validate_session_configuration_update(
     update: &SessionConfigurationUpdate,
 ) -> Result<(), AppError> {
-    if update.model.is_none() && update.thinking_level.is_none() {
+    if update.model.is_none() && update.thinking_level.is_none() && update.permission_mode.is_none()
+    {
         return Err(AppError::new(
             "SESSION_CONFIG_INVALID",
             "会话配置至少需要一个变更项",
@@ -1996,9 +2027,22 @@ mod tests {
 
     #[test]
     fn validates_session_configuration_boundaries() {
+        for mode in [
+            PermissionMode::Ask,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Auto,
+        ] {
+            let update = SessionConfigurationUpdate {
+                model: None,
+                thinking_level: None,
+                permission_mode: Some(mode),
+            };
+            assert_eq!(validate_session_configuration_update(&update), Ok(()));
+        }
         let valid = SessionConfigurationUpdate {
             model: None,
             thinking_level: Some("high".to_owned()),
+            permission_mode: None,
         };
         assert_eq!(validate_session_configuration_update(&valid), Ok(()));
 
@@ -2006,6 +2050,7 @@ mod tests {
             let extended = SessionConfigurationUpdate {
                 model: None,
                 thinking_level: Some(level.to_owned()),
+                permission_mode: None,
             };
             assert_eq!(validate_session_configuration_update(&extended), Ok(()));
         }
@@ -2013,6 +2058,7 @@ mod tests {
         let empty = SessionConfigurationUpdate {
             model: None,
             thinking_level: None,
+            permission_mode: None,
         };
         assert_eq!(
             validate_session_configuration_update(&empty)
@@ -2024,6 +2070,7 @@ mod tests {
         let invalid_level = SessionConfigurationUpdate {
             model: None,
             thinking_level: Some("ultra".to_owned()),
+            permission_mode: None,
         };
         assert_eq!(
             validate_session_configuration_update(&invalid_level)

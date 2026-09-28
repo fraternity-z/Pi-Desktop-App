@@ -9,8 +9,9 @@ use crate::{
     bridge::{
         protocol::{
             AgentModel, AgentSessionSummary, CreatedSession, DeleteSessionsResult, PackageScope,
-            PackageSummary, PackageUpdateInfo, PromptStreamingBehavior, ResourceSummary,
-            SessionConfiguration, SessionConfigurationUpdate, SlashCommandSummary,
+            PackageSummary, PackageUpdateInfo, PermissionDecision, PermissionMode,
+            PermissionRequest, PromptStreamingBehavior, ResourceSummary, SessionConfiguration,
+            SessionConfigurationUpdate, SlashCommandSummary,
         },
         runtime::{BridgeRuntime, RestartRequest, RuntimeSnapshot},
     },
@@ -237,6 +238,7 @@ pub async fn agent_prompt(
     streaming_behavior: Option<PromptStreamingBehavior>,
     active_tools: Option<Vec<String>>,
     image_paths: Option<Vec<String>>,
+    permission_mode: Option<PermissionMode>,
 ) -> Result<u64, AppError> {
     run_runtime(app, move |app, runtime| {
         let image_root = if image_paths.is_some() {
@@ -258,6 +260,7 @@ pub async fn agent_prompt(
             active_tools,
             image_paths,
             image_root,
+            permission_mode,
         )
     })
     .await
@@ -266,6 +269,30 @@ pub async fn agent_prompt(
 #[tauri::command]
 pub async fn agent_clear_queue(app: AppHandle, session_id: String) -> Result<(), AppError> {
     run_runtime(app, move |_, runtime| runtime.clear_queue(session_id)).await
+}
+
+#[tauri::command]
+pub async fn agent_reply_permission(
+    app: AppHandle,
+    session_id: String,
+    request_id: String,
+    decision: PermissionDecision,
+) -> Result<(), AppError> {
+    run_runtime(app, move |_, runtime| {
+        runtime.reply_permission(session_id, request_id, decision)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn agent_list_permission_requests(
+    app: AppHandle,
+    session_id: String,
+) -> Result<Vec<PermissionRequest>, AppError> {
+    run_runtime(app, move |_, runtime| {
+        runtime.list_permission_requests(session_id)
+    })
+    .await
 }
 
 #[tauri::command]

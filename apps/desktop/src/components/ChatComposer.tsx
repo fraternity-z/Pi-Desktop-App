@@ -17,7 +17,6 @@ import {
   Shield,
   ShieldAlert,
   ShieldCheck,
-  ShieldOff,
   Sparkles,
   Square,
   X,
@@ -43,6 +42,7 @@ import type {
   AgentTool,
   ContextUsage,
   PromptStreamingBehavior,
+  PermissionMode,
   QueuedMessages,
   SessionConfiguration,
   ThinkingLevel,
@@ -54,7 +54,6 @@ import type {
   ChatPhase,
   DraftConfiguration,
 } from "../stores/useChatSession";
-import type { ToolPermissionMode } from "../stores/useToolPermissions";
 import type { GitBranchesState } from "../stores/useGitBranches";
 import { ComposerQueueCard } from "./ComposerQueueCard";
 import { ComposerProjectBar } from "./ComposerProjectBar";
@@ -103,7 +102,8 @@ interface ChatComposerProps {
   canSend: boolean;
   queuedMessages: QueuedMessages;
   queuePaused: boolean;
-  permissionMode: ToolPermissionMode;
+  permissionMode: PermissionMode;
+  onPermissionModeChange: (mode: PermissionMode) => void;
   availableTools: AgentTool[];
   selectedToolNames: string[];
   defaultToolNames: string[];
@@ -120,8 +120,6 @@ interface ChatComposerProps {
   onPrepareConfiguration?: () => Promise<boolean>;
   onModelChange: (provider: string, id: string) => void;
   onThinkingLevelChange: (level: ThinkingLevel) => void;
-  onUseDefaultTools: () => void;
-  onToolSelectionChange: (toolNames: string[]) => void;
   onSend: (event?: FormEvent, behavior?: PromptStreamingBehavior) => void;
   onClearQueue: () => void;
   onAbort: () => void;
@@ -156,8 +154,9 @@ export function ChatComposer({
   queuedMessages,
   queuePaused,
   permissionMode,
-  availableTools,
-  selectedToolNames,
+  onPermissionModeChange,
+  availableTools: _availableTools,
+  selectedToolNames: _selectedToolNames,
   defaultToolNames: _defaultToolNames,
   onDraftChange,
   onProjectChange,
@@ -172,8 +171,6 @@ export function ChatComposer({
   onPrepareConfiguration,
   onModelChange,
   onThinkingLevelChange,
-  onUseDefaultTools,
-  onToolSelectionChange,
   onSend,
   onClearQueue,
   onAbort,
@@ -202,7 +199,7 @@ export function ChatComposer({
   const disabled = eventConnection !== "ready";
   const modelDisabled = disabled || streaming || configuring || phase === "creating";
   const permissionDisabled =
-    disabled || streaming || configuring || phase === "creating" || (availableTools.length === 0 && !onPrepareConfiguration && !isDraft);
+    disabled || streaming || configuring || phase === "creating";
   const modelGroups = useMemo(() => groupModelsByProvider(models), [models]);
   const projectOptions = useMemo(
     () => uniquePaths([workspacePath, ...recentWorkspaces]),
@@ -212,24 +209,7 @@ export function ChatComposer({
     () => new Set(attachments.map(normalizeComparablePath)),
     [attachments],
   );
-  const autoReviewToolNames = useMemo(
-    () => availableTools.map((tool) => tool.name).filter(isAutoReviewTool),
-    [availableTools],
-  );
-  const allToolsSelected = sameSelection(
-    selectedToolNames,
-    availableTools.map((tool) => tool.name),
-  );
-  const autoReviewSelected =
-    permissionMode === "custom" &&
-    autoReviewToolNames.length > 0 &&
-    sameSelection(selectedToolNames, autoReviewToolNames);
-  const permissionState = getPermissionState(
-    permissionMode,
-    availableTools.length,
-    selectedToolNames.length,
-    autoReviewSelected,
-  );
+  const permissionState = getPermissionState(permissionMode);
   const selectedModel = configuration?.model ?? models.find((model) => model.provider === draftConfiguration?.model?.provider && model.id === draftConfiguration.model.id) ?? null;
   const selectedThinkingLevel = configuration?.thinkingLevel ?? draftConfiguration?.thinkingLevel ?? displayThinkingLevel;
   const commandCatalog = useMemo(
@@ -807,13 +787,10 @@ export function ChatComposer({
                 onClick={() => {
                   const opening = openMenu !== "permission";
                   setOpenMenu(opening ? "permission" : null);
-                  if (opening && !configuration && !isDraft) void onPrepareConfiguration?.();
                 }}
               >
                 {permissionState.tone === "full" ? (
                   <ShieldAlert size={17} aria-hidden="true" />
-                ) : permissionState.tone === "none" ? (
-                  <ShieldOff size={17} aria-hidden="true" />
                 ) : permissionState.tone === "default" ? (
                   <ShieldCheck size={17} aria-hidden="true" />
                 ) : (
@@ -831,69 +808,60 @@ export function ChatComposer({
                   align="left"
                   defaultWidth={324}
                 >
-                  {!configuration && availableTools.length === 0 ? (
-                    <p className="composer-menu-state">
-                      {isDraft ? "发送后读取当前工作区的工具权限；现有权限选择会保留。" : "正在读取权限"}
-                    </p>
-                  ) : (
-                    <>
                   <button
                     className="composer-permission-row"
                     type="button"
                     role="menuitemradio"
-                    aria-checked={permissionMode === "default"}
+                    aria-checked={permissionMode === "accept-edits"}
                     onClick={() => {
                       setOpenMenu(null);
-                      onUseDefaultTools();
+                      onPermissionModeChange("accept-edits");
                     }}
                   >
                     <ShieldCheck size={18} aria-hidden="true" />
                     <span className="composer-permission-copy">
                       <strong>默认权限</strong>
-                      <small>默认可读写当前项目文件；超出范围时再请求授权</small>
+                      <small>项目内读写自动允许；命令、扩展工具和越界访问需确认</small>
                     </span>
-                    {permissionMode === "default" && <Check size={16} aria-hidden="true" />}
+                    {permissionMode === "accept-edits" && <Check size={16} aria-hidden="true" />}
                   </button>
                   <button
                     className="composer-permission-row"
                     type="button"
                     role="menuitemradio"
-                    aria-checked={autoReviewSelected}
-                    disabled={autoReviewToolNames.length === 0}
+                    aria-checked={permissionMode === "ask"}
                     onClick={() => {
                       setOpenMenu(null);
-                      onToolSelectionChange(autoReviewToolNames);
+                      onPermissionModeChange("ask");
                     }}
                   >
                     <Shield size={18} aria-hidden="true" />
                     <span className="composer-permission-copy">
-                      <strong>自动审核</strong>
-                      <small>自动处理权限请求；偶发误判时可改回手动确认</small>
+                      <strong>每次询问</strong>
+                      <small>仅项目内读取自动允许；写入、命令及其他操作逐次确认</small>
                     </span>
-                    {autoReviewSelected && <Check size={16} aria-hidden="true" />}
+                    {permissionMode === "ask" && <Check size={16} aria-hidden="true" />}
                   </button>
                   <button
                     className="composer-permission-row composer-permission-row-full"
                     type="button"
                     role="menuitemradio"
-                    aria-checked={permissionMode === "custom" && allToolsSelected}
+                    aria-checked={permissionMode === "auto"}
                     onClick={() => {
                       setOpenMenu(null);
-                      onToolSelectionChange(availableTools.map((tool) => tool.name));
+                      onPermissionModeChange("auto");
                     }}
                   >
                     <ShieldAlert size={18} aria-hidden="true" />
                     <span className="composer-permission-copy">
                       <strong>完全访问</strong>
-                      <small>可编辑任意路径并执行联网命令，无需再次确认</small>
+                      <small>所有已启用工具自动允许，包括任意路径与命令；请仅在信任任务时开启</small>
                     </span>
-                    {permissionMode === "custom" && allToolsSelected && (
+                    {permissionMode === "auto" && (
                       <Check size={16} aria-hidden="true" />
                     )}
                   </button>
 
-                    </>
-                  )}
                 </AnchoredComposerMenu>
               )}
             </div>
@@ -1302,28 +1270,11 @@ function groupModelsByProvider(models: AgentModel[]): [string, AgentModel[]][] {
 }
 
 function getPermissionState(
-  mode: ToolPermissionMode,
-  availableCount: number,
-  selectedCount: number,
-  autoReviewSelected: boolean,
-): { label: string; tone: "default" | "full" | "none" | "custom" } {
-  if (mode === "default") return { label: "默认权限", tone: "default" };
-  if (selectedCount === 0) return { label: "禁止工具", tone: "none" };
-  if (availableCount > 0 && selectedCount === availableCount) {
-    return { label: "完全访问", tone: "full" };
-  }
-  if (autoReviewSelected) return { label: "自动审核", tone: "custom" };
-  return { label: `${selectedCount} 项工具`, tone: "custom" };
-}
-
-function isAutoReviewTool(name: string): boolean {
-  return ["read", "grep", "find", "ls"].includes(name.toLocaleLowerCase("en-US"));
-}
-
-function sameSelection(left: string[], right: string[]): boolean {
-  if (left.length !== right.length) return false;
-  const expected = new Set(right);
-  return left.every((item) => expected.has(item));
+  mode: PermissionMode,
+): { label: string; tone: "default" | "full" | "custom" } {
+  if (mode === "auto") return { label: "完全访问", tone: "full" };
+  if (mode === "ask") return { label: "每次询问", tone: "custom" };
+  return { label: "默认权限", tone: "default" };
 }
 
 function uniquePaths(paths: string[]): string[] {

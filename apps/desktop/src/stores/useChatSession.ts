@@ -22,11 +22,13 @@ import {
   type ContextUsage,
   type DeleteAgentSessionsResult,
   type PromptStreamingBehavior,
+  type PermissionMode,
   type QueuedMessages,
   type SessionConfiguration,
   type ThinkingLevel,
   type ToolDisplayPayload,
   isThinkingLevel,
+  isPermissionMode,
 } from "../ipc/agent";
 import {
   ensureConversationWorkspace,
@@ -73,6 +75,7 @@ export type SessionLifecycle = "draft" | "live" | "persisted";
 export interface DraftConfiguration {
   model?: Pick<AgentModel, "provider" | "id">;
   thinkingLevel?: ThinkingLevel;
+  permissionMode?: PermissionMode;
 }
 
 export interface SessionTimerState {
@@ -145,6 +148,7 @@ export interface ChatSessionState {
   prepareConfiguration: () => Promise<boolean>;
   updateModel: (provider: string, id: string) => Promise<void>;
   updateThinkingLevel: (level: ThinkingLevel) => Promise<void>;
+  updatePermissionMode: (mode: PermissionMode) => Promise<void>;
   sendPrompt: (
     text: string,
     behavior?: PromptStreamingBehavior,
@@ -805,6 +809,7 @@ export function useChatSession(): ChatSessionState {
     async (update: {
       model?: Pick<AgentModel, "provider" | "id">;
       thinkingLevel?: ThinkingLevel;
+      permissionMode?: PermissionMode;
     }) => {
       const sessionId = activeSessionIdRef.current;
       const projection = sessionId
@@ -843,7 +848,7 @@ export function useChatSession(): ChatSessionState {
             : current;
         });
       } catch (error) {
-        commitProjections((current) => updateProjectionError(current, sessionId, formatError(error)));
+        commitProjections((current) => updateConfigurationError(current, sessionId, formatError(error)));
       } finally {
         configuringSessions.current.delete(sessionId);
         setConfiguringSessionId(null);
@@ -858,6 +863,10 @@ export function useChatSession(): ChatSessionState {
   );
   const updateThinkingLevel = useCallback(
     async (thinkingLevel: ThinkingLevel) => updateConfiguration({ thinkingLevel }),
+    [updateConfiguration],
+  );
+  const updatePermissionMode = useCallback(
+    async (permissionMode: PermissionMode) => updateConfiguration({ permissionMode }),
     [updateConfiguration],
   );
 
@@ -917,7 +926,7 @@ export function useChatSession(): ChatSessionState {
           projection = projectionsRef.current[sessionId];
           if (!projection) return false;
         } catch (error) {
-          commitProjections((current) => updateProjectionError(current, sessionId, formatError(error)));
+          commitProjections((current) => updateConfigurationError(current, sessionId, formatError(error)));
           return false;
         } finally {
           preparingPrompts.current.delete(sessionId);
@@ -1138,6 +1147,7 @@ export function useChatSession(): ChatSessionState {
     prepareConfiguration,
     updateModel,
     updateThinkingLevel,
+    updatePermissionMode,
     sendPrompt,
     clearQueue,
     abort,
@@ -1528,6 +1538,21 @@ function findLastRole(messages: ChatMessage[], role: TimelineRole): number {
   return -1;
 }
 
+function updateConfigurationError(
+  current: Record<string, SessionProjection>,
+  sessionId: string,
+  error: string,
+): Record<string, SessionProjection> {
+  const projection = current[sessionId];
+  if (!projection) return current;
+  // A failed permission change must not be silently retried by Send.
+  const pending = { ...projection.pendingConfiguration };
+  delete pending.permissionMode;
+  return { ...current, [sessionId]: { ...projection, error,
+    pendingConfiguration: Object.keys(pending).length ? pending : null,
+  } };
+}
+
 function updateProjectionError(
   current: Record<string, SessionProjection>,
   sessionId: string,
@@ -1847,6 +1872,7 @@ function readConfiguration(data: unknown): SessionConfiguration | null {
     new Set(data.availableThinkingLevels).size !== data.availableThinkingLevels.length ||
     !("model" in data) ||
     !isAgentModel(data.model)
+    || (data.permissionMode !== undefined && !isPermissionMode(data.permissionMode))
   ) {
     return null;
   }
@@ -1875,6 +1901,7 @@ function readConfiguration(data: unknown): SessionConfiguration | null {
     availableTools,
     activeToolNames: activeToolNames ?? [],
     defaultToolNames: defaultToolNames ?? [],
+    ...(isPermissionMode(data.permissionMode) ? { permissionMode: data.permissionMode } : {}),
   };
 }
 

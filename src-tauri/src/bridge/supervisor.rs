@@ -18,8 +18,9 @@ use crate::{
     bridge::protocol::{
         AgentModel, AgentSessionSummary, BridgeEvent, BridgeHello, BridgeResponse, CreatedSession,
         DeleteSessionsResult, PROTOCOL_VERSION, PackageScope, PackageSummary, PackageUpdateInfo,
-        PromptStreamingBehavior, RequestHeaderSettings, ResourceSummary, SessionConfiguration,
-        SessionHistoryPage, SessionReviewRequest, SlashCommandSummary, parse_hello_frame,
+        PermissionDecision, PermissionMode, PermissionRequest, PromptStreamingBehavior,
+        RequestHeaderSettings, ResourceSummary, SessionConfiguration, SessionHistoryPage,
+        SessionReviewRequest, SlashCommandSummary, parse_hello_frame, valid_permission_request,
         valid_session_configuration, valid_slash_commands, validate_event, validate_frame_size,
     },
     error::AppError,
@@ -630,6 +631,7 @@ impl BridgeSupervisor {
         session_id: &str,
         model: Option<(&str, &str)>,
         thinking_level: Option<&str>,
+        permission_mode: Option<PermissionMode>,
     ) -> Result<SessionConfiguration, AppError> {
         let mut fields = serde_json::Map::from_iter([(
             "sessionId".to_owned(),
@@ -643,6 +645,9 @@ impl BridgeSupervisor {
                 "thinkingLevel".to_owned(),
                 Value::String(thinking_level.to_owned()),
             );
+        }
+        if let Some(mode) = permission_mode {
+            fields.insert("permissionMode".to_owned(), json!(mode));
         }
         let data = self
             .request(
@@ -678,6 +683,7 @@ impl BridgeSupervisor {
         streaming_behavior: Option<&PromptStreamingBehavior>,
         active_tools: Option<&[String]>,
         image_paths: Option<&[String]>,
+        permission_mode: Option<PermissionMode>,
     ) -> Result<u64, AppError> {
         let mut fields = serde_json::Map::from_iter([
             ("sessionId".to_owned(), Value::String(session_id.to_owned())),
@@ -705,6 +711,9 @@ impl BridgeSupervisor {
                     .map_err(|_| AppError::new("BRIDGE_REQUEST_INVALID", "无法序列化图片路径"))?,
             );
         }
+        if let Some(mode) = permission_mode {
+            fields.insert("permissionMode".to_owned(), json!(mode));
+        }
         self.request_with_inactivity_timeout(
             "prompt",
             Value::Object(fields),
@@ -718,6 +727,46 @@ impl BridgeSupervisor {
                 "Bridge prompt 响应缺少 finalSeq",
             )
         })
+    }
+
+    pub fn reply_permission(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        decision: PermissionDecision,
+    ) -> Result<(), AppError> {
+        self.request(
+            "permission.reply",
+            json!({"sessionId": session_id, "requestId": request_id, "decision": decision}),
+            self.response_timeout,
+        )
+        .map(|_| ())
+    }
+
+    pub fn list_permission_requests(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<PermissionRequest>, AppError> {
+        let requests: Vec<PermissionRequest> = self.typed_list_request(
+            "permission.list",
+            json!({"sessionId": session_id}),
+            "BRIDGE_PERMISSION_INVALID",
+            "Bridge 未返回待审批请求",
+            "Bridge 待审批请求格式无效",
+            self.response_timeout,
+        )?;
+        let mut ids = HashSet::new();
+        if requests.len() > 64
+            || requests.iter().any(|request| {
+                !valid_permission_request(request) || !ids.insert(&request.request_id)
+            })
+        {
+            return Err(AppError::new(
+                "BRIDGE_PERMISSION_INVALID",
+                "Bridge 待审批请求字段无效",
+            ));
+        }
+        Ok(requests)
     }
 
     pub fn clear_queue(&self, session_id: &str) -> Result<(), AppError> {
@@ -1305,6 +1354,9 @@ fn public_remote_error_code(code: &str) -> Option<&'static str> {
         "TOOL_PERMISSIONS_UNSUPPORTED" => "TOOL_PERMISSIONS_UNSUPPORTED",
         "TOOL_SELECTION_INVALID" => "TOOL_SELECTION_INVALID",
         "TOOL_PERMISSION_UPDATE_FAILED" => "TOOL_PERMISSION_UPDATE_FAILED",
+        "PERMISSION_REQUEST_EXPIRED" => "PERMISSION_REQUEST_EXPIRED",
+        "PERMISSION_SAVE_FAILED" => "PERMISSION_SAVE_FAILED",
+        "PROMPT_CANCELLED" => "PROMPT_CANCELLED",
         "PROMPT_FAILED" => "PROMPT_FAILED",
         "PROMPT_IMAGE_COUNT_INVALID" => "PROMPT_IMAGE_COUNT_INVALID",
         "PROMPT_IMAGE_PATH_INVALID" => "PROMPT_IMAGE_PATH_INVALID",
@@ -2458,7 +2510,7 @@ mod tests {
         let supervisor = connect(transport);
 
         let error = supervisor
-            .prompt("s-1", "hello", None, None, None)
+            .prompt("s-1", "hello", None, None, None, None)
             .expect_err("prompt 响应必须包含最终事件序号");
 
         assert_eq!(error.code, "BRIDGE_PROMPT_RESPONSE_INVALID");
@@ -2476,7 +2528,14 @@ mod tests {
         let images = vec![r"C:\cache\pasted.png".to_owned()];
 
         supervisor
-            .prompt("s-1", "inspect", None, Some(&tools), Some(&images))
+            .prompt(
+                "s-1",
+                "inspect",
+                None,
+                Some(&tools),
+                Some(&images),
+                Some(PermissionMode::Ask),
+            )
             .expect("prompt 应携带工具权限和图片路径");
 
         assert_eq!(
@@ -2488,7 +2547,8 @@ mod tests {
                 "sessionId": "s-1",
                 "text": "inspect",
                 "activeTools": ["read", "edit"],
-                "imagePaths": [r"C:\cache\pasted.png"]
+                "imagePaths": [r"C:\cache\pasted.png"],
+                "permissionMode": "ask"
             })
         );
     }
@@ -2514,7 +2574,7 @@ mod tests {
         assert_eq!(supervisor.list_sessions().unwrap()[0].id, "saved");
         assert_eq!(
             supervisor
-                .configure_session("s-1", Some(("openai", "gpt")), Some("max"))
+                .configure_session("s-1", Some(("openai", "gpt")), Some("max"), None)
                 .unwrap()
                 .thinking_level,
             "max"
@@ -2558,7 +2618,7 @@ mod tests {
         let supervisor = connect(transport);
 
         let error = supervisor
-            .configure_session("s-1", None, Some("high"))
+            .configure_session("s-1", None, Some("high"), None)
             .expect_err("响应中的当前档位不在能力集合中必须失败");
         assert_eq!(error.code, "BRIDGE_SESSION_CONFIG_INVALID");
     }
@@ -2760,6 +2820,95 @@ mod tests {
     }
 
     #[test]
+    fn configures_permission_mode_without_changing_model_or_tools() {
+        let transport = MockTransport::new([
+            Ok(HELLO),
+            Ok(
+                r#"{"v":1,"kind":"response","id":"rust-1","ok":true,"data":{"model":null,"thinkingLevel":"off","availableThinkingLevels":["off"],"permissionMode":"ask"}}"#,
+            ),
+        ]);
+        let writes = transport.writes.clone();
+        let supervisor = connect(transport);
+        let configuration = supervisor
+            .configure_session("s-1", None, None, Some(PermissionMode::Ask))
+            .unwrap();
+        assert_eq!(configuration.permission_mode, PermissionMode::Ask);
+        assert_eq!(
+            serde_json::from_str::<Value>(&writes.lock().unwrap()[0]).unwrap(),
+            json!({"v":1, "id":"rust-1", "op":"session.configure", "sessionId":"s-1", "permissionMode":"ask"})
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_or_duplicate_permission_snapshot() {
+        let request = json!({"requestId":"approval-1", "toolCallId":"tool-1", "toolName":"bash",
+            "summary":"command: git status", "expiresAt":"2026-09-28T12:00:00.000Z"});
+        let mut invalid = request.clone();
+        invalid["summary"] = json!("");
+        for data in [
+            json!([request.clone(), request.clone()]),
+            json!([invalid]),
+            json!(vec![request; 65]),
+        ] {
+            let transport = MockTransport::new([Ok(HELLO)]);
+            transport.reads.lock().unwrap().push_back(Ok(json!({
+                "v":1, "kind":"response", "id":"rust-1", "ok":true, "data":data
+            })
+            .to_string()));
+            let supervisor = connect(transport);
+            assert_eq!(
+                supervisor.list_permission_requests("s-1").unwrap_err().code,
+                "BRIDGE_PERMISSION_INVALID"
+            );
+        }
+    }
+
+    #[test]
+    fn routes_permission_snapshot_and_reply_while_prompt_is_pending() {
+        let transport = MockTransport::new([Ok(HELLO)]);
+        let reads = transport.reads.clone();
+        let writes = transport.writes.clone();
+        let supervisor = Arc::new(connect(transport));
+        let prompt_supervisor = supervisor.clone();
+        let prompt = thread::spawn(move || {
+            prompt_supervisor.prompt("s-1", "wait for approval", None, None, None, None)
+        });
+        wait_for_writes(&writes, 1);
+        let list_supervisor = supervisor.clone();
+        let list = thread::spawn(move || list_supervisor.list_permission_requests("s-1"));
+        wait_for_writes(&writes, 2);
+        let request = json!({"requestId":"approval-1", "toolCallId":"tool-1", "toolName":"bash",
+            "summary":"command: git status", "expiresAt":"2026-09-28T12:00:00.000Z"});
+        reads.lock().unwrap().push_back(Ok(json!({
+            "v":1, "kind":"response", "id":"rust-2", "ok":true, "data":[request]
+        })
+        .to_string()));
+        assert_eq!(list.join().unwrap().unwrap()[0].request_id, "approval-1");
+        let reply_supervisor = supervisor.clone();
+        let reply = thread::spawn(move || {
+            reply_supervisor.reply_permission("s-1", "approval-1", PermissionDecision::AllowOnce)
+        });
+        wait_for_writes(&writes, 3);
+        assert_eq!(
+            serde_json::from_str::<Value>(&writes.lock().unwrap()[1]).unwrap(),
+            json!({"v":1, "id":"rust-2", "op":"permission.list", "sessionId":"s-1"})
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&writes.lock().unwrap()[2]).unwrap(),
+            json!({"v":1, "id":"rust-3", "op":"permission.reply", "sessionId":"s-1", "requestId":"approval-1", "decision":"allow-once"})
+        );
+        reads.lock().unwrap().extend([
+            Ok(json!({"v":1, "kind":"response", "id":"rust-3", "ok":true}).to_string()),
+            Ok(
+                json!({"v":1, "kind":"response", "id":"rust-1", "ok":true, "data":{"finalSeq":0}})
+                    .to_string(),
+            ),
+        ]);
+        assert_eq!(reply.join().unwrap(), Ok(()));
+        assert_eq!(prompt.join().unwrap(), Ok(0));
+    }
+
+    #[test]
     fn routes_abort_while_prompt_is_pending() {
         let transport = MockTransport::new([Ok(HELLO)]);
         let reads = transport.reads.clone();
@@ -2767,8 +2916,9 @@ mod tests {
         let supervisor = Arc::new(connect(transport));
 
         let prompt_supervisor = supervisor.clone();
-        let prompt =
-            thread::spawn(move || prompt_supervisor.prompt("s-1", "slow task", None, None, None));
+        let prompt = thread::spawn(move || {
+            prompt_supervisor.prompt("s-1", "slow task", None, None, None, None)
+        });
         wait_for_writes(&writes, 1);
 
         let abort_supervisor = supervisor.clone();

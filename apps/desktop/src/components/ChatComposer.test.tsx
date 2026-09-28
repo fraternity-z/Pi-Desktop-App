@@ -21,12 +21,11 @@ const toolConfiguration = {
   defaultToolNames,
 };
 const permissionProps = {
-  permissionMode: "default" as const,
+  permissionMode: "accept-edits" as const,
   availableTools,
   selectedToolNames: defaultToolNames,
   defaultToolNames,
-  onUseDefaultTools: vi.fn(),
-  onToolSelectionChange: vi.fn(),
+  onPermissionModeChange: vi.fn(),
 };
 
 function openModelMenu() {
@@ -58,7 +57,7 @@ describe("渐进式模型选择器", () => {
       onPrepareConfiguration={prepare} />);
     expect(screen.getByRole("button", { name: "模型与思考强度" })).toHaveTextContent("Second高");
     fireEvent.click(screen.getByRole("button", { name: "选择工具权限" }));
-    expect(screen.getByText(/发送后读取当前工作区的工具权限/)).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: /每次询问/ })).toBeInTheDocument();
     expect(prepare).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "模型与思考强度" }));
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
@@ -256,7 +255,7 @@ describe("ChatComposer", () => {
     expect(screen.queryByRole("slider")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "选择模型" }));
     expect(screen.getByText("当前 Pi 配置中没有可用模型")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "选择工具权限" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "选择工具权限" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
     const emptyMeter = screen.getByRole("meter", { name: "上下文占用量" });
     expect(emptyMeter).not.toHaveAttribute("aria-valuenow");
@@ -353,11 +352,11 @@ describe("ChatComposer", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "选择工具权限" }));
-    expect(onPrepareConfiguration).toHaveBeenCalledOnce();
-    expect(screen.getByText("正在读取权限")).toBeInTheDocument();
+    expect(onPrepareConfiguration).not.toHaveBeenCalled();
+    expect(screen.getByRole("menuitemradio", { name: /默认权限/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "选择工具权限" }));
     fireEvent.click(screen.getByRole("button", { name: "模型与思考强度" }));
-    expect(onPrepareConfiguration).toHaveBeenCalledTimes(2);
+    expect(onPrepareConfiguration).toHaveBeenCalledOnce();
     expect(screen.getByText("正在读取思考强度")).toBeInTheDocument();
   });
 
@@ -989,8 +988,7 @@ describe("ChatComposer", () => {
   });
 
   it("展示 Pix 三档 SDK 工具权限并支持切换与取消菜单", () => {
-    const onUseDefaultTools = vi.fn();
-    const onToolSelectionChange = vi.fn();
+    const onPermissionModeChange = vi.fn();
     render(
       <ChatComposer
         workspaceName="workspace"
@@ -1009,8 +1007,7 @@ describe("ChatComposer", () => {
         queuedMessages={{ steering: [], followUp: [] }}
         queuePaused={false}
         {...permissionProps}
-        onUseDefaultTools={onUseDefaultTools}
-        onToolSelectionChange={onToolSelectionChange}
+        onPermissionModeChange={onPermissionModeChange}
         onDraftChange={vi.fn()}
         onModelChange={vi.fn()}
         onThinkingLevelChange={vi.fn()}
@@ -1022,15 +1019,18 @@ describe("ChatComposer", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "选择工具权限" }));
     expect(screen.getByRole("menu", { name: "工具权限" }).parentElement).toBe(document.body);
-    fireEvent.click(screen.getByRole("menuitemradio", { name: /自动审核/ }));
-    expect(onToolSelectionChange).toHaveBeenLastCalledWith(["read", "grep", "find", "ls"]);
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /每次询问/ }));
+    expect(onPermissionModeChange).toHaveBeenLastCalledWith("ask");
     fireEvent.click(screen.getByRole("button", { name: "选择工具权限" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /完全访问/ }));
-    expect(onToolSelectionChange).toHaveBeenLastCalledWith(availableTools.map((tool) => tool.name));
+    expect(onPermissionModeChange).toHaveBeenLastCalledWith("auto");
+    fireEvent.click(screen.getByRole("button", { name: "选择工具权限" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /默认权限/ }));
+    expect(onPermissionModeChange).toHaveBeenLastCalledWith("accept-edits");
 
     fireEvent.click(screen.getByRole("button", { name: "选择工具权限" }));
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("menu", { name: "工具权限" })).not.toBeInTheDocument();
-    expect(onUseDefaultTools).not.toHaveBeenCalled();
+    expect(onPermissionModeChange).toHaveBeenCalledTimes(3);
   });
 });

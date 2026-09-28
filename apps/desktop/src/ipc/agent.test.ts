@@ -11,6 +11,10 @@ import {
   createAgentSession,
   deleteAgentSessions,
   installAgentPackage,
+  isPermissionMode,
+  isPermissionRequest,
+  listAgentPermissionRequests,
+  replyAgentPermission,
   listAgentModels,
   listAgentCommands,
   listAgentPackages,
@@ -34,6 +38,46 @@ describe("agent IPC", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
     vi.mocked(listen).mockReset();
+  });
+
+  it("validates permission modes, requests and resolved event decisions strictly", () => {
+    const request = { requestId: "r-1", toolCallId: "t-1", toolName: "bash", summary: "Run tests", expiresAt: "2026-09-28T12:02:00.000Z" };
+    const event = { v: 1, kind: "event", seq: 1, sessionId: "s-1", name: "permission.requested", data: request };
+    for (const mode of ["ask", "accept-edits", "auto"]) expect(isPermissionMode(mode)).toBe(true);
+    for (const mode of ["default", "custom", null, true]) expect(isPermissionMode(mode)).toBe(false);
+    expect(isPermissionRequest(request)).toBe(true); expect(parseAgentEvent(event)).toEqual(event);
+    for (const invalid of [null, {}, { ...request, extra: true }, { ...request, requestId: "a\nb" },
+      { ...request, toolName: "x".repeat(129) }, { ...request, toolCallId: "" },
+      { ...request, summary: "x".repeat(4097) }, { ...request, expiresAt: "never" }]) {
+      expect(isPermissionRequest(invalid)).toBe(false); expect(parseAgentEvent({ ...event, data: invalid })).toBeNull();
+    }
+    for (const decision of ["deny", "allow-once", "allow-session"]) {
+      expect(parseAgentEvent({ ...event, name: "permission.resolved", data: { requestId: "r-1", decision } })).not.toBeNull();
+    }
+    for (const decision of ["auto", null, ["deny"]]) {
+      expect(parseAgentEvent({ ...event, name: "permission.resolved", data: { requestId: "r-1", decision } })).toBeNull();
+    }
+  });
+
+  it("routes permission-only configuration, prompt override, list and replies", async () => {
+    const request = { requestId: "r-1", toolCallId: "t-1", toolName: "bash", summary: "Run tests", expiresAt: "2026-09-28T12:02:00.000Z" };
+    vi.mocked(invoke).mockResolvedValue([request]);
+    expect(await listAgentPermissionRequests("s-1")).toEqual([request]);
+    expect(invoke).toHaveBeenLastCalledWith("agent_list_permission_requests", { sessionId: "s-1" });
+    await replyAgentPermission("s-1", "r-1", "allow-once");
+    expect(invoke).toHaveBeenLastCalledWith("agent_reply_permission", { sessionId: "s-1", requestId: "r-1", decision: "allow-once" });
+    await configureAgentSession("s-1", { permissionMode: "ask" });
+    expect(invoke).toHaveBeenLastCalledWith("agent_configure_session", { sessionId: "s-1", update: { permissionMode: "ask" } });
+    await promptAgent("s-1", "hello", undefined, undefined, undefined, "auto");
+    expect(invoke).toHaveBeenLastCalledWith("agent_prompt", { sessionId: "s-1", text: "hello", permissionMode: "auto" });
+    for (const invalid of [null, {}, [request, request], Array.from({ length: 65 }, (_, index) => ({ ...request, requestId: String(index) })), [{ ...request, summary: null }]]) {
+      vi.mocked(invoke).mockResolvedValueOnce(invalid);
+      await expect(listAgentPermissionRequests("s-1")).rejects.toThrow("待授权请求格式无效");
+    }
+    const event = { v: 1, kind: "event", seq: 1, sessionId: "s-1", name: "session.configurationChanged",
+      data: { model: null, thinkingLevel: "off", availableThinkingLevels: ["off"], permissionMode: "ask" } };
+    expect(parseAgentEvent(event)).not.toBeNull();
+    expect(parseAgentEvent({ ...event, data: { ...event.data, permissionMode: "invalid" } })).toBeNull();
   });
 
   it("按 Pi 标准顺序归一化多档能力并使用兼容 clamp 规则", () => {

@@ -25,7 +25,8 @@ import {
 import { useChatSession, type ChatSessionState, type SessionListItem } from "./useChatSession";
 import { MODEL_SETTINGS_CHANGED } from "../ipc/providers";
 
-vi.mock("../ipc/agent", () => ({
+vi.mock("../ipc/agent", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../ipc/agent")>(),
   abortAgent: vi.fn(),
   clampThinkingLevel: (requested: unknown, available: string[]) => {
     const ordered = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -733,6 +734,65 @@ describe("useChatSession", () => {
     expect(result.current.lifecycle).toBe("live");
     expect(configureAgentSession).toHaveBeenCalledWith("s-1", { thinkingLevel: "high" });
     expect(promptAgent).toHaveBeenCalledOnce();
+  });
+
+  it("草稿权限单独保存，首次发送前应用并在新草稿中重置", async () => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createConversation());
+    await act(() => result.current.updatePermissionMode("ask"));
+    expect(result.current.draftConfiguration).toEqual({ permissionMode: "ask" });
+    expect(createAgentSession).not.toHaveBeenCalled();
+    vi.mocked(configureAgentSession).mockResolvedValueOnce({ ...agentSession().configuration, permissionMode: "ask" });
+    await act(() => result.current.sendPrompt("first"));
+    expect(configureAgentSession).toHaveBeenCalledExactlyOnceWith("s-1", { permissionMode: "ask" });
+    expect(vi.mocked(configureAgentSession).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(promptAgent).mock.invocationCallOrder[0]!);
+    expect(result.current.configuration?.permissionMode).toBe("ask");
+    await act(() => result.current.createConversation());
+    expect(result.current.draftConfiguration?.permissionMode).toBeUndefined();
+  });
+
+  it("首次发送权限配置失败后保留模型重试，但丢弃未确认的权限升级", async () => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createConversation());
+    await act(() => result.current.updateModel("openai", "gpt"));
+    await act(() => result.current.updatePermissionMode("auto"));
+    vi.mocked(configureAgentSession).mockRejectedValueOnce(new Error("save failed"));
+    await act(async () => { expect(await result.current.sendPrompt("first")).toBe(false); });
+    expect(promptAgent).not.toHaveBeenCalled();
+    await act(() => result.current.sendPrompt("retry"));
+    expect(configureAgentSession).toHaveBeenLastCalledWith("s-1", { model: { provider: "openai", id: "gpt" } });
+    expect(promptAgent).toHaveBeenCalledOnce();
+  });
+
+  it("恢复权限配置、接收后端变更并拒绝非法模式", async () => {
+    vi.mocked(openAgentSession).mockResolvedValueOnce(agentSession({ sessionId: "saved", configuration: { ...agentSession().configuration, permissionMode: "auto" } }));
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.openSession({ ...savedSummary, lifecycle: "persisted" }));
+    expect(result.current.configuration?.permissionMode).toBe("auto");
+    act(() => emit?.(event("session.configurationChanged", { ...agentSession().configuration, permissionMode: "ask" }, "saved")));
+    await waitFor(() => expect(result.current.configuration?.permissionMode).toBe("ask"));
+    act(() => emit?.(event("session.configurationChanged", { ...agentSession().configuration, permissionMode: "invalid" }, "saved")));
+    expect(result.current.configuration?.permissionMode).toBe("ask");
+  });
+
+  it("权限升级失败回到已确认模式，发送不重试升级且运行中不能更改权限", async () => {
+    vi.mocked(openAgentSession).mockResolvedValueOnce(agentSession({ sessionId: "saved", configuration: { ...agentSession().configuration, permissionMode: "ask" } }));
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.openSession({ ...savedSummary, lifecycle: "persisted" }));
+    vi.mocked(configureAgentSession).mockRejectedValueOnce(new Error("save failed"));
+    await act(() => result.current.updatePermissionMode("auto"));
+    expect(result.current.configuration?.permissionMode).toBe("ask");
+    expect(result.current.draftConfiguration?.permissionMode).toBeUndefined();
+    expect(result.current.error).toBe("save failed");
+    vi.mocked(promptAgent).mockImplementation(() => new Promise(() => {}));
+    act(() => { void result.current.sendPrompt("safe retry"); });
+    await waitFor(() => expect(result.current.phase).toBe("streaming"));
+    await act(() => result.current.updatePermissionMode("auto"));
+    expect(configureAgentSession).toHaveBeenCalledOnce();
   });
 
   it("首发配置失败保留真实会话并重试配置，不重建或静默发送默认模型", async () => {

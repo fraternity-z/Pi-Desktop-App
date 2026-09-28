@@ -5,6 +5,7 @@ import { readPackageVersion } from "./package-version.js";
 import { ProviderSettingsService, type OfficialModelSettings, type OfficialProviderRuntime } from "./provider-settings.js";
 import { ProviderSettingsError } from "./provider-config.js";
 import { SessionReview, ReviewError, readReviewSummary, type ReviewExtensionFactory, type SessionReviewSummary, type SessionReviewDetail, type SessionReviewPage } from "./session-review.js";
+import { ToolPermissions, PermissionError, type PermissionExtensionFactory, type PermissionRequest } from "./tool-permissions.js";
 
 import {
   MAX_COMMANDS,
@@ -17,6 +18,8 @@ import {
   type ModelSelection,
   type PromptStreamingBehavior,
   type ThinkingLevel,
+  type PermissionMode,
+  type PermissionDecision,
 } from "./protocol.js";
 import {
   DEFAULT_REQUEST_HEADER_SETTINGS,
@@ -57,6 +60,7 @@ interface PiSessionManagerInstanceLike {
   getCwd?(): string;
   getSessionId?(): string;
   getBranch?(): unknown[];
+  appendCustomEntry?(customType: string, data: unknown): unknown;
 }
 
 export type PackageScope = "global" | "project";
@@ -110,7 +114,7 @@ interface PiPackageManagerLike {
 interface PiResourceLoaderLike {
   reload(): Promise<void>;
   getExtensions?(): {
-    extensions: Array<{ path: string; sourceInfo?: { source?: string } }>;
+    extensions: Array<{ path: string; sourceInfo?: { source?: string }; tools?: Map<string, unknown> }>;
   };
   getSkills?(): {
     skills: Array<{
@@ -221,7 +225,7 @@ export interface PiSdkLike {
     agentDir: string;
     extensionFactories: Array<{
       name: string;
-      factory: RequestHeaderExtensionFactory | ReviewExtensionFactory;
+      factory: RequestHeaderExtensionFactory | ReviewExtensionFactory | PermissionExtensionFactory;
       hidden: boolean;
     }>;
   }) => PiResourceLoaderLike;
@@ -263,6 +267,7 @@ export interface AgentMessageSummary {
 }
 
 export interface SessionConfiguration {
+  permissionMode?: PermissionMode;
   model: AgentModel | null;
   thinkingLevel: ThinkingLevel;
   availableThinkingLevels: ThinkingLevel[];
@@ -344,11 +349,15 @@ export interface RuntimeEvent {
     | "agent.settled"
     | "session.configurationChanged"
     | "session.reviewChanged"
-    | "session.usageChanged";
+    | "session.usageChanged"
+    | "permission.requested"
+    | "permission.resolved";
   data?: unknown;
 }
 
 export interface SessionRuntime {
+  listPermissions?(sessionId: string): PermissionRequest[];
+  replyPermission?(sessionId: string, requestId: string, decision: PermissionDecision): void;
   readonly providerSettings?: ProviderSettingsService;
   configureRequestHeaders(settings: RequestHeaderSettings): RequestHeaderSettings;
   createSession(cwd: string): Promise<CreatedAgentSession>;
@@ -376,7 +385,7 @@ export interface SessionRuntime {
   listCommands?(sessionId: string): Promise<SlashCommandSummary[]>;
   configureSession(
     sessionId: string,
-    update: { model?: ModelSelection; thinkingLevel?: ThinkingLevel },
+    update: { model?: ModelSelection; thinkingLevel?: ThinkingLevel; permissionMode?: PermissionMode },
   ): Promise<SessionConfiguration>;
   prompt(
     sessionId: string,
@@ -384,6 +393,7 @@ export interface SessionRuntime {
     streamingBehavior?: PromptStreamingBehavior,
     activeTools?: string[],
     imagePaths?: string[],
+    permissionMode?: PermissionMode,
   ): Promise<void>;
   clearQueue(sessionId: string): Promise<void>;
   abort(sessionId: string): Promise<void>;
@@ -402,6 +412,9 @@ export class RuntimeError extends Error {
 }
 
 interface ManagedSession {
+  permissions: ToolPermissions;
+  activePrompts: number;
+  generation: number;
   cwd: string;
   session: PiSessionLike;
   resourceLoader?: PiResourceLoaderLike;
@@ -972,6 +985,7 @@ export class PiSessionRuntime implements SessionRuntime {
   private readonly sessions = new Map<string, ManagedSession>();
   private readonly openingSessions = new Map<string, Promise<CreatedAgentSession>>();
   private readonly reviewsByLoader = new WeakMap<PiResourceLoaderLike, SessionReview>();
+  private readonly permissionsByLoader = new WeakMap<PiResourceLoaderLike, ToolPermissions>();
   private requestHeaderSettings: RequestHeaderSettings = { ...DEFAULT_REQUEST_HEADER_SETTINGS };
   private closed = false;
 
@@ -1413,11 +1427,11 @@ export class PiSessionRuntime implements SessionRuntime {
 
   async configureSession(
     sessionId: string,
-    update: { model?: ModelSelection; thinkingLevel?: ThinkingLevel },
+    update: { model?: ModelSelection; thinkingLevel?: ThinkingLevel; permissionMode?: PermissionMode },
   ): Promise<SessionConfiguration> {
     this.ensureOpen();
     const managed = this.requireSession(sessionId);
-    if (managed.session.isStreaming) {
+    if (managed.session.isStreaming || managed.activePrompts > 0) {
       throw new RuntimeError("SESSION_BUSY", "Pi 正在处理任务，暂时无法更改会话配置");
     }
 
@@ -1469,7 +1483,8 @@ export class PiSessionRuntime implements SessionRuntime {
         }
       }
     }
-    return describeConfiguration(managed.session, managed.defaultToolNames);
+    if (update.permissionMode !== undefined) this.applyPermissionMode(managed, update.permissionMode);
+    return describeConfiguration(managed.session, managed.defaultToolNames, managed.permissions.mode);
   }
 
   async prompt(
@@ -1478,14 +1493,20 @@ export class PiSessionRuntime implements SessionRuntime {
     streamingBehavior?: PromptStreamingBehavior,
     activeTools?: string[],
     imagePaths?: string[],
+    permissionMode?: PermissionMode,
   ): Promise<void> {
     this.ensureOpen();
+    const managed = this.requireSession(sessionId);
+    if (permissionMode !== undefined) this.applyPermissionMode(managed, permissionMode);
+    const generation = managed.generation;
+    managed.activePrompts++;
     try {
-      const managed = this.requireSession(sessionId);
       if (activeTools !== undefined) {
         this.applyActiveTools(managed, activeTools);
       }
       const images = await loadPromptImages(imagePaths, this.sessionFiles);
+      if (this.closed || generation !== managed.generation) throw new RuntimeError("PROMPT_CANCELLED", "提示已取消");
+      managed.permissions.resume();
       managed.lastActivityAt = new Date().toISOString();
       // A prompt may mutate history before its first SDK event is emitted.
       managed.historyRevision += 1;
@@ -1496,7 +1517,27 @@ export class PiSessionRuntime implements SessionRuntime {
       await managed.session.prompt(text, Object.keys(options).length === 0 ? undefined : options);
     } catch (error) {
       throw mapRuntimeError(error, "PROMPT_FAILED", "Pi 无法完成当前提示");
+    } finally {
+      managed.activePrompts--;
     }
+  }
+
+  listPermissions(sessionId: string): PermissionRequest[] {
+    this.ensureOpen();
+    return this.requireSession(sessionId).permissions.list();
+  }
+
+  replyPermission(sessionId: string, requestId: string, decision: PermissionDecision): void {
+    this.ensureOpen();
+    this.requireSession(sessionId).permissions.reply(requestId, decision);
+  }
+
+  private applyPermissionMode(managed: ManagedSession, mode: PermissionMode): void {
+    if (mode === managed.permissions.mode) return;
+    if (managed.session.isStreaming || managed.activePrompts > 0) throw new RuntimeError("SESSION_BUSY", "Pi 正在处理任务，暂时无法更改权限模式");
+    managed.permissions.setMode(mode);
+    const event: RuntimeEvent = { sessionId: managed.session.sessionId, name: "session.configurationChanged", data: describeConfiguration(managed.session, managed.defaultToolNames, managed.permissions.mode) };
+    for (const listener of this.listeners) listener(event);
   }
 
   async clearQueue(sessionId: string): Promise<void> {
@@ -1511,7 +1552,10 @@ export class PiSessionRuntime implements SessionRuntime {
   async abort(sessionId: string): Promise<void> {
     this.ensureOpen();
     try {
-      await this.requireSession(sessionId).session.abort();
+      const managed = this.requireSession(sessionId);
+      managed.generation++;
+      managed.permissions.cancel();
+      await managed.session.abort();
     } catch (error) {
       throw mapRuntimeError(error, "ABORT_FAILED", "无法停止当前 Pi 任务");
     }
@@ -1529,6 +1573,7 @@ export class PiSessionRuntime implements SessionRuntime {
     this.closed = true;
     this.providerSettings.close();
     const managedSessions = [...this.sessions.values()];
+    for (const managed of managedSessions) managed.permissions.close();
     this.sessions.clear();
     for (const managed of managedSessions) {
       try {
@@ -1573,8 +1618,17 @@ export class PiSessionRuntime implements SessionRuntime {
           "当前 Pi SDK 不支持请求头扩展，请升级后重试",
         );
       }
-      return undefined;
+      throw new RuntimeError("TOOL_PERMISSIONS_UNSUPPORTED", "当前 Pi SDK 不支持工具审批扩展，请升级后重试");
     }
+    const permissions = new ToolPermissions(cwd, (sessionId, name, data) => {
+      for (const listener of this.listeners) listener({ sessionId, name, data });
+    }, undefined, (event) => {
+      if (!isRecord(event.input)) return undefined;
+      // Only operation metadata: never include write contents, edit bodies or arbitrary tool arguments.
+      const field = event.toolName === "bash" ? "command" : "path";
+      const value = event.input[field];
+      return typeof value === "string" ? projectToolDisplay({ [field]: value })?.text : undefined;
+    });
     const review = new SessionReview(cwd, (sessionId, summary) => {
       for (const listener of this.listeners) listener({ sessionId, name: "session.reviewChanged", data: summary });
     });
@@ -1582,6 +1636,7 @@ export class PiSessionRuntime implements SessionRuntime {
       cwd,
       agentDir: this.agentDir,
       extensionFactories: [
+        { name: "pi-desktop-tool-permissions", hidden: true, factory: permissions.extension },
         {
           name: "pi-desktop-request-headers",
           hidden: true,
@@ -1594,6 +1649,9 @@ export class PiSessionRuntime implements SessionRuntime {
       resourceLoader.reload(),
     );
     this.reviewsByLoader.set(resourceLoader, review);
+    permissions.assertRegistered();
+    permissions.setOverriddenTools((resourceLoader.getExtensions?.().extensions ?? []).flatMap((extension) => [...(extension.tools?.keys() ?? [])]));
+    this.permissionsByLoader.set(resourceLoader, permissions);
     return resourceLoader;
   }
 
@@ -1621,11 +1679,15 @@ export class PiSessionRuntime implements SessionRuntime {
     const normalized = cwd ? normalizeRuntimePath(cwd) : undefined;
     for (const managed of this.sessions.values()) {
       if (normalized && normalizeRuntimePath(managed.cwd) !== normalized) continue;
+      if (managed.session.isStreaming || managed.activePrompts > 0) throw new RuntimeError("SESSION_BUSY", "请等待会话任务结束后再重载扩展");
+      managed.permissions.beginReload();
       if (typeof managed.session.reload === "function") {
         await managed.session.reload();
       } else {
         await managed.resourceLoader?.reload();
       }
+      managed.permissions.assertRegistered();
+      managed.permissions.setOverriddenTools((managed.resourceLoader?.getExtensions?.().extensions ?? []).flatMap((extension) => [...(extension.tools?.keys() ?? [])]));
     }
   }
 
@@ -1637,6 +1699,11 @@ export class PiSessionRuntime implements SessionRuntime {
     operation?: "session.create" | "session.open",
   ): CreatedAgentSession {
     const { session } = result;
+    const permissions = resourceLoader ? this.permissionsByLoader.get(resourceLoader) : undefined;
+    if (this.closed || !permissions) {
+      session.dispose();
+      throw new RuntimeError("TOOL_PERMISSIONS_UNSUPPORTED", "工具审批未就绪，已关闭会话");
+    }
     if (!session.sessionId || this.sessions.has(session.sessionId)) {
       session.dispose();
       throw new RuntimeError("INVALID_SESSION", "Pi SDK 返回了无效或重复的会话 id");
@@ -1656,10 +1723,13 @@ export class PiSessionRuntime implements SessionRuntime {
       }
     } else { review = undefined; }
 
+    try { permissions.initialize(session.sessionId, sessionManager); }
+    catch (error) { permissions.close(); session.dispose(); throw error; }
     let unsubscribe: () => void;
     try {
       unsubscribe = session.subscribe((event) => this.forwardSdkEvent(session, event));
     } catch {
+      permissions.close();
       session.dispose();
       throw new RuntimeError("SESSION_SUBSCRIBE_FAILED", "无法订阅 Pi SDK 会话事件");
     }
@@ -1668,6 +1738,9 @@ export class PiSessionRuntime implements SessionRuntime {
     const defaultToolNames = readActiveToolNames(session);
     const contextUsage = readContextUsage(session);
     const managed = {
+      permissions,
+      activePrompts: 0,
+      generation: 0,
       cwd,
       session,
       unsubscribe,
@@ -1747,7 +1820,7 @@ export class PiSessionRuntime implements SessionRuntime {
     const event: RuntimeEvent = {
       sessionId: session.sessionId,
       name: "session.configurationChanged",
-      data: describeConfiguration(session, managed.defaultToolNames),
+      data: describeConfiguration(session, managed.defaultToolNames, managed.permissions.mode),
     };
     for (const listener of this.listeners) listener(event);
   }
@@ -1786,7 +1859,7 @@ export class PiSessionRuntime implements SessionRuntime {
       runtimeEvent = {
         sessionId: session.sessionId,
         name: "session.configurationChanged",
-        data: describeConfiguration(session, managed?.defaultToolNames ?? readActiveToolNames(session)),
+        data: describeConfiguration(session, managed?.defaultToolNames ?? readActiveToolNames(session), managed?.permissions.mode),
       };
     } else if (event.type === "message_update" && isRecord(event.assistantMessageEvent)) {
       const update = event.assistantMessageEvent;
@@ -1876,7 +1949,7 @@ function describeManagedSession(
     sessionId: managed.session.sessionId,
     cwd: managed.cwd,
     sessionPath: managed.session.sessionFile ?? null,
-    configuration: describeConfiguration(managed.session, managed.defaultToolNames),
+    configuration: describeConfiguration(managed.session, managed.defaultToolNames, managed.permissions.mode),
     messages,
     nextHistoryCursor: page.nextHistoryCursor,
     queuedMessages: describeQueue(managed.session),
@@ -2011,6 +2084,7 @@ function readBoundedText(value: unknown, maximumLength: number): string | null {
 }
 
 function releaseSession(managed: ManagedSession): void {
+  managed.permissions.close();
   try {
     managed.unsubscribe();
   } finally {
@@ -2021,6 +2095,7 @@ function releaseSession(managed: ManagedSession): void {
 function describeConfiguration(
   session: PiSessionLike,
   defaultToolNames: string[],
+  permissionMode: PermissionMode = "accept-edits",
 ): SessionConfiguration {
   const available = resolveThinkingAvailability(session).levels;
   const current = readSessionThinkingLevel(session);
@@ -2028,6 +2103,7 @@ function describeConfiguration(
   const availableTools = readAvailableTools(session);
   const availableToolNames = new Set(availableTools.map((tool) => tool.name));
   return {
+    permissionMode,
     model: model ? (toAgentModel(model)[0] ?? null) : null,
     thinkingLevel: clampThinkingLevel(current, available),
     availableThinkingLevels: available,
@@ -2593,6 +2669,11 @@ function createToolDisplayPayload(
 
 function redactInlineSecrets(value: string): string {
   return value
+    .replace(/([a-z][a-z0-9+.-]*:[/][/])[^\s"'<>/@]+@/gi, `$1${REDACTED_TOOL_VALUE}@`)
+    .replace(
+      /(--(?:api[-_]?key|access[-_]?token|refresh[-_]?token|client[-_]?secret|password|passwd|credentials?|cookie|secret|token|authorization|user)|-[uH])(\s+|=)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)/gi,
+      (_match, flag: string, separator: string) => `${flag}${separator}${REDACTED_TOOL_VALUE}`,
+    )
     .replace(
       /\b(authorization)(\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\r\n,;]+)/gi,
       (_match, label: string, separator: string) => `${label}${separator}${REDACTED_TOOL_VALUE}`,
@@ -2640,6 +2721,6 @@ function isMissingFileError(error: unknown): boolean {
 }
 
 function mapRuntimeError(error: unknown, code: string, message: string): RuntimeError {
-  if (error instanceof ReviewError) return new RuntimeError(error.code, error.message);
+  if (error instanceof ReviewError || error instanceof PermissionError) return new RuntimeError(error.code, error.message);
   return error instanceof RuntimeError ? error : new RuntimeError(code, message);
 }

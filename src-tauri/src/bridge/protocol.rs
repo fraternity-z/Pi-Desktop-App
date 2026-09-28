@@ -156,6 +156,54 @@ pub struct ModelSelection {
 pub struct SessionConfigurationUpdate {
     pub model: Option<ModelSelection>,
     pub thinking_level: Option<String>,
+    pub permission_mode: Option<PermissionMode>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PermissionMode {
+    Ask,
+    #[default]
+    AcceptEdits,
+    Auto,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PermissionDecision {
+    Deny,
+    AllowOnce,
+    AllowSession,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PermissionRequest {
+    pub request_id: String,
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub summary: String,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PermissionResolution {
+    pub request_id: String,
+    pub decision: PermissionDecision,
+}
+
+pub(crate) fn valid_permission_id(value: &str) -> bool {
+    !value.trim().is_empty() && value.chars().count() <= 128 && !value.chars().any(char::is_control)
+}
+
+pub(crate) fn valid_permission_request(request: &PermissionRequest) -> bool {
+    valid_permission_id(&request.request_id)
+        && valid_permission_id(&request.tool_call_id)
+        && valid_permission_id(&request.tool_name)
+        && !request.summary.trim().is_empty()
+        && request.summary.chars().count() <= 4096
+        && valid_review_timestamp(&request.expires_at)
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -400,6 +448,8 @@ impl SessionReviewRequest {
 #[serde(rename_all = "camelCase")]
 pub struct SessionConfiguration {
     pub model: Option<AgentModel>,
+    #[serde(default)]
+    pub permission_mode: PermissionMode,
     pub thinking_level: String,
     pub available_thinking_levels: Vec<String>,
     #[serde(default)]
@@ -699,18 +749,39 @@ pub fn validate_event(event: &BridgeEvent) -> Result<(), AppError> {
                 return Err(invalid_event_data(&event.name));
             }
         }
+        "permission.requested" => {
+            if !event
+                .data
+                .as_ref()
+                .and_then(|data| serde_json::from_value::<PermissionRequest>(data.clone()).ok())
+                .is_some_and(|request| valid_permission_request(&request))
+            {
+                return Err(invalid_event_data(&event.name));
+            }
+        }
+        "permission.resolved" => {
+            if !event
+                .data
+                .as_ref()
+                .and_then(|data| serde_json::from_value::<PermissionResolution>(data.clone()).ok())
+                .is_some_and(|resolution| valid_permission_id(&resolution.request_id))
+            {
+                return Err(invalid_event_data(&event.name));
+            }
+        }
         "session.configurationChanged" => {
             let data = event
                 .data
                 .as_ref()
                 .and_then(serde_json::Value::as_object)
                 .filter(|data| {
-                    (data.len() == 3 || data.len() == 6)
+                    let count = data.len() - usize::from(data.contains_key("permissionMode"));
+                    (count == 3 || count == 6)
                         && data.contains_key("model")
                         && data.contains_key("thinkingLevel")
                         && data.contains_key("availableThinkingLevels")
                         && valid_model_value(data.get("model"))
-                        && (data.len() == 3
+                        && (count == 3
                             || (data.contains_key("availableTools")
                                 && data.contains_key("activeToolNames")
                                 && data.contains_key("defaultToolNames")))
@@ -1030,6 +1101,61 @@ mod tests {
         assert!(validate_event(&event).is_ok());
         event.name = "tool.started".to_owned();
         assert!(validate_event(&event).is_err());
+    }
+
+    #[test]
+    fn validates_permission_events_and_mode_compatibility() {
+        let request = serde_json::json!({
+            "requestId": "approval-1", "toolCallId": "tool-1", "toolName": "bash",
+            "summary": "command: git status", "expiresAt": "2026-09-28T12:00:00.000Z"
+        });
+        let mut event = BridgeEvent {
+            v: 1,
+            kind: "event".to_owned(),
+            seq: 1,
+            session_id: "s-1".to_owned(),
+            name: "permission.requested".to_owned(),
+            data: Some(request.clone()),
+        };
+        assert!(validate_event(&event).is_ok());
+        for (key, value) in [
+            ("requestId", serde_json::json!(" ")),
+            ("toolCallId", serde_json::json!("bad\nidentifier")),
+            ("toolName", serde_json::json!("x".repeat(129))),
+            ("summary", serde_json::json!("x".repeat(4097))),
+            ("expiresAt", serde_json::json!("2026-02-30T12:00:00.000Z")),
+            ("unexpected", serde_json::json!(true)),
+        ] {
+            let mut invalid = request.clone();
+            invalid[key] = value;
+            event.data = Some(invalid);
+            assert!(validate_event(&event).is_err(), "invalid field: {key}");
+        }
+        event.name = "permission.resolved".to_owned();
+        for decision in ["deny", "allow-once", "allow-session"] {
+            event.data =
+                Some(serde_json::json!({ "requestId": "approval-1", "decision": decision }));
+            assert!(validate_event(&event).is_ok());
+        }
+        for decision in [
+            serde_json::json!("auto"),
+            serde_json::json!(["deny"]),
+            serde_json::Value::Null,
+        ] {
+            event.data =
+                Some(serde_json::json!({ "requestId": "approval-1", "decision": decision }));
+            assert!(validate_event(&event).is_err());
+        }
+        let legacy = serde_json::json!({"model": null, "thinkingLevel": "off", "availableThinkingLevels": ["off"]});
+        let configuration: SessionConfiguration = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(configuration.permission_mode, PermissionMode::AcceptEdits);
+        event.name = "session.configurationChanged".to_owned();
+        for mode in ["ask", "accept-edits", "auto", "invalid"] {
+            let mut data = legacy.clone();
+            data["permissionMode"] = serde_json::json!(mode);
+            event.data = Some(data);
+            assert_eq!(validate_event(&event).is_ok(), mode != "invalid");
+        }
     }
 
     #[test]

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createHello, type OutboundFrame } from "./protocol.js";
 import { BridgeServer } from "./server.js";
 import { RuntimeError, type RuntimeEvent, type SessionRuntime } from "./session-runtime.js";
+import { PermissionError } from "./tool-permissions.js";
 
 interface RuntimeMock {
   runtime: SessionRuntime;
@@ -149,6 +150,49 @@ function setup(runtimeMock = createRuntimeMock()) {
 }
 
 describe("BridgeServer", () => {
+  it("提示等待授权时仍可查询并回复审批，保留事件与最终序号", async () => {
+    const runtimeMock = createRuntimeMock();
+    let finishPrompt!: () => void;
+    runtimeMock.prompt.mockReturnValueOnce(new Promise<void>((resolve) => { finishPrompt = resolve; }));
+    const request = { requestId: "approval-1", toolCallId: "tool-1", toolName: "bash", summary: "command: git status", expiresAt: "2026-09-28T12:00:00.000Z" };
+    runtimeMock.runtime.listPermissions = vi.fn(() => [request]);
+    runtimeMock.runtime.replyPermission = vi.fn(() => {
+      runtimeMock.emit({ sessionId: "s-1", name: "permission.resolved", data: { requestId: request.requestId, decision: "allow-once" } });
+      finishPrompt();
+    });
+    const { server, frames } = setup(runtimeMock);
+    await server.handleLine(JSON.stringify({ v: 1, id: "configure", op: "session.configure", sessionId: "s-1", permissionMode: "ask" }));
+    expect(runtimeMock.configureSession).toHaveBeenCalledWith("s-1", { permissionMode: "ask" });
+    const prompt = server.handleLine(JSON.stringify({ v: 1, id: "prompt", op: "prompt", sessionId: "s-1", text: "check files", permissionMode: "ask" }));
+    expect(runtimeMock.prompt).toHaveBeenCalledWith("s-1", "check files", undefined, undefined, undefined, "ask");
+    runtimeMock.emit({ sessionId: "s-1", name: "permission.requested", data: request });
+    await server.handleLine(JSON.stringify({ v: 1, id: "list", op: "permission.list", sessionId: "s-1" }));
+    expect(runtimeMock.runtime.listPermissions).toHaveBeenCalledWith("s-1");
+    expect(frames).toContainEqual(expect.objectContaining({ id: "list", ok: true, data: [request] }));
+    expect(frames).not.toContainEqual(expect.objectContaining({ id: "prompt" }));
+    await server.handleLine(JSON.stringify({ v: 1, id: "reply", op: "permission.reply", sessionId: "s-1", requestId: request.requestId, decision: "allow-once" }));
+    await prompt;
+    expect(runtimeMock.runtime.replyPermission).toHaveBeenCalledWith("s-1", "approval-1", "allow-once");
+    expect(frames).toContainEqual(expect.objectContaining({ id: "reply", ok: true }));
+    expect(frames).toContainEqual(expect.objectContaining({ id: "prompt", ok: true, data: { finalSeq: 2 } }));
+  });
+
+  it("不支持审批或审批已过期时返回稳定错误", async () => {
+    const { server, runtimeMock, frames } = setup();
+    const list = JSON.stringify({ v: 1, id: "list", op: "permission.list", sessionId: "s-1" });
+    const reply = JSON.stringify({ v: 1, id: "reply", op: "permission.reply", sessionId: "s-1", requestId: "approval-1", decision: "deny" });
+    for (const line of [list, reply]) {
+      await server.handleLine(line);
+      expect(frames.at(-1)).toMatchObject({ ok: false, error: { code: "TOOL_PERMISSIONS_UNSUPPORTED" } });
+    }
+    runtimeMock.runtime.replyPermission = vi.fn(() => { throw new PermissionError("PERMISSION_REQUEST_EXPIRED", "审批已过期"); });
+    await server.handleLine(reply);
+    expect(frames.at(-1)).toMatchObject({ ok: false, error: { code: "PERMISSION_REQUEST_EXPIRED", message: "审批已过期" } });
+    runtimeMock.configureSession.mockRejectedValueOnce(new PermissionError("PERMISSION_SAVE_FAILED", "无法保存会话权限模式"));
+    await server.handleLine(JSON.stringify({ v: 1, id: "configure", op: "session.configure", sessionId: "s-1", permissionMode: "auto" }));
+    expect(frames.at(-1)).toMatchObject({ ok: false, error: { code: "PERMISSION_SAVE_FAILED" } });
+  });
+
   it("路由历史分页，并为不支持分页的运行时返回明确错误", async () => {
     const { server, frames, runtimeMock } = setup();
     const request = JSON.stringify({ v: 1, id: "history", op: "session.history", sessionId: "s-1", cursor: "1:200:0" });
@@ -201,6 +245,7 @@ describe("BridgeServer", () => {
       undefined,
       undefined,
       undefined,
+      undefined,
     );
     expect(frames).toContainEqual(
       expect.objectContaining({ id: "4", ok: true, data: { finalSeq: 0 } }),
@@ -235,12 +280,14 @@ describe("BridgeServer", () => {
       "steer",
       undefined,
       undefined,
+      undefined,
     );
     expect(runtimeMock.prompt).toHaveBeenNthCalledWith(
       2,
       "s-1",
       "later",
       "followUp",
+      undefined,
       undefined,
       undefined,
     );
@@ -258,6 +305,7 @@ describe("BridgeServer", () => {
       undefined,
       ["read", "edit"],
       ["C:\\cache\\paste.png"],
+      undefined,
     );
   });
 

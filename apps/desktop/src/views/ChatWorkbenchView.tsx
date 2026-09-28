@@ -78,6 +78,8 @@ import { useRightPanelLayout, useRightPanelVisibility } from "../stores/useRight
 import { useRightPanelSessionState } from "../stores/useRightPanelSessionState";
 import { useSidebarPreferences } from "../stores/useSidebarPreferences";
 import { useToolPermissions } from "../stores/useToolPermissions";
+import { usePermissionRequests } from "../stores/usePermissionRequests";
+import { PermissionDialog } from "../components/PermissionDialog";
 import { useGitBranches } from "../stores/useGitBranches";
 import {
   buildComposerCommandCatalog,
@@ -122,6 +124,9 @@ export function ChatWorkbenchView() {
   const closeCommandPalette = useCallback(() => setCommandPaletteOpen(false), []);
   const runtime = useRuntimeStatus();
   const session = useChatSession();
+  const permissions = usePermissionRequests(
+    session.lifecycle === "draft" ? null : session.sessionId, session.eventConnection,
+  );
   const gitBranches = useGitBranches(session.cwd, session.phase === "streaming" || session.phase === "creating");
   const toolPermissions = useToolPermissions(session.configuration);
   const ecosystem = useAgentEcosystem();
@@ -1157,6 +1162,17 @@ export function ChatWorkbenchView() {
                 )}
               </div>
 
+              {permissions.request && (
+                <PermissionDialog request={permissions.request} workspace={session.cwd}
+                  pendingCount={permissions.pendingCount} busy={permissions.busy} error={permissions.error}
+                  onReply={permissions.reply} />
+              )}
+              {permissions.error && !permissions.request && (
+                <p className="sidebar-dialog-error" role="alert">
+                  {permissions.error}
+                  <button className="secondary-button" type="button" onClick={permissions.retry}>重新连接授权</button>
+                </p>
+              )}
               {hasSession && (
                 <ChatComposer
                   sessionKey={session.sessionId ?? ""}
@@ -1183,7 +1199,7 @@ export function ChatWorkbenchView() {
                   canSend={canSend}
                   queuedMessages={session.queuedMessages}
                   queuePaused={session.queuePaused}
-                  permissionMode={composerInput.permission.mode}
+                  permissionMode={session.draftConfiguration?.permissionMode ?? session.configuration?.permissionMode ?? "accept-edits"}
                   availableTools={composerTools}
                   selectedToolNames={selectedComposerTools}
                   defaultToolNames={session.configuration?.defaultToolNames ?? []}
@@ -1205,8 +1221,7 @@ export function ChatWorkbenchView() {
                   onPrepareConfiguration={session.prepareConfiguration}
                   onModelChange={(provider, id) => void session.updateModel(provider, id)}
                   onThinkingLevelChange={(level) => void session.updateThinkingLevel(level)}
-                  onUseDefaultTools={composerPermissions.useDefaultTools}
-                  onToolSelectionChange={composerPermissions.setCustomTools}
+                  onPermissionModeChange={(mode) => void session.updatePermissionMode(mode)}
                   onSend={sendPrompt}
                   onClearQueue={() => void session.clearQueue()}
                   onAbort={() => void session.abort()}

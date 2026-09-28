@@ -15,6 +15,29 @@ export const THINKING_LEVELS = [
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export type PromptStreamingBehavior = "steer" | "followUp";
 export type PackageScope = "global" | "project";
+export type PermissionMode = "ask" | "accept-edits" | "auto";
+export type PermissionDecision = "deny" | "allow-once" | "allow-session";
+
+export interface PermissionRequest {
+  requestId: string;
+  toolCallId: string;
+  toolName: string;
+  summary: string;
+  expiresAt: string;
+}
+
+export function isPermissionMode(value: unknown): value is PermissionMode {
+  return value === "ask" || value === "accept-edits" || value === "auto";
+}
+
+export function isPermissionRequest(value: unknown): value is PermissionRequest {
+  if (!isRecord(value) || Object.keys(value).length !== 5) return false;
+  return [value.requestId, value.toolCallId, value.toolName].every(
+    (id) => isBoundedText(id, 128) && !/[\x00-\x1f\x7f]/.test(id),
+  ) && isBoundedText(value.summary, 4096) &&
+    typeof value.expiresAt === "string" && value.expiresAt.length <= 32 &&
+    Number.isFinite(Date.parse(value.expiresAt));
+}
 
 export function isThinkingLevel(value: unknown): value is ThinkingLevel {
   return typeof value === "string" && THINKING_LEVELS.includes(value as ThinkingLevel);
@@ -105,6 +128,7 @@ export interface SessionConfiguration {
   availableTools: AgentTool[];
   activeToolNames: string[];
   defaultToolNames: string[];
+  permissionMode?: PermissionMode;
 }
 
 export interface AgentSession {
@@ -178,6 +202,8 @@ export interface AgentEvent {
 }
 
 export type AgentEventName =
+  | "permission.requested"
+  | "permission.resolved"
   | "agent.started"
   | "user.message"
   | "message.delta"
@@ -194,6 +220,8 @@ export type AgentEventName =
   | "session.usageChanged";
 
 const AGENT_EVENT_NAMES = new Set<AgentEventName>([
+  "permission.requested",
+  "permission.resolved",
   "agent.started",
   "user.message",
   "message.delta",
@@ -312,6 +340,7 @@ export async function configureAgentSession(
   update: {
     model?: Pick<AgentModel, "provider" | "id">;
     thinkingLevel?: ThinkingLevel;
+    permissionMode?: PermissionMode;
   },
 ): Promise<SessionConfiguration> {
   return invoke<SessionConfiguration>("agent_configure_session", { sessionId, update });
@@ -324,6 +353,7 @@ export async function promptAgent(
   streamingBehavior?: PromptStreamingBehavior,
   activeTools?: string[],
   imagePaths?: string[],
+  permissionMode?: PermissionMode,
 ): Promise<number> {
   return invoke<number>("agent_prompt", {
     sessionId,
@@ -331,11 +361,27 @@ export async function promptAgent(
     ...(streamingBehavior === undefined ? {} : { streamingBehavior }),
     ...(activeTools === undefined ? {} : { activeTools }),
     ...(imagePaths === undefined ? {} : { imagePaths }),
+    ...(permissionMode === undefined ? {} : { permissionMode }),
   });
 }
 
 export async function clearAgentQueue(sessionId: string): Promise<void> {
   return invoke("agent_clear_queue", { sessionId });
+}
+
+export async function listAgentPermissionRequests(sessionId: string): Promise<PermissionRequest[]> {
+  const requests = await invoke<unknown>("agent_list_permission_requests", { sessionId });
+  if (!Array.isArray(requests) || requests.length > 64 || !requests.every(isPermissionRequest) ||
+    new Set(requests.map((request) => request.requestId)).size !== requests.length) {
+    throw new Error("待授权请求格式无效，请重新连接会话");
+  }
+  return requests;
+}
+
+export async function replyAgentPermission(
+  sessionId: string, requestId: string, decision: PermissionDecision,
+): Promise<void> {
+  return invoke("agent_reply_permission", { sessionId, requestId, decision });
 }
 
 export async function abortAgent(sessionId: string): Promise<void> {
@@ -371,6 +417,12 @@ export function parseAgentEvent(payload: unknown): AgentEvent | null {
 }
 
 function hasValidEventData(name: AgentEventName, data: unknown): boolean {
+  if (name === "permission.requested") return isPermissionRequest(data);
+  if (name === "permission.resolved") {
+    return isRecord(data) && Object.keys(data).length === 2 &&
+      isBoundedText(data.requestId, 128) && !/[\x00-\x1f\x7f]/.test(data.requestId) &&
+      typeof data.decision === "string" && ["deny", "allow-once", "allow-session"].includes(data.decision);
+  }
   if (name === "message.delta" || name === "thinking.delta") {
     return (
       isRecord(data) &&
@@ -428,9 +480,10 @@ function hasValidEventData(name: AgentEventName, data: unknown): boolean {
   if (name === "session.reviewChanged") return isSessionReviewSummary(data);
   if (name === "session.configurationChanged") {
     if (!isRecord(data)) return false;
-    const keys = Object.keys(data);
+    const keys = Object.keys(data).filter((key) => key !== "permissionMode");
     if (
       (keys.length !== 3 && keys.length !== 6) ||
+      ("permissionMode" in data && !isPermissionMode(data.permissionMode)) ||
       !("model" in data) ||
       !("thinkingLevel" in data) ||
       !("availableThinkingLevels" in data) ||

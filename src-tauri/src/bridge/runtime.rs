@@ -19,7 +19,8 @@ use crate::{
             PackageSummary, PackageUpdateInfo, PermissionDecision, PermissionMode,
             PermissionRequest, PromptStreamingBehavior, RequestHeaderSettings, ResourceSummary,
             SessionConfiguration, SessionConfigurationUpdate, SessionReviewRequest,
-            SlashCommandSummary, THINKING_LEVELS, valid_permission_id,
+            SlashCommandSummary, SubagentTranscriptPage, SubagentTranscriptRequest,
+            THINKING_LEVELS, valid_permission_id,
         },
         supervisor::{
             BridgeEventSink, BridgeFaultSink, BridgeLaunchConfig, BridgeSupervisor,
@@ -445,6 +446,15 @@ impl BridgeRuntime {
         validate_session_id(&session.session_id)?;
         self.remember_session(&session.session_id)?;
         Ok(session)
+    }
+
+    pub fn subagent_transcript(
+        &self,
+        request: SubagentTranscriptRequest,
+    ) -> Result<SubagentTranscriptPage, AppError> {
+        request.validate()?;
+        self.ensure_known_session(&request.session_id)?;
+        self.with_supervisor(|supervisor| supervisor.subagent_transcript(&request))
     }
 
     pub fn list_models(&self) -> Result<Vec<AgentModel>, AppError> {
@@ -1463,6 +1473,21 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     use super::*;
+
+    #[test]
+    fn subagent_transcript_requires_a_managed_parent_before_accessing_bridge() {
+        let runtime = BridgeRuntime::unavailable(
+            AppError::new("RUNTIME_NOT_FOUND", "fixture"), RequestHeaderSettings::default(),
+        );
+        let request = SubagentTranscriptRequest { session_id: "parent".to_owned(),
+            subagent_id: "tool:0".to_owned(), cursor: None };
+        assert_eq!(runtime.subagent_transcript(request.clone()).unwrap_err().code, "SESSION_NOT_OPEN");
+        runtime.remember_session("parent").unwrap();
+        let mut invalid = request.clone();
+        invalid.cursor = Some("bad".to_owned());
+        assert_eq!(runtime.subagent_transcript(invalid).unwrap_err().code, "SUBAGENT_TRANSCRIPT_CURSOR_INVALID");
+        assert_eq!(runtime.subagent_transcript(request).unwrap_err().code, "BRIDGE_UNAVAILABLE");
+    }
 
     #[test]
     fn proxy_save_reserves_restart_and_rejects_startup_races_without_persisting() {

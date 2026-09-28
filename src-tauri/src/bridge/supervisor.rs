@@ -20,7 +20,8 @@ use crate::{
         DeleteSessionsResult, PROTOCOL_VERSION, PackageScope, PackageSummary, PackageUpdateInfo,
         PermissionDecision, PermissionMode, PermissionRequest, PromptStreamingBehavior,
         RequestHeaderSettings, ResourceSummary, SessionConfiguration, SessionHistoryPage,
-        SessionReviewRequest, SlashCommandSummary, parse_hello_frame, valid_permission_request,
+        SessionReviewRequest, SlashCommandSummary, SubagentTranscriptPage, SubagentTranscriptRequest,
+        parse_hello_frame, valid_permission_request,
         valid_session_configuration, valid_slash_commands, validate_event, validate_frame_size,
     },
     error::AppError,
@@ -339,6 +340,25 @@ impl BridgeSupervisor {
             ));
         }
         self.complete_session_history(session)
+    }
+
+    pub fn subagent_transcript(
+        &self,
+        request: &SubagentTranscriptRequest,
+    ) -> Result<SubagentTranscriptPage, AppError> {
+        request.validate()?;
+        let fields = serde_json::to_value(request).map_err(|_| {
+            AppError::new("BRIDGE_REQUEST_INVALID", "无法序列化子代理会话分页请求")
+        })?;
+        let data = self
+            .request("subagent.transcript", fields, self.response_timeout)?
+            .ok_or_else(|| {
+                AppError::new(
+                    "BRIDGE_SUBAGENT_TRANSCRIPT_INVALID",
+                    "Bridge 子代理会话分页响应缺少数据",
+                )
+            })?;
+        request.decode(data)
     }
 
     fn complete_session_history(
@@ -1343,6 +1363,12 @@ fn public_remote_error_code(code: &str) -> Option<&'static str> {
         "HISTORY_CURSOR_INVALID" => "HISTORY_CURSOR_INVALID",
         "HISTORY_MESSAGE_TOO_LARGE" => "HISTORY_MESSAGE_TOO_LARGE",
         "HISTORY_UNAVAILABLE" => "HISTORY_UNAVAILABLE",
+        "SUBAGENT_ID_INVALID" => "SUBAGENT_ID_INVALID",
+        "SUBAGENT_TRANSCRIPT_CHANGED" => "SUBAGENT_TRANSCRIPT_CHANGED",
+        "SUBAGENT_TRANSCRIPT_NOT_FOUND" => "SUBAGENT_TRANSCRIPT_NOT_FOUND",
+        "SUBAGENT_TRANSCRIPT_CURSOR_INVALID" => "SUBAGENT_TRANSCRIPT_CURSOR_INVALID",
+        "SUBAGENT_TRANSCRIPT_UNAVAILABLE" => "SUBAGENT_TRANSCRIPT_UNAVAILABLE",
+        "SUBAGENT_TRANSCRIPT_SAVE_FAILED" => "SUBAGENT_TRANSCRIPT_SAVE_FAILED",
         "SESSION_BUSY" => "SESSION_BUSY",
         "SESSION_NOT_FOUND" => "SESSION_NOT_FOUND",
         "INVALID_SESSION" => "INVALID_SESSION",
@@ -1773,6 +1799,76 @@ mod tests {
             "messages": [{"role": "assistant", "content": "latest"}],
             "nextHistoryCursor": "1:200:0"
         })).unwrap()
+    }
+
+    #[test]
+    fn subagent_transcript_returns_one_page_without_limiting_total_content() {
+        let transport = MockTransport::new([Ok(HELLO)]);
+        let reads = transport.reads.clone();
+        let writes = transport.writes.clone();
+        let supervisor = connect(transport);
+        let mut request = SubagentTranscriptRequest {
+            session_id: "parent".to_owned(), subagent_id: "tool:0".to_owned(), cursor: None,
+        };
+        let text = "x".repeat(60_000);
+        let mut combined = String::new();
+        for index in 1..=20 {
+            let next_cursor = (index < 20).then(|| format!("7:{}:0123456789abcdef", index * 60_000));
+            reads.lock().unwrap().push_back(Ok(json!({
+                "v":1, "kind":"response", "id":format!("rust-{index}"), "ok":true,
+                "data":{"revision":7,"text":text,"nextCursor":next_cursor}
+            }).to_string()));
+            let page = supervisor.subagent_transcript(&request).unwrap();
+            combined.push_str(&page.text);
+            assert_eq!(writes.lock().unwrap().len(), index);
+            let sent: Value = serde_json::from_str(&writes.lock().unwrap()[index - 1]).unwrap();
+            assert_eq!(sent["op"], "subagent.transcript");
+            assert_eq!(sent["sessionId"], "parent");
+            assert_eq!(sent["subagentId"], "tool:0");
+            assert_eq!(sent.get("cursor").and_then(Value::as_str), request.cursor.as_deref());
+            request.cursor = page.next_cursor;
+        }
+        assert_eq!(combined.len(), 1_200_000);
+        assert!(request.cursor.is_none());
+    }
+
+    #[test]
+    fn subagent_transcript_rejects_bad_requests_before_transport() {
+        let transport = MockTransport::new([Ok(HELLO)]);
+        let writes = transport.writes.clone();
+        let supervisor = connect(transport);
+        let request = SubagentTranscriptRequest {
+            session_id: "parent".to_owned(), subagent_id: "tool:0".to_owned(), cursor: Some("bad".to_owned()),
+        };
+        assert_eq!(supervisor.subagent_transcript(&request).unwrap_err().code, "SUBAGENT_TRANSCRIPT_CURSOR_INVALID");
+        assert!(writes.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn subagent_transcript_rejects_missing_or_malformed_page_response() {
+        for data in [None, Some(json!({"revision":1,"text":"[]"})),
+            Some(json!({"revision":1,"text":"x".repeat(64_000),"nextCursor":null}))] {
+            let transport = MockTransport::new([Ok(HELLO)]);
+            transport.reads.lock().unwrap().push_back(Ok(json!({
+                "v":1,"kind":"response","id":"rust-1","ok":true,"data":data
+            }).to_string()));
+            let request = SubagentTranscriptRequest { session_id: "parent".to_owned(), subagent_id: "tool:0".to_owned(), cursor: None };
+            assert_eq!(connect(transport).subagent_transcript(&request).unwrap_err().code, "BRIDGE_SUBAGENT_TRANSCRIPT_INVALID");
+        }
+    }
+
+    #[test]
+    fn subagent_transcript_preserves_stable_remote_errors() {
+        for code in ["SUBAGENT_TRANSCRIPT_CHANGED", "SUBAGENT_TRANSCRIPT_NOT_FOUND",
+            "SUBAGENT_TRANSCRIPT_CURSOR_INVALID", "SUBAGENT_TRANSCRIPT_UNAVAILABLE",
+            "SUBAGENT_TRANSCRIPT_SAVE_FAILED"] {
+            let transport = MockTransport::new([Ok(HELLO)]);
+            transport.reads.lock().unwrap().push_back(Ok(json!({
+                "v":1,"kind":"response","id":"rust-1","ok":false,"error":{"code":code,"message":"retry"}
+            }).to_string()));
+            let request = SubagentTranscriptRequest { session_id: "parent".to_owned(), subagent_id: "tool:0".to_owned(), cursor: None };
+            assert_eq!(connect(transport).subagent_transcript(&request).unwrap_err().code, code);
+        }
     }
 
     #[test]

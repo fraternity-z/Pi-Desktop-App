@@ -254,6 +254,163 @@ pub struct AgentMessageSummary {
     pub timestamp: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review: Option<SessionReviewSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_subagents")]
+    pub subagents: Option<Vec<SubagentSnapshot>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SubagentSnapshot {
+    pub id: String,
+    pub agent: String,
+    pub task: String,
+    pub status: String,
+    pub messages: Vec<SubagentMessage>,
+    pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turns: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_available: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_revision: Option<u64>,
+}
+
+const MAX_SUBAGENT_TRANSCRIPT_PAGE_BYTES: usize = 64_000;
+const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SubagentTranscriptRequest {
+    pub session_id: String,
+    pub subagent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SubagentTranscriptPage {
+    pub revision: u64,
+    pub text: String,
+    pub next_cursor: Option<String>,
+}
+
+fn transcript_cursor(cursor: &str) -> Option<(u64, u64, &str)> {
+    let mut parts = cursor.split(':');
+    let number = |part: &str| {
+        if part.is_empty() || part.len() > 16 || !part.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        part.parse::<u64>().ok().filter(|value| *value <= MAX_SAFE_INTEGER)
+    };
+    let revision = number(parts.next()?)?;
+    let offset = number(parts.next()?)?;
+    let scope = parts.next()?;
+    if revision == 0 || parts.next().is_some() || scope.len() != 16
+        || !scope.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return None;
+    }
+    Some((revision, offset, scope))
+}
+
+impl SubagentTranscriptRequest {
+    pub(crate) fn validate(&self) -> Result<(), AppError> {
+        if self.session_id.trim().is_empty() || self.session_id.len() > 128
+            || self.session_id.chars().any(char::is_control)
+        {
+            return Err(AppError::new("SESSION_ID_INVALID", "主会话 id 无效"));
+        }
+        if self.subagent_id.trim().is_empty() || self.subagent_id.encode_utf16().count() > 260
+            || self.subagent_id.chars().any(char::is_control)
+        {
+            return Err(AppError::new("SUBAGENT_ID_INVALID", "子代理 id 无效"));
+        }
+        if self.cursor.as_deref().is_some_and(|cursor| transcript_cursor(cursor).is_none()) {
+            return Err(AppError::new("SUBAGENT_TRANSCRIPT_CURSOR_INVALID", "子代理会话分页游标无效"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn decode(&self, value: serde_json::Value) -> Result<SubagentTranscriptPage, AppError> {
+        let invalid = || AppError::new("BRIDGE_SUBAGENT_TRANSCRIPT_INVALID", "Bridge 子代理会话分页响应无效");
+        // An explicit null marks the final page; a missing field is not EOF.
+        if value.get("nextCursor").is_none() {
+            return Err(invalid());
+        }
+        let page: SubagentTranscriptPage = serde_json::from_value(value).map_err(|_| invalid())?;
+        if page.revision == 0 || page.revision > MAX_SAFE_INTEGER || page.text.is_empty()
+            || serde_json::to_vec(&page.text).map_err(|_| invalid())?.len() > MAX_SUBAGENT_TRANSCRIPT_PAGE_BYTES
+        {
+            return Err(invalid());
+        }
+        let previous = match self.cursor.as_deref() {
+            Some(cursor) => Some(transcript_cursor(cursor).ok_or_else(invalid)?),
+            None => None,
+        };
+        if previous.is_some_and(|(revision, _, _)| revision != page.revision) {
+            return Err(invalid());
+        }
+        if let Some(cursor) = page.next_cursor.as_deref() {
+            let (revision, offset, scope) = transcript_cursor(cursor).ok_or_else(invalid)?;
+            let expected_offset = previous.map_or(0, |(_, offset, _)| offset)
+                .checked_add(page.text.encode_utf16().count() as u64).ok_or_else(invalid)?;
+            if revision != page.revision || offset != expected_offset
+                || previous.is_some_and(|(_, _, previous_scope)| scope != previous_scope)
+            {
+                return Err(invalid());
+            }
+        }
+        Ok(page)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SubagentMessage {
+    pub role: String,
+    pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_input: Option<ToolDisplayPayload>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_output: Option<ToolDisplayPayload>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_error: Option<bool>,
+}
+
+fn deserialize_subagents<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Vec<SubagentSnapshot>>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    if !valid_subagents(&value) { return Err(serde::de::Error::custom("invalid subagent snapshots")); }
+    serde_json::from_value(value).map(Some).map_err(serde::de::Error::custom)
+}
+
+fn valid_subagents(value: &serde_json::Value) -> bool {
+    let Ok(snapshots) = serde_json::from_value::<Vec<SubagentSnapshot>>(value.clone()) else { return false; };
+    if serde_json::to_value(&snapshots).ok().as_ref() != Some(value) { return false; }
+    if snapshots.is_empty() || snapshots.len() > 16 || value.to_string().len() > 100_000 { return false; }
+    let mut ids = std::collections::HashSet::new();
+    let bounded = |value: &str, cap: usize| !value.trim().is_empty() && value.encode_utf16().count() <= cap;
+    snapshots.iter().all(|snapshot| {
+        bounded(&snapshot.id, 260) && ids.insert(&snapshot.id) && bounded(&snapshot.agent, 128) &&
+        snapshot.task.encode_utf16().count() <= 4096 &&
+        matches!(snapshot.status.as_str(), "pending" | "running" | "completed" | "failed" | "cancelled") &&
+        snapshot.model.as_ref().is_none_or(|value| bounded(value, 256)) &&
+        snapshot.turns.is_none_or(|value| value <= 9_007_199_254_740_991) &&
+        snapshot.transcript_revision.is_none_or(|value| value > 0 && value <= MAX_SAFE_INTEGER) &&
+        snapshot.messages.len() <= 100 && snapshot.messages.iter().all(|message| {
+            matches!(message.role.as_str(), "user" | "assistant" | "thinking" | "tool" | "system") &&
+            message.content.encode_utf16().count() <= 8192 &&
+            message.tool_call_id.as_ref().is_none_or(|value| bounded(value, 256)) &&
+            message.tool_name.as_ref().is_none_or(|value| bounded(value, 128)) &&
+            [&message.tool_input, &message.tool_output].iter().all(|payload| payload.as_ref().is_none_or(|payload| bounded(&payload.text, 4096)))
+        })
+    })
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -688,7 +845,7 @@ pub fn validate_event(event: &BridgeEvent) -> Result<(), AppError> {
                 return Err(invalid_event_data(&event.name));
             }
         }
-        "tool.started" | "tool.completed" | "tool.failed" => {
+        "tool.started" | "tool.updated" | "tool.completed" | "tool.failed" => {
             let data = event
                 .data
                 .as_ref()
@@ -700,7 +857,7 @@ pub fn validate_event(event: &BridgeEvent) -> Result<(), AppError> {
                 "output"
             };
             let valid_shape = data.keys().all(|key| {
-                matches!(key.as_str(), "toolCallId" | "toolName")
+                matches!(key.as_str(), "toolCallId" | "toolName" | "subagents")
                     || key == detail_key
                     || (event.name != "tool.started" && key == "review")
             }) && (!data.contains_key(detail_key)
@@ -713,6 +870,7 @@ pub fn validate_event(event: &BridgeEvent) -> Result<(), AppError> {
                         })
                         .is_some_and(|review| valid_review_summary(&review)));
             if !valid_shape
+                || data.get("subagents").is_some_and(|value| !valid_subagents(value))
                 || !valid_bounded_text(data.get("toolCallId"), 256)
                 || !valid_bounded_text(data.get("toolName"), 128)
             {
@@ -1007,6 +1165,104 @@ fn sanitize_remote_field<'a>(value: &'a str, fallback: &'a str) -> &'a str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn transcript_request(cursor: Option<&str>) -> SubagentTranscriptRequest {
+        SubagentTranscriptRequest {
+            session_id: "parent".to_owned(),
+            subagent_id: "tool:0".to_owned(),
+            cursor: cursor.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn validates_subagent_transcript_request_identifiers_and_cursors() {
+        assert!(transcript_request(None).validate().is_ok());
+        assert!(transcript_request(Some("12:64000:0123456789abcdef")).validate().is_ok());
+        for cursor in ["", "1:2", "0:2:0123456789abcdef", "1:-1:0123456789abcdef",
+            "9007199254740992:2:0123456789abcdef", "1:9007199254740992:0123456789abcdef",
+            "1:2:0123456789abcdeF", "1:2:0123456789abcdef:extra"] {
+            assert_eq!(transcript_request(Some(cursor)).validate().unwrap_err().code,
+                "SUBAGENT_TRANSCRIPT_CURSOR_INVALID");
+        }
+        for id in ["".to_owned(), "bad\nid".to_owned(), "x".repeat(261)] {
+            let mut request = transcript_request(None);
+            request.subagent_id = id;
+            assert_eq!(request.validate().unwrap_err().code, "SUBAGENT_ID_INVALID");
+        }
+        for id in [" ".to_owned(), "bad\0id".to_owned(), "x".repeat(129)] {
+            let mut request = transcript_request(None);
+            request.session_id = id;
+            assert_eq!(request.validate().unwrap_err().code, "SESSION_ID_INVALID");
+        }
+    }
+
+    #[test]
+    fn subagent_transcript_pages_preserve_full_unicode_and_validate_encoded_page_size() {
+        let text = "文😀\n\"".repeat(4000);
+        let value = serde_json::json!({"revision":1, "text":text,
+            "nextCursor":format!("1:{}:0123456789abcdef", text.encode_utf16().count())});
+        let page = transcript_request(None).decode(value.clone()).unwrap();
+        assert_eq!(page.text, text);
+        assert_eq!(serde_json::to_value(page).unwrap(), value);
+        let maximum = "x".repeat(MAX_SUBAGENT_TRANSCRIPT_PAGE_BYTES - 2);
+        assert!(transcript_request(None).decode(serde_json::json!({"revision":1,"text":maximum,"nextCursor":null})).is_ok());
+        for text in ["x".repeat(MAX_SUBAGENT_TRANSCRIPT_PAGE_BYTES - 1), "\n".repeat(32000)] {
+            assert!(transcript_request(None).decode(serde_json::json!({"revision":1,"text":text,"nextCursor":null})).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_subagent_transcript_pages_and_nonconsecutive_cursors() {
+        let request = transcript_request(Some("7:10:0123456789abcdef"));
+        assert!(request.decode(serde_json::json!({"revision":7,"text":"😀","nextCursor":"7:12:0123456789abcdef"})).is_ok());
+        assert!(request.decode(serde_json::json!({"revision":7,"text":"]","nextCursor":null})).is_ok());
+        for value in [
+            serde_json::json!({"revision":7,"text":"]"}),
+            serde_json::json!({"revision":7,"text":"]","nextCursor":null,"extra":true}),
+            serde_json::json!({"revision":8,"text":"]","nextCursor":null}),
+            serde_json::json!({"revision":0,"text":"]","nextCursor":null}),
+            serde_json::json!({"revision":9007199254740992_u64,"text":"]","nextCursor":null}),
+            serde_json::json!({"revision":7,"text":"","nextCursor":null}),
+            serde_json::json!({"revision":7,"text":3,"nextCursor":null}),
+            serde_json::json!({"revision":7,"text":"😀","nextCursor":"7:11:0123456789abcdef"}),
+            serde_json::json!({"revision":7,"text":"😀","nextCursor":"7:10:0123456789abcdef"}),
+            serde_json::json!({"revision":7,"text":"😀","nextCursor":"8:12:0123456789abcdef"}),
+            serde_json::json!({"revision":7,"text":"😀","nextCursor":"7:12:fedcba9876543210"}),
+        ] {
+            assert_eq!(request.decode(value).unwrap_err().code, "BRIDGE_SUBAGENT_TRANSCRIPT_INVALID");
+        }
+    }
+
+    #[test]
+    fn validates_subagent_events_and_history() {
+        let snapshot = serde_json::json!({"id":"t:0","agent":"explorer","task":"inspect","status":"running","messages":[{"role":"assistant","content":"hello"}],"truncated":false,"transcriptAvailable":true,"transcriptRevision":5});
+        let event_value = serde_json::json!({"v":1,"kind":"event","seq":1,"sessionId":"s","name":"tool.updated","data":{"toolCallId":"t","toolName":"subagent","subagents":[snapshot.clone()]}});
+        let event: BridgeEvent = serde_json::from_value(event_value.clone()).unwrap();
+        assert!(validate_event(&event).is_ok());
+        let history = serde_json::json!({"role":"tool","content":"","subagents":[snapshot.clone()]});
+        let parsed: AgentMessageSummary = serde_json::from_value(history.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), history);
+        let mut legacy = snapshot.clone();
+        legacy.as_object_mut().unwrap().remove("transcriptAvailable");
+        legacy.as_object_mut().unwrap().remove("transcriptRevision");
+        assert!(valid_subagents(&serde_json::json!([legacy])));
+        for invalid in [
+            serde_json::json!([]), serde_json::json!([snapshot.clone(), snapshot.clone()]),
+            { let mut s = snapshot.clone(); s["status"] = serde_json::json!("unknown"); serde_json::json!([s]) },
+            { let mut s = snapshot.clone(); s["raw"] = serde_json::json!(true); serde_json::json!([s]) },
+            { let mut s = snapshot.clone(); s["model"] = serde_json::Value::Null; serde_json::json!([s]) },
+            { let mut s = snapshot.clone(); s["transcriptRevision"] = serde_json::json!(0); serde_json::json!([s]) },
+            { let mut s = snapshot.clone(); s["transcriptRevision"] = serde_json::json!(9007199254740992_u64); serde_json::json!([s]) },
+            { let mut s = snapshot.clone(); s["transcriptAvailable"] = serde_json::json!("true"); serde_json::json!([s]) },
+            { let mut s = snapshot.clone(); s["messages"][0]["subagents"] = serde_json::json!([]); serde_json::json!([s]) },
+            { let mut s = snapshot.clone(); s["messages"][0]["content"] = serde_json::json!("x".repeat(8193)); serde_json::json!([s]) },
+        ] {
+            let mut candidate = event_value.clone(); candidate["data"]["subagents"] = invalid.clone();
+            assert!(validate_event(&serde_json::from_value(candidate).unwrap()).is_err());
+            let mut candidate = history.clone(); candidate["subagents"] = invalid;
+            assert!(serde_json::from_value::<AgentMessageSummary>(candidate).is_err());
+        }
+    }
 
     #[test]
     fn validates_review_timestamps_and_request_ids() {

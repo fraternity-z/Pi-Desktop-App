@@ -272,6 +272,21 @@ describe("parseRequest", () => {
     );
   });
 
+  it.each([undefined, "12:64000:0123456789abcdef"])("解析完整子代理会话分页 %s", (cursor) => {
+    const request = { v: 1, id: "transcript", op: "subagent.transcript", sessionId: "parent", subagentId: "tool:0", ...(cursor === undefined ? {} : { cursor }) };
+    expect(parseRequest(JSON.stringify(request))).toEqual(request);
+  });
+
+  it.each([
+    { subagentId: "" }, { subagentId: "bad\nid" }, { subagentId: "bad\u007fid" }, { subagentId: "x".repeat(261) },
+    { cursor: "" }, { cursor: "1:2" }, { cursor: "0:2:0123456789abcdef" },
+    { cursor: "1:-1:0123456789abcdef" }, { cursor: "9007199254740992:2:0123456789abcdef" },
+    { cursor: "1:9007199254740992:0123456789abcdef" }, { cursor: "1:2:0123456789abcdeF" },
+  ])("拒绝无效的子代理分页参数 %j", (override) => {
+    expect(() => parseRequest(JSON.stringify({ v: 1, id: "transcript", op: "subagent.transcript", sessionId: "parent", subagentId: "tool:0", ...override })))
+      .toThrowError(expect.objectContaining({ code: "INVALID_REQUEST" }));
+  });
+
   it("拒绝超过最大长度的帧和提示词", () => {
     expect(() => parseRequest("x".repeat(MAX_FRAME_BYTES + 1))).toThrowError(
       expect.objectContaining<Partial<ProtocolError>>({ code: "FRAME_TOO_LARGE" }),

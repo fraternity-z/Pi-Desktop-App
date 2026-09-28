@@ -17,10 +17,119 @@ function harness(cwd: string, entries: unknown[] = []) {
   emit("session_start");
   return { review, entries, emit, changed, api };
 }
+const childPrefix = "12345678-1234-1234-1234-123456789abc";
+function childHarness(review: SessionReview, prefix = childPrefix, id = "child-1") {
+  const callbacks = new Map<string, (event: Event, context: ReviewContext) => unknown>();
+  const manager = { getSessionId: () => id, getBranch: () => [] };
+  const appendEntry = vi.fn();
+  review.childExtension(manager, prefix)({ on: (name, handler) => { callbacks.set(name, handler); }, appendEntry });
+  const emit = (name: string, event: Event = { toolName: "write", toolCallId: "tool-1", input: { path: "sample.txt" } }, sessionManager = manager) => callbacks.get(name)?.(event, { sessionManager });
+  return { callbacks, manager, appendEntry, emit };
+}
 describe("session file review", () => {
   let cwd: string;
   beforeEach(async () => { cwd = await mkdtemp(join(tmpdir(), "pi-review-")); });
   afterEach(async () => { await rm(cwd, { recursive: true, force: true }); });
+  it("persists child edits on the parent with isolated IDs and recoverable snapshots", async () => {
+    await writeFile(join(cwd, "sample.txt"), "before\n");
+    const h = harness(cwd); const child = childHarness(h.review);
+    await child.emit("tool_call"); await writeFile(join(cwd, "sample.txt"), "after\n");
+    await child.emit("tool_result");
+    const summary = h.review.list().entries[0]!;
+    expect(summary).toMatchObject({ status: "ready", kind: "modified" });
+    expect(summary.toolCallId).toMatch(new RegExp(`^${childPrefix}:[a-f0-9]{32}$`));
+    expect(child.appendEntry).not.toHaveBeenCalled(); expect(h.entries).toHaveLength(1);
+    expect(h.changed).toHaveBeenCalledWith("session-1", summary);
+    const reopened = harness(cwd, h.entries);
+    expect(reopened.review.detail(summary.id)).toMatchObject({ beforeText: "before\n", afterText: "after\n" });
+    await reopened.review.rollback(summary.id);
+    expect(await readFile(join(cwd, "sample.txt"), "utf8")).toBe("before\n");
+  });
+  it("does not subscribe to child lifecycle events or clear parent records and pending writes", async () => {
+    const h = harness(cwd);
+    await h.emit("tool_call"); await writeFile(join(cwd, "sample.txt"), "first"); await h.emit("tool_result");
+    const first = h.review.list().entries[0]!;
+    await h.emit("tool_call");
+    const child = childHarness(h.review);
+    expect([...child.callbacks.keys()]).toEqual(["tool_call", "tool_result"]);
+    for (const name of ["session_start", "session_switch", "session_tree", "agent_end"]) await child.emit(name);
+    expect(h.review.list().entries).toEqual([first]);
+    await expect(h.review.rollback(first.id)).rejects.toMatchObject({ code: "SESSION_BUSY" });
+    await writeFile(join(cwd, "sample.txt"), "second"); await h.emit("tool_result");
+    expect(h.review.list().entries[0]?.status).toBe("ready");
+    expect(h.changed.mock.calls.every(([sessionId]) => sessionId === "session-1")).toBe(true);
+  });
+  it("detects overlapping parent and child writes even with identical raw IDs", async () => {
+    const h = harness(cwd); const child = childHarness(h.review);
+    await h.emit("tool_call"); await child.emit("tool_call");
+    await writeFile(join(cwd, "sample.txt"), "overlap");
+    await child.emit("tool_result"); await h.emit("tool_result");
+    const entries = h.review.list().entries;
+    expect(entries).toHaveLength(2);
+    expect(entries.every((entry) => entry.status === "conflict")).toBe(true);
+    expect(new Set(entries.map((entry) => entry.toolCallId)).size).toBe(2);
+  });
+  it("rejects mismatched child events without changing parent identity or pending state", async () => {
+    const h = harness(cwd); const child = childHarness(h.review);
+    const other = { getSessionId: () => "wrong-child", getBranch: () => [] };
+    const event = { toolName: "write", toolCallId: "tool-1", input: { path: "sample.txt" } };
+    expect(await child.emit("tool_call", event, other)).toMatchObject({ block: true });
+    await child.emit("tool_result", event, other);
+    expect(h.review.list().entries).toEqual([]); expect(h.entries).toEqual([]);
+    await child.emit("tool_call", event);
+    await writeFile(join(cwd, "sample.txt"), "child");
+    await child.emit("tool_result", event, other);
+    await child.emit("tool_result", event);
+    expect(h.review.list().entries[0]?.status).toBe("ready");
+    expect(h.changed).toHaveBeenCalledWith("session-1", expect.anything());
+    child.manager.getSessionId = () => "changed-child";
+    expect(await child.emit("tool_call")).toMatchObject({ block: true });
+  });
+  it("cleans only the disposed child's pending IDs and keeps sibling and root writes", async () => {
+    const h = harness(cwd); const a = childHarness(h.review);
+    const b = childHarness(h.review, "87654321-4321-4321-4321-cba987654321", "child-2");
+    const rootEvent = { toolName: "write", toolCallId: "tool-1", input: { path: "root.txt" } };
+    const siblingEvent = { toolName: "write", toolCallId: "tool-1", input: { path: "sibling.txt" } };
+    await h.emit("tool_call", rootEvent); await a.emit("tool_call"); await b.emit("tool_call", siblingEvent);
+    h.review.finishChild(childPrefix); h.review.finishChild(childPrefix);
+    await writeFile(join(cwd, "root.txt"), "root"); await writeFile(join(cwd, "sibling.txt"), "sibling");
+    await h.emit("tool_result", rootEvent); await b.emit("tool_result", siblingEvent);
+    const entries = h.review.list().entries;
+    expect(entries).toHaveLength(2); expect(entries.every((entry) => entry.status === "ready")).toBe(true);
+    await expect(h.review.rollback(entries[0]!.id)).resolves.toMatchObject({ status: "rolled-back" });
+  });
+  it("validates child namespaces, bounded raw IDs and the captured parent identity", async () => {
+    const h = harness(cwd); const child = childHarness(h.review);
+    const event = { toolName: "write", toolCallId: "long".repeat(100), input: { path: "sample.txt" } };
+    await child.emit("tool_call", event); await writeFile(join(cwd, "sample.txt"), "child"); await child.emit("tool_result", event);
+    expect(h.review.list().entries[0]!.toolCallId.length).toBeLessThanOrEqual(128);
+    for (const toolCallId of ["", "bad\0id", "x".repeat(4097)]) expect(await child.emit("tool_call", { ...event, toolCallId })).toMatchObject({ block: true });
+    expect(() => childHarness(h.review, "invalid-prefix")).toThrowError(expect.objectContaining({ code: "REVIEW_UNAVAILABLE" }));
+    h.review.initialize({ getSessionId: () => "new-parent", getBranch: () => [] });
+    expect(await child.emit("tool_call", event)).toMatchObject({ block: true });
+    await child.emit("tool_result", event); expect(h.review.list().entries).toEqual([]);
+  });
+  it("blocks late and in-flight child callbacks after disposal", async () => {
+    const h = harness(cwd);
+    const child = childHarness(h.review);
+    const pending = child.emit("tool_call");
+    h.review.finishChild(childPrefix);
+    expect(await pending).toMatchObject({ block: true });
+    expect(await child.emit("tool_call")).toMatchObject({ block: true });
+    expect(await child.emit("tool_result")).toBeUndefined();
+    expect(h.review.list().entries).toEqual([]);
+    expect(h.entries).toEqual([]);
+    expect(h.changed).not.toHaveBeenCalled();
+
+    const next = childHarness(h.review);
+    await next.emit("tool_call");
+    await writeFile(join(cwd, "sample.txt"), "late result");
+    const result = next.emit("tool_result");
+    h.review.finishChild(childPrefix);
+    expect(await result).toBeUndefined();
+    expect(h.entries).toEqual([]);
+    expect(h.changed).not.toHaveBeenCalled();
+  });
   it("captures awaited before/after, persists outside model context, and restores rollback state", async () => {
     await writeFile(join(cwd, "sample.txt"), "before\n");
     const h = harness(cwd);

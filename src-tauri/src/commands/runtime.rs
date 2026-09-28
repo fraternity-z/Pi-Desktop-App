@@ -11,7 +11,8 @@ use crate::{
             AgentModel, AgentSessionSummary, CreatedSession, DeleteSessionsResult, PackageScope,
             PackageSummary, PackageUpdateInfo, PermissionDecision, PermissionMode,
             PermissionRequest, PromptStreamingBehavior, ResourceSummary, SessionConfiguration,
-            SessionConfigurationUpdate, SlashCommandSummary,
+            SessionConfigurationUpdate, SlashCommandSummary, SubagentTranscriptPage,
+            SubagentTranscriptRequest,
         },
         runtime::{BridgeRuntime, RestartRequest, RuntimeSnapshot},
     },
@@ -105,6 +106,23 @@ pub async fn agent_open_session(
     session_path: String,
 ) -> Result<CreatedSession, AppError> {
     run_runtime(app, move |_, runtime| runtime.open_session(session_path)).await
+}
+
+#[tauri::command]
+pub async fn agent_subagent_transcript(
+    app: AppHandle,
+    session_id: String,
+    subagent_id: String,
+    cursor: Option<String>,
+) -> Result<SubagentTranscriptPage, AppError> {
+    run_runtime(app, move |_, runtime| {
+        runtime.subagent_transcript(SubagentTranscriptRequest {
+            session_id,
+            subagent_id,
+            cursor,
+        })
+    })
+    .await
 }
 
 #[tauri::command]

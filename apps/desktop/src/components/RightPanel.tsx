@@ -1,4 +1,5 @@
 import {
+  Bot,
   Eye,
   FileDiff,
   FileText,
@@ -24,7 +25,7 @@ import {
 } from "react";
 
 import { clampRightPanelWidth, resolveRightPanelMaxWidth, RIGHT_PANEL_DEFAULT_WIDTH } from "../stores/useRightPanelLayout";
-import type { RightPanelTabId, RightPanelToolTabId } from "../stores/useRightPanelSessionState";
+import type { RightPanelTabId, RightPanelToolTabId, RightPanelSubagentTabId } from "../stores/useRightPanelSessionState";
 
 export type { RightPanelTabId } from "../stores/useRightPanelSessionState";
 
@@ -43,6 +44,8 @@ export interface RightPanelProps {
   readonly activeTab: RightPanelTabId | null;
   readonly toolTabs?: ReadonlyArray<RightPanelToolTabId>;
   readonly onCloseToolTab?: (tab: RightPanelToolTabId) => void;
+  readonly subagentTabs?: ReadonlyArray<RightPanelTabDescriptor & { readonly id: RightPanelSubagentTabId }>;
+  readonly onCloseSubagentTab?: (tab: RightPanelSubagentTabId) => void;
   readonly fileTab?: RightPanelTabDescriptor | null;
   readonly previewTab?: RightPanelTabDescriptor | null;
   readonly sessionKey?: string;
@@ -78,13 +81,13 @@ export function RightPanel(props: RightPanelProps): ReactElement | null {
     try {
       const saved: unknown = JSON.parse(window.sessionStorage.getItem(`pi-desktop.panel-order:${props.sessionKey ?? "default"}`) ?? "null");
       const ids: RightPanelTabId[] = ["review", "files", "file", "preview"];
-      setOrder(Array.isArray(saved) ? [...new Set([...saved.filter((id): id is RightPanelTabId => ids.includes(id)), ...ids])] : ids);
+      setOrder(Array.isArray(saved) ? [...new Set([...saved.filter((id): id is RightPanelTabId => typeof id === "string" && (ids.includes(id as RightPanelTabId) || id.startsWith("subagent:"))), ...ids])] : ids);
     } catch { setOrder(["review", "files", "file", "preview"]); }
   }, [props.sessionKey]);
   function reorder(from: RightPanelTabId, to: RightPanelTabId, after: boolean) {
     if (from === to) return;
     setOrder((current) => {
-      const next = current.filter((id) => id !== from);
+      const next = [...new Set([...current, ...tabs.map((tab) => tab.id)])].filter((id) => id !== from);
       next.splice(next.indexOf(to) + (after ? 1 : 0), 0, from);
       try { window.sessionStorage.setItem(`pi-desktop.panel-order:${props.sessionKey ?? "default"}`, JSON.stringify(next)); } catch { /* Keep in-memory layout. */ }
       return next;
@@ -129,8 +132,10 @@ export function RightPanel(props: RightPanelProps): ReactElement | null {
     ...((props.toolTabs ?? ["review", "files"]).map((id): TabDefinition => ({ id, label: id === "review" ? "审查" : "文件", icon: id === "review" ? FileDiff : FolderOpen, close: props.onCloseToolTab ? () => props.onCloseToolTab?.(id) : undefined }))),
     ...(props.fileTab ? [{ id: "file" as const, label: props.fileTab.label, title: props.fileTab.title, icon: FileText, close: props.onCloseFileTab }] : []),
     ...(props.previewTab ? [{ id: "preview" as const, label: props.previewTab.label, title: props.previewTab.title, icon: Eye, close: props.onClosePreviewTab }] : []),
+    ...((props.subagentTabs ?? []).map((tab): TabDefinition => ({ ...tab, icon: Bot, close: props.onCloseSubagentTab ? () => props.onCloseSubagentTab?.(tab.id) : undefined }))),
   ];
-  tabs.sort((left, right) => order.indexOf(left.id) - order.indexOf(right.id));
+  const rank = (id: RightPanelTabId) => order.includes(id) ? order.indexOf(id) : order.length;
+  tabs.sort((left, right) => rank(left.id) - rank(right.id));
   useEffect(() => {
     const target = focusAfterRender.current;
     if (!target) return;
@@ -305,5 +310,6 @@ function getCloseTabLabel(tab: RightPanelTabId): string {
   if (tab === "preview") return "关闭预览标签页";
   if (tab === "review") return "关闭审查标签页";
   if (tab === "files") return "关闭文件列表标签页";
+  if (tab.startsWith("subagent:")) return "关闭子代理标签页";
   return "关闭标签页";
 }

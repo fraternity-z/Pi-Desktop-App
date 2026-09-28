@@ -6,6 +6,10 @@ import { ProviderSettingsService, type OfficialModelSettings, type OfficialProvi
 import { ProviderSettingsError } from "./provider-config.js";
 import { SessionReview, ReviewError, readReviewSummary, type ReviewExtensionFactory, type SessionReviewSummary, type SessionReviewDetail, type SessionReviewPage } from "./session-review.js";
 import { ToolPermissions, PermissionError, type PermissionExtensionFactory, type PermissionRequest } from "./tool-permissions.js";
+import { fitSubagents, projectSubagents, type SubagentSnapshot } from "./subagents.js";
+import { BuiltinSubagents } from "./builtin-subagents.js";
+import type { TranscriptPage } from "./subagent-transcripts.js";
+export type { SubagentSnapshot, SubagentMessage } from "./subagents.js";
 
 import {
   MAX_COMMANDS,
@@ -169,7 +173,7 @@ export interface PiSessionLike {
   readonly resourceLoader?: PiResourceLoaderLike;
   prompt(
     text: string,
-    options?: { streamingBehavior?: PromptStreamingBehavior; images?: PiImageContent[] },
+    options?: { streamingBehavior?: PromptStreamingBehavior; images?: PiImageContent[]; expandPromptTemplates?: boolean },
   ): Promise<void>;
   clearQueue(): void;
   getSteeringMessages(): string[];
@@ -205,6 +209,7 @@ export interface PiSdkLike {
   };
   SessionManager: {
     create(cwd: string): PiSessionManagerInstanceLike;
+    inMemory?(cwd: string): PiSessionManagerInstanceLike;
     open(sessionPath: string): PiSessionManagerInstanceLike;
     listAll(sessionDir?: string): Promise<PiSessionInfoLike[]>;
   };
@@ -223,6 +228,10 @@ export interface PiSdkLike {
   DefaultResourceLoader?: new (options: {
     cwd: string;
     agentDir: string;
+    noExtensions?: boolean;
+    noSkills?: boolean;
+    noPromptTemplates?: boolean;
+    noThemes?: boolean;
     extensionFactories: Array<{
       name: string;
       factory: RequestHeaderExtensionFactory | ReviewExtensionFactory | PermissionExtensionFactory;
@@ -235,6 +244,10 @@ export interface PiSdkLike {
     modelRuntime: PiModelRuntimeLike;
     sessionManager: PiSessionManagerInstanceLike;
     resourceLoader?: PiResourceLoaderLike;
+    model?: PiModelLike;
+    thinkingLevel?: ThinkingLevel;
+    tools?: string[];
+    customTools?: Array<BuiltinSubagents["tool"]>;
   }): Promise<{
     session: PiSessionLike;
     modelFallbackMessage?: string;
@@ -264,6 +277,7 @@ export interface AgentMessageSummary {
   isError?: boolean;
   timestamp?: string;
   review?: SessionReviewSummary;
+  subagents?: SubagentSnapshot[];
 }
 
 export interface SessionConfiguration {
@@ -343,6 +357,7 @@ export interface RuntimeEvent {
     | "message.completed"
     | "message.failed"
     | "tool.started"
+    | "tool.updated"
     | "tool.completed"
     | "tool.failed"
     | "queue.updated"
@@ -365,6 +380,7 @@ export interface SessionRuntime {
   deleteSessions(sessionIds: string[]): Promise<DeleteSessionsResult>;
   openSession(sessionPath: string): Promise<CreatedAgentSession>;
   readHistory?(sessionId: string, cursor: string): SessionHistoryPage;
+  readSubagentTranscript?(sessionId: string, subagentId: string, cursor?: string): TranscriptPage;
   listReviews?(sessionId: string, cwd: string, cursor?: string): Promise<SessionReviewPage>;
   reviewDetail?(sessionId: string, cwd: string, reviewId: string): Promise<SessionReviewDetail>;
   rollbackReview?(sessionId: string, cwd: string, reviewId: string): Promise<SessionReviewSummary>;
@@ -412,6 +428,8 @@ export class RuntimeError extends Error {
 }
 
 interface ManagedSession {
+  subagents: Map<string, SubagentSnapshot[]>;
+  builtinSubagents: BuiltinSubagents;
   permissions: ToolPermissions;
   activePrompts: number;
   generation: number;
@@ -986,6 +1004,7 @@ export class PiSessionRuntime implements SessionRuntime {
   private readonly openingSessions = new Map<string, Promise<CreatedAgentSession>>();
   private readonly reviewsByLoader = new WeakMap<PiResourceLoaderLike, SessionReview>();
   private readonly permissionsByLoader = new WeakMap<PiResourceLoaderLike, ToolPermissions>();
+  private readonly subagentsByLoader = new WeakMap<PiResourceLoaderLike, BuiltinSubagents>();
   private requestHeaderSettings: RequestHeaderSettings = { ...DEFAULT_REQUEST_HEADER_SETTINGS };
   private closed = false;
 
@@ -1040,6 +1059,7 @@ export class PiSessionRuntime implements SessionRuntime {
               agentDir: this.agentDir,
               modelRuntime,
               sessionManager,
+              customTools: resourceLoader ? [this.subagentsByLoader.get(resourceLoader)!.tool] : [],
               ...(resourceLoader ? { resourceLoader } : {}),
             }),
         );
@@ -1074,7 +1094,7 @@ export class PiSessionRuntime implements SessionRuntime {
     const requested = new Set(ids);
     const managedToRelease = [...this.sessions.entries()].filter(([id, managed]) => {
       if (!requested.has(id)) return false;
-      if (managed.session.isStreaming) {
+      if (managed.session.isStreaming || managed.activePrompts > 0 || managed.builtinSubagents.active) {
         throw new RuntimeError("SESSION_BUSY", "Pi 正在处理任务，暂时无法清理归档会话");
       }
       return true;
@@ -1092,7 +1112,7 @@ export class PiSessionRuntime implements SessionRuntime {
       sessionsRoot = await this.sessionFiles.realpath(join(this.agentDir, "sessions"));
     } catch (error) {
       if (isMissingFileError(error)) {
-        for (const [, managed] of managedToRelease) releaseSession(managed);
+        for (const [, managed] of managedToRelease) await releaseSession(managed);
         for (const [id] of managedToRelease) this.sessions.delete(id);
         return { deletedSessionIds: [], missingSessionIds: ids };
       }
@@ -1114,7 +1134,7 @@ export class PiSessionRuntime implements SessionRuntime {
       if (authorizedPath) candidates.set(id, authorizedPath);
     }
 
-    for (const [, managed] of managedToRelease) releaseSession(managed);
+    for (const [, managed] of managedToRelease) await releaseSession(managed);
     for (const [id] of managedToRelease) this.sessions.delete(id);
 
     const deletedSessionIds: string[] = [];
@@ -1210,6 +1230,7 @@ export class PiSessionRuntime implements SessionRuntime {
               agentDir: this.agentDir,
               modelRuntime,
               sessionManager,
+              customTools: resourceLoader ? [this.subagentsByLoader.get(resourceLoader)!.tool] : [],
               ...(resourceLoader ? { resourceLoader } : {}),
             }),
         );
@@ -1244,6 +1265,11 @@ export class PiSessionRuntime implements SessionRuntime {
     return page;
   }
 
+  readSubagentTranscript(sessionId: string, subagentId: string, cursor?: string): TranscriptPage {
+    this.ensureOpen();
+    return this.requireSession(sessionId).builtinSubagents.transcripts.read(subagentId, cursor);
+  }
+
   private async requireReview(sessionId: string, cwd: string): Promise<SessionReview> {
     this.ensureOpen();
     const managed = this.requireSession(sessionId);
@@ -1265,7 +1291,8 @@ export class PiSessionRuntime implements SessionRuntime {
 
   async rollbackReview(sessionId: string, cwd: string, reviewId: string): Promise<SessionReviewSummary> {
     const review = await this.requireReview(sessionId, cwd);
-    if (this.requireSession(sessionId).session.isStreaming) throw new RuntimeError("SESSION_BUSY", "请等待会话任务结束后再回滚");
+    const managed = this.requireSession(sessionId);
+    if (managed.session.isStreaming || managed.activePrompts > 0 || managed.builtinSubagents.active) throw new RuntimeError("SESSION_BUSY", "请等待会话任务结束后再回滚");
     return review.rollback(reviewId);
   }
 
@@ -1555,7 +1582,10 @@ export class PiSessionRuntime implements SessionRuntime {
       const managed = this.requireSession(sessionId);
       managed.generation++;
       managed.permissions.cancel();
-      await managed.session.abort();
+      const results = await Promise.allSettled([managed.builtinSubagents.cancel(), managed.session.abort()]);
+      managed.subagents.clear();
+      const failure = results.find((result) => result.status === "rejected");
+      if (failure?.status === "rejected") throw failure.reason;
     } catch (error) {
       throw mapRuntimeError(error, "ABORT_FAILED", "无法停止当前 Pi 任务");
     }
@@ -1577,11 +1607,10 @@ export class PiSessionRuntime implements SessionRuntime {
     this.sessions.clear();
     for (const managed of managedSessions) {
       try {
-        if (managed.session.isStreaming) {
-          await managed.session.abort().catch(() => undefined);
-        }
+        await Promise.allSettled([managed.builtinSubagents.close(),
+          managed.session.isStreaming || managed.activePrompts > 0 ? managed.session.abort() : Promise.resolve()]);
       } finally {
-        releaseSession(managed);
+        await releaseSession(managed);
       }
     }
     this.listeners.clear();
@@ -1652,7 +1681,70 @@ export class PiSessionRuntime implements SessionRuntime {
     permissions.assertRegistered();
     permissions.setOverriddenTools((resourceLoader.getExtensions?.().extensions ?? []).flatMap((extension) => [...(extension.tools?.keys() ?? [])]));
     this.permissionsByLoader.set(resourceLoader, permissions);
+    this.subagentsByLoader.set(resourceLoader, new BuiltinSubagents(
+      (signal, prefix) => this.createChildSession(resourceLoader, signal, prefix), subagentProjection,
+    ));
     return resourceLoader;
+  }
+
+  private async createChildSession(parentLoader: PiResourceLoaderLike, signal: AbortSignal, prefix: string) {
+    const parent = [...this.sessions.values()].find((managed) => managed.resourceLoader === parentLoader);
+    if (!parent) throw new RuntimeError("SUBAGENT_PARENT_UNAVAILABLE", "子代理的主会话已关闭");
+    const generation = parent.generation;
+    const checkActive = () => {
+      if (signal.aborted || this.closed || generation !== parent.generation || this.sessions.get(parent.session.sessionId) !== parent) {
+        throw new RuntimeError("SUBAGENT_CANCELLED", "子代理任务已取消");
+      }
+    };
+    checkActive();
+    if (!this.sdk.SessionManager.inMemory || !this.sdk.DefaultResourceLoader || !parent.review || !parent.session.getActiveToolNames) {
+      throw new RuntimeError("SUBAGENT_UNSUPPORTED", "当前 Pi SDK 不支持内置子代理，请升级官方 Pi 后重试");
+    }
+    const model = parent.session.model;
+    if (!model) throw new RuntimeError("SUBAGENT_MODEL_UNAVAILABLE", "请先为主会话选择可用模型");
+    const thinkingLevel = parent.session.thinkingLevel;
+    const tools = parent.session.getActiveToolNames().filter((name) => ["read", "bash", "edit", "write", "grep", "find", "ls"].includes(name));
+    const sessionManager = this.sdk.SessionManager.inMemory(parent.cwd);
+    if (!sessionManager.getSessionId || !sessionManager.getBranch) throw new RuntimeError("SUBAGENT_UNSUPPORTED", "当前 Pi SDK 缺少子代理会话身份接口");
+    let child: PiSessionLike | undefined;
+    let disposed = false;
+    const dispose = () => {
+      if (disposed) return;
+      disposed = true;
+      signal.removeEventListener("abort", cancelApproval);
+      parent.permissions.finishChild(prefix);
+      parent.review!.finishChild(prefix);
+      child?.dispose();
+    };
+    const cancelApproval = () => parent.permissions.finishChild(prefix);
+    signal.addEventListener("abort", cancelApproval, { once: true });
+    try {
+      const resourceLoader = new this.sdk.DefaultResourceLoader({
+        cwd: parent.cwd, agentDir: this.agentDir,
+        noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true,
+        extensionFactories: [
+          { name: "pi-desktop-child-permissions", hidden: true, factory: parent.permissions.childExtension(sessionManager, prefix) },
+          { name: "pi-desktop-request-headers", hidden: true, factory: createRequestHeaderExtension(() => this.requestHeaderSettings) },
+          { name: "pi-desktop-child-review", hidden: true, factory: parent.review.childExtension({
+            getSessionId: () => sessionManager.getSessionId!(), getBranch: () => sessionManager.getBranch!(),
+          }, prefix) },
+        ],
+      });
+      await resourceLoader.reload();
+      checkActive();
+      const modelRuntime = await this.getModelRuntime();
+      checkActive();
+      const result = await this.sdk.createAgentSession({
+        cwd: parent.cwd, agentDir: this.agentDir, modelRuntime, sessionManager, resourceLoader,
+        model, thinkingLevel, tools, customTools: [],
+      });
+      child = result.session;
+      checkActive();
+      if (child.sessionId !== sessionManager.getSessionId() || child.sessionId === parent.session.sessionId) {
+        throw new RuntimeError("SUBAGENT_INVALID_SESSION", "Pi SDK 返回了无效的子代理会话身份");
+      }
+      return { session: child, dispose };
+    } catch (error) { dispose(); throw error; }
   }
 
   private createPackageContext(cwd: string): PackageContext {
@@ -1700,7 +1792,8 @@ export class PiSessionRuntime implements SessionRuntime {
   ): CreatedAgentSession {
     const { session } = result;
     const permissions = resourceLoader ? this.permissionsByLoader.get(resourceLoader) : undefined;
-    if (this.closed || !permissions) {
+    const builtinSubagents = resourceLoader ? this.subagentsByLoader.get(resourceLoader) : undefined;
+    if (this.closed || !permissions || !builtinSubagents) {
       session.dispose();
       throw new RuntimeError("TOOL_PERMISSIONS_UNSUPPORTED", "工具审批未就绪，已关闭会话");
     }
@@ -1723,7 +1816,10 @@ export class PiSessionRuntime implements SessionRuntime {
       }
     } else { review = undefined; }
 
-    try { permissions.initialize(session.sessionId, sessionManager); }
+    try {
+      permissions.initialize(session.sessionId, sessionManager);
+      builtinSubagents.transcripts.initialize(session.sessionId, sessionManager);
+    }
     catch (error) { permissions.close(); session.dispose(); throw error; }
     let unsubscribe: () => void;
     try {
@@ -1738,6 +1834,8 @@ export class PiSessionRuntime implements SessionRuntime {
     const defaultToolNames = readActiveToolNames(session);
     const contextUsage = readContextUsage(session);
     const managed = {
+      subagents: new Map<string, SubagentSnapshot[]>(),
+      builtinSubagents,
       permissions,
       activePrompts: 0,
       generation: 0,
@@ -1840,6 +1938,7 @@ export class PiSessionRuntime implements SessionRuntime {
     if (event.type === "agent_start") {
       runtimeEvent = { sessionId: session.sessionId, name: "agent.started" };
     } else if (event.type === "agent_settled") {
+      managed?.subagents.clear();
       runtimeEvent = { sessionId: session.sessionId, name: "agent.settled" };
     } else if (event.type === "message_start") {
       const content = readUserMessage(event.message);
@@ -1876,7 +1975,7 @@ export class PiSessionRuntime implements SessionRuntime {
     } else if (event.type === "message_end" && isRecord(event.message)) {
       runtimeEvent = projectMessageEnd(session.sessionId, event.message);
     } else if (event.type === "tool_execution_start") {
-      const tool = readToolEvent(event, "input");
+      const tool = readToolEvent(event, "input", managed?.subagents);
       if (tool) {
         runtimeEvent = {
           sessionId: session.sessionId,
@@ -1884,12 +1983,12 @@ export class PiSessionRuntime implements SessionRuntime {
           data: tool,
         };
       }
-    } else if (event.type === "tool_execution_end") {
-      const tool = readToolEvent(event, "output");
+    } else if (event.type === "tool_execution_update" || event.type === "tool_execution_end") {
+      const tool = readToolEvent(event, "output", managed?.subagents);
       if (tool) {
         runtimeEvent = {
           sessionId: session.sessionId,
-          name: event.isError === true ? "tool.failed" : "tool.completed",
+          name: event.type === "tool_execution_update" ? "tool.updated" : event.isError === true ? "tool.failed" : "tool.completed",
           data: tool,
         };
       }
@@ -2028,12 +2127,14 @@ function readUserMessage(value: unknown): string {
 function readToolEvent(
   event: Record<string, unknown>,
   detail: "input" | "output",
+  cache?: Map<string, SubagentSnapshot[]>,
 ): {
   toolCallId: string;
   toolName: string;
   input?: ToolDisplayPayload;
   output?: ToolDisplayPayload;
   review?: SessionReviewSummary;
+  subagents?: SubagentSnapshot[];
 } | null {
   const toolCallId = readBoundedText(event.toolCallId, MAX_TOOL_CALL_ID_CHARS);
   const toolName = readBoundedText(event.toolName, MAX_TOOL_NAME_CHARS);
@@ -2041,12 +2142,20 @@ function readToolEvent(
   const display =
     detail === "input"
       ? projectToolDisplay(event.args ?? event.arguments ?? event.input)
-      : projectToolOutput(event.result ?? event.output);
-  const result = event.result ?? event.output;
+      : projectToolOutput(event.partialResult ?? event.result ?? event.output);
+  const result = event.partialResult ?? event.result ?? event.output;
+  const phase = detail === "input" ? "start" : event.type === "tool_execution_update" ? "update" : event.isError === true ? "failed" : "complete";
+  const subagents = toolName === "subagent" ? projectSubagents(toolCallId, event.args ?? event.arguments ?? event.input, isRecord(result) ? result.details : undefined, phase, subagentProjection, cache?.get(toolCallId)) : undefined;
+  if (phase === "complete" || phase === "failed") cache?.delete(toolCallId);
+  else if (subagents && cache) {
+    if (cache.size >= 16 && !cache.has(toolCallId)) cache.delete(cache.keys().next().value!);
+    cache.set(toolCallId, subagents);
+  }
+  const metadata = subagents ? { subagents } : {};
   const review = isRecord(result) && isRecord(result.details) ? readReviewSummary(result.details.piDesktopReview) : undefined;
   return detail === "input"
-    ? { toolCallId, toolName, ...(display ? { input: display } : {}) }
-    : { toolCallId, toolName, ...(display ? { output: display } : {}), ...(review ? { review } : {}) };
+    ? { toolCallId, toolName, ...(display ? { input: display } : {}), ...metadata }
+    : { toolCallId, toolName, ...(display ? { output: display } : {}), ...(review ? { review } : {}), ...metadata };
 }
 
 function describeQueue(session: PiSessionLike): QueuedMessages {
@@ -2083,8 +2192,10 @@ function readBoundedText(value: unknown, maximumLength: number): string | null {
   return text.length > 0 && text.length <= maximumLength ? text : null;
 }
 
-function releaseSession(managed: ManagedSession): void {
+async function releaseSession(managed: ManagedSession): Promise<void> {
+  managed.subagents.clear();
   managed.permissions.close();
+  await managed.builtinSubagents.close();
   try {
     managed.unsubscribe();
   } finally {
@@ -2386,7 +2497,8 @@ function historyMessageCharacters(message: AgentMessageSummary): number {
   return (
     message.content.length +
     (message.toolInput?.text.length ?? 0) +
-    (message.toolOutput?.text.length ?? 0)
+    (message.toolOutput?.text.length ?? 0) +
+    (message.subagents ? JSON.stringify(message.subagents).length : 0)
   );
 }
 
@@ -2518,8 +2630,8 @@ function projectHistoryMessage(
     const toolInput = pending ? projectToolDisplay(pending.input) : undefined;
     const toolOutput = projectToolOutput(message.content ?? message.result ?? message.output);
     const review = isRecord(message.details) ? readReviewSummary(message.details.piDesktopReview) : undefined;
-    return [
-      {
+    const subagents = toolName === "subagent" ? projectSubagents(toolCallId, pending?.input, message.details, message.isError === true ? "failed" : "complete", subagentProjection) : undefined;
+    const summary: AgentMessageSummary = {
         role: "tool",
         content: "",
         toolCallId,
@@ -2529,8 +2641,13 @@ function projectHistoryMessage(
         ...(review ? { review } : {}),
         isError: message.isError === true,
         ...(timestamp ? { timestamp } : {}),
-      },
-    ];
+    };
+    if (subagents) {
+      const budget = Math.min(100_000, MAX_HISTORY_BYTES - Buffer.byteLength(JSON.stringify(summary), "utf8") - 20, MAX_HISTORY_CHARS - historyMessageCharacters(summary) - 20);
+      const fitted = fitSubagents(subagents, budget);
+      if (fitted) summary.subagents = fitted;
+    }
+    return [summary];
   }
   return [];
 }
@@ -2564,13 +2681,14 @@ type SanitizedToolValue =
 interface ToolSanitizeState {
   seen: WeakSet<object>;
   truncated: boolean;
+  full?: boolean;
 }
 
-function projectToolOutput(value: unknown): ToolDisplayPayload | undefined {
+function projectToolOutput(value: unknown, full = false): ToolDisplayPayload | undefined {
   const displayValue = isRecord(value) && "content" in value ? value.content : value;
   const content = readToolOutputText(displayValue);
-  if (content) return createToolDisplayPayload(content, "text", false);
-  return projectToolDisplay(displayValue);
+  if (content) return createToolDisplayPayload(content, "text", false, full);
+  return projectToolDisplay(displayValue, full);
 }
 
 function readToolOutputText(content: unknown): string {
@@ -2586,10 +2704,10 @@ function readToolOutputText(content: unknown): string {
     .join("");
 }
 
-function projectToolDisplay(value: unknown): ToolDisplayPayload | undefined {
+function projectToolDisplay(value: unknown, full = false): ToolDisplayPayload | undefined {
   if (value === undefined) return undefined;
-  if (typeof value === "string") return createToolDisplayPayload(value, "text", false);
-  const state: ToolSanitizeState = { seen: new WeakSet(), truncated: false };
+  if (typeof value === "string") return createToolDisplayPayload(value, "text", false, full);
+  const state: ToolSanitizeState = { seen: new WeakSet(), truncated: false, full };
   const sanitized = sanitizeToolValue(value, 0, state);
   if (sanitized === undefined) return undefined;
   let text: string | undefined;
@@ -2598,7 +2716,7 @@ function projectToolDisplay(value: unknown): ToolDisplayPayload | undefined {
   } catch {
     return undefined;
   }
-  return text ? createToolDisplayPayload(text, "json", state.truncated) : undefined;
+  return text ? createToolDisplayPayload(text, "json", state.truncated, full) : undefined;
 }
 
 function sanitizeToolValue(
@@ -2612,7 +2730,7 @@ function sanitizeToolValue(
   if (typeof value === "number") return Number.isFinite(value) ? value : String(value);
   if (typeof value === "bigint") return String(value);
   if (typeof value !== "object") return undefined;
-  if (depth >= MAX_TOOL_DISPLAY_DEPTH) {
+  if (!state.full && depth >= MAX_TOOL_DISPLAY_DEPTH) {
     state.truncated = true;
     return TRUNCATED_TOOL_VALUE;
   }
@@ -2629,16 +2747,16 @@ function sanitizeToolValue(
   state.seen.add(value);
   try {
     if (Array.isArray(value)) {
-      if (value.length > MAX_TOOL_DISPLAY_ENTRIES) state.truncated = true;
-      return value.slice(0, MAX_TOOL_DISPLAY_ENTRIES).map((item) => {
+      if (!state.full && value.length > MAX_TOOL_DISPLAY_ENTRIES) state.truncated = true;
+      return (state.full ? value : value.slice(0, MAX_TOOL_DISPLAY_ENTRIES)).map((item) => {
         return sanitizeToolValue(item, depth + 1, state) ?? null;
       });
     }
 
     const entries = Object.entries(value);
-    if (entries.length > MAX_TOOL_DISPLAY_ENTRIES) state.truncated = true;
-    const sanitized: { [key: string]: SanitizedToolValue } = {};
-    for (const [key, item] of entries.slice(0, MAX_TOOL_DISPLAY_ENTRIES)) {
+    if (!state.full && entries.length > MAX_TOOL_DISPLAY_ENTRIES) state.truncated = true;
+    const sanitized: { [key: string]: SanitizedToolValue } = Object.create(null);
+    for (const [key, item] of state.full ? entries : entries.slice(0, MAX_TOOL_DISPLAY_ENTRIES)) {
       if (SENSITIVE_TOOL_KEY.test(key)) {
         sanitized[key] = REDACTED_TOOL_VALUE;
         continue;
@@ -2656,10 +2774,11 @@ function createToolDisplayPayload(
   value: string,
   format: ToolDisplayPayload["format"],
   structurallyTruncated: boolean,
+  full = false,
 ): ToolDisplayPayload | undefined {
   const redacted = redactInlineSecrets(value);
-  if (!redacted.trim()) return undefined;
-  const truncated = redacted.length > MAX_TOOL_DISPLAY_CHARS;
+  if (!full && !redacted.trim()) return undefined;
+  const truncated = !full && redacted.length > MAX_TOOL_DISPLAY_CHARS;
   return {
     text: truncated ? redacted.slice(0, MAX_TOOL_DISPLAY_CHARS) : redacted,
     format,
@@ -2684,6 +2803,9 @@ function redactInlineSecrets(value: string): string {
       (_match, label: string, separator: string) => `${label}${separator}${REDACTED_TOOL_VALUE}`,
     );
 }
+
+const subagentProjection = { redact: redactInlineSecrets, input: projectToolDisplay, output: projectToolOutput,
+  fullInput: (value: unknown) => projectToolDisplay(value, true), fullOutput: (value: unknown) => projectToolOutput(value, true) };
 
 function clipText(value: unknown, maximumLength: number): string {
   if (typeof value !== "string") {

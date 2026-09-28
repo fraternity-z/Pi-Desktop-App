@@ -262,7 +262,192 @@ function sdkReturning(...sessions: SessionMock[]): PiSdkLike & {
   };
 }
 
+describe("built-in subagent runtime integration", () => {
+  function fixture() {
+    const parent = createSessionMock("builtin-parent", { sessionFile: join(process.cwd(), "parent.jsonl"), activeTools: ["read", "write", "bash", "subagent", "external"] });
+    const children = [createSessionMock("child-1"), createSessionMock("child-2")];
+    const sdk = sdkReturning(parent, ...children);
+    const entries: unknown[] = [];
+    const manager = (id: string) => ({ getCwd: () => process.cwd(), getSessionId: () => id, getBranch: () => entries, appendCustomEntry: vi.fn() });
+    sdk.SessionManager.create = () => manager("builtin-parent");
+    sdk.SessionManager.open = () => manager("builtin-parent");
+    let index = 0;
+    sdk.SessionManager.inMemory = vi.fn(() => manager(`child-${++index}`));
+    type Handler = Parameters<ReviewExtensionApi["on"]>[1];
+    const loaders: Array<{ options: PermissionLoaderOptions; handlers: Map<string, Handler[]> }> = [];
+    sdk.DefaultResourceLoader = class {
+      readonly handlers = new Map<string, Handler[]>();
+      constructor(readonly options: PermissionLoaderOptions) { loaders.push(this); }
+      async reload() {
+        this.handlers.clear();
+        for (const item of this.options.extensionFactories) {
+          if (item.name === "pi-desktop-request-headers") continue;
+          (item.factory as ReviewExtensionFactory)({
+            on: (name, handler) => this.handlers.set(name, [...(this.handlers.get(name) ?? []), handler]),
+            appendEntry: (customType, data) => { entries.push({ type: "custom", customType, data }); },
+          });
+        }
+      }
+    };
+    const events: RuntimeEvent[] = [];
+    const runtime = new PiSessionRuntime(sdk, process.cwd());
+    runtime.subscribe((event) => events.push(event));
+    const tool = () => (sdk.createAgentSession.mock.calls[0]![0] as Parameters<PiSdkLike["createAgentSession"]>[0]).customTools![0]!;
+    const childHook = async (toolName = "bash") => {
+      const loader = loaders[1]!;
+      const event = { toolName, toolCallId: "shared-call", input: { command: "echo fixture" } };
+      for (const handler of loader.handlers.get("tool_call") ?? []) {
+        const result = await handler(event, { sessionManager: manager("child-1") });
+        if (result) return result;
+      }
+    };
+    return { runtime, parent, children, sdk, loaders, events, tool, childHook };
+  }
+
+  it.each(["create", "open"])("registers built-in delegation on %s with isolated official child sessions", async (operation) => {
+    const f = fixture();
+    try {
+      if (operation === "create") await f.runtime.createSession(process.cwd());
+      else await f.runtime.openSession(f.parent.session.sessionFile!);
+      const result = await f.tool().execute("delegate", { agent: "reader", task: "inspect" });
+      expect(result.details.results[0]).toMatchObject({ status: "completed", model: "openai/gpt-test" });
+      expect(f.sdk.ModelRuntime.create).toHaveBeenCalledOnce();
+      expect(f.sdk.SessionManager.inMemory).toHaveBeenCalledWith(process.cwd());
+      const childOptions = f.sdk.createAgentSession.mock.calls[1]![0];
+      expect(childOptions).toMatchObject({ cwd: process.cwd(), model: reasoningModel, thinkingLevel: "medium", tools: ["read", "write", "bash"], customTools: [] });
+      expect(f.loaders[1]!.options).toMatchObject({ noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true });
+      expect(f.children[0]!.prompt).toHaveBeenCalledWith("inspect", { expandPromptTemplates: false });
+      expect(f.children[0]!.dispose).toHaveBeenCalledOnce();
+      expect(f.children[0]!.unsubscribe).toHaveBeenCalledOnce();
+    } finally { await f.runtime.shutdown(); }
+  });
+
+  it("projects streamed child conversation and restores it from parent tool history", async () => {
+    const f = fixture();
+    const args = { agent: "reader", task: "inspect actual task" };
+    const child = f.children[0]!;
+    child.prompt.mockImplementation(async () => {
+      const messages = [
+        { role: "user", content: args.task },
+        { role: "assistant", content: [{ type: "thinking", thinking: "inspect the sources" }, { type: "text", text: "verified output" }], stopReason: "stop" },
+      ];
+      for (const message of messages) child.emit({ type: "message_end", message });
+      child.session.messages.push(...messages);
+    });
+    try {
+      await f.runtime.createSession(process.cwd());
+      f.parent.emit({ type: "tool_execution_start", toolCallId: "delegate", toolName: "subagent", args });
+      const result = await f.tool().execute("delegate", args, undefined, (partialResult) => f.parent.emit({ type: "tool_execution_update", toolCallId: "delegate", toolName: "subagent", args, partialResult }));
+      f.parent.session.messages.push({ role: "toolResult", toolCallId: "delegate", toolName: "subagent", ...result });
+      f.parent.emit({ type: "tool_execution_end", toolCallId: "delegate", toolName: "subagent", args, result });
+      expect(JSON.stringify(f.events)).toContain("inspect actual task");
+      expect(JSON.stringify(f.events)).toContain("verified output");
+      expect(result.content[0]!.text).not.toContain("inspect the sources");
+      const restored = await f.runtime.openSession(f.parent.session.sessionFile!);
+      expect(restored.messages[0]!.subagents?.[0]).toMatchObject({ status: "completed", task: args.task, messages: expect.arrayContaining([{ role: "user", content: args.task }, { role: "assistant", content: "verified output" }]) });
+    } finally { await f.runtime.shutdown(); }
+  });
+
+  it("routes child approval to parent and cancels pending approval on stop", async () => {
+    const f = fixture();
+    let approval: unknown;
+    f.children[0]!.prompt.mockImplementation(async () => { approval = await f.childHook(); });
+    try {
+      await f.runtime.createSession(process.cwd());
+      const work = f.tool().execute("delegate", { agent: "runner", task: "run command" });
+      await vi.waitFor(() => expect(f.runtime.listPermissions("builtin-parent")).toHaveLength(1));
+      expect(f.events.find((event) => event.name === "permission.requested")?.sessionId).toBe("builtin-parent");
+      expect(f.runtime.listPermissions("builtin-parent")[0]!.toolCallId).not.toBe("shared-call");
+      await f.runtime.abort("builtin-parent");
+      expect(approval).toMatchObject({ block: true });
+      expect((await work).details.results[0]!.status).toBe("cancelled");
+      expect(f.runtime.listPermissions("builtin-parent")).toEqual([]);
+      expect(f.children[0]!.dispose).toHaveBeenCalledOnce();
+    } finally { await f.runtime.shutdown(); }
+  });
+
+  it("accepts parent approval and leaves no child approval after disposal", async () => {
+    const f = fixture();
+    let approval: unknown = "unset";
+    f.children[0]!.prompt.mockImplementation(async () => { approval = await f.childHook(); });
+    try {
+      await f.runtime.createSession(process.cwd());
+      const work = f.tool().execute("delegate", { agent: "runner", task: "run command" });
+      await vi.waitFor(() => expect(f.runtime.listPermissions("builtin-parent")).toHaveLength(1));
+      f.runtime.replyPermission("builtin-parent", f.runtime.listPermissions("builtin-parent")[0]!.requestId, "allow-once");
+      expect((await work).details.results[0]!.status).toBe("completed");
+      expect(approval).toBeUndefined();
+      expect(await f.childHook()).toMatchObject({ block: true });
+    } finally { await f.runtime.shutdown(); }
+  });
+
+  it("disposes late-created child after shutdown without prompting it", async () => {
+    const f = fixture();
+    await f.runtime.createSession(process.cwd());
+    let resolve!: (value: { session: PiSessionLike }) => void;
+    f.sdk.createAgentSession.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    const work = f.tool().execute("delegate", { agent: "late", task: "inspect" });
+    await vi.waitFor(() => expect(resolve).toBeTypeOf("function"));
+    const shutdown = f.runtime.shutdown();
+    resolve({ session: f.children[0]!.session });
+    await shutdown;
+    expect((await work).details.results[0]!.status).toBe("cancelled");
+    expect(f.children[0]!.prompt).not.toHaveBeenCalled();
+    expect(f.children[0]!.dispose).toHaveBeenCalledOnce();
+    expect(f.parent.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("fails safely with unsupported SDK or invalid child identity", async () => {
+    const f = fixture();
+    try {
+      await f.runtime.createSession(process.cwd());
+      const inMemory = f.sdk.SessionManager.inMemory;
+      delete f.sdk.SessionManager.inMemory;
+      expect((await f.tool().execute("unsupported", { agent: "reader", task: "inspect" })).details.results[0]!.errorMessage).toBe("当前 Pi SDK 不支持内置子代理，请升级官方 Pi 后重试");
+      f.sdk.SessionManager.inMemory = inMemory;
+      f.sdk.createAgentSession.mockResolvedValueOnce({ session: createSessionMock("wrong-id").session });
+      expect((await f.tool().execute("invalid", { agent: "reader", task: "inspect" })).details.results[0]!.errorMessage).toBe("Pi SDK 返回了无效的子代理会话身份");
+    } finally { await f.runtime.shutdown(); }
+  });
+});
+
 describe("PiSessionRuntime", () => {
+  it("projects subagent start/update/end and history with stable ids and redaction", async () => {
+    const args = { tasks: [{ agent: "explorer", task: "first" }, { agent: "explorer", task: "second" }] };
+    const details = { mode: "parallel", results: [
+      { agent: "explorer", task: "first", exitCode: 0, model: "test", usage: { turns: 2 }, messages: [
+        { role: "assistant", content: [{ type: "thinking", thinking: "token=private-value" }, { type: "text", text: "done" },
+          { type: "toolCall", id: "read-1", name: "read", arguments: { apiKey: "private-key" } }] },
+        { role: "toolResult", toolCallId: "read-1", toolName: "read", content: [{ type: "text", text: "password=private-password" }, { type: "image", data: "image-secret" }] },
+      ] },
+      { agent: "explorer", task: "second", exitCode: -1, messages: [] },
+    ] };
+    const mock = createSessionMock();
+    const runtime = new PiSessionRuntime(sdkReturning(mock), "C:\\agent");
+    const events: RuntimeEvent[] = [];
+    runtime.subscribe((event) => events.push(event));
+    await runtime.createSession("C:\\work");
+    const identity = { toolCallId: "sub-1", toolName: "subagent" };
+    mock.emit({ type: "tool_execution_start", ...identity, args });
+    mock.emit({ type: "tool_execution_update", ...identity, partialResult: { content: "working", details } });
+    expect(events[0]?.data).toMatchObject({ subagents: [{ id: "sub-1:0", status: "running" }, { id: "sub-1:1", status: "running" }] });
+    expect(events[1]).toMatchObject({ name: "tool.updated", data: { subagents: [{ status: "running", turns: 2 }, { status: "pending" }] } });
+    const failed = { ...details, results: [details.results[0], { ...details.results[1], exitCode: 1, errorMessage: "failed" }] };
+    mock.emit({ type: "tool_execution_end", ...identity, result: { content: "finished", details: failed } });
+    expect(events[2]?.data).toMatchObject({ subagents: [{ status: "completed" }, { status: "failed" }] });
+    expect(JSON.stringify(events)).not.toMatch(/private-value|private-key|private-password|image-secret/);
+    const history = createSessionMock("history", { messages: [
+      { role: "assistant", content: [{ type: "toolCall", id: "sub-1", name: "subagent", arguments: args }] },
+      { role: "toolResult", ...identity, content: "finished", details: failed },
+    ] });
+    const restored = await new PiSessionRuntime(sdkReturning(history), "C:\\agent").createSession("C:\\work");
+    expect(restored.messages[0]?.subagents).toEqual((events[2]?.data as { subagents: unknown }).subagents);
+    mock.emit({ type: "tool_execution_start", ...identity, args });
+    mock.emit({ type: "tool_execution_end", ...identity, isError: true, result: { content: "failed without details" } });
+    expect(events.at(-1)?.data).toMatchObject({ subagents: [{ status: "failed" }, { status: "failed" }] });
+    await runtime.shutdown();
+  });
+
   function permissionRuntime(entries: unknown[] = []) {
     const cwd = process.cwd();
     const mock = createSessionMock("permission-session", { sessionFile: join(cwd, "permissions.jsonl") });

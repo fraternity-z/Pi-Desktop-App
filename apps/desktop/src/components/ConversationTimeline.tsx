@@ -28,6 +28,7 @@ import type {
 } from "../stores/useChatSession";
 import { useStreamingText } from "../stores/useStreamingText";
 import { MarkdownContent } from "./MarkdownContent";
+import { SubagentGroup } from "./SubagentGroup";
 import { ToolDiffPreview } from "./ToolDiffPreview";
 import { buildToolDiffPreview, toolActionLabel, toolGroupSummary, toolKind, type ToolKind } from "./toolActivityModel";
 
@@ -35,6 +36,8 @@ interface ConversationTimelineProps {
   messages: ChatMessage[];
   streaming: boolean;
   timer?: SessionTimerState | null;
+  selectedSubagentId?: string | null;
+  onOpenSubagent?: (id: string) => void;
 }
 
 type TimelineGroup =
@@ -63,6 +66,8 @@ export const ConversationTimeline = memo(function ConversationTimeline({
   messages,
   streaming,
   timer = null,
+  selectedSubagentId,
+  onOpenSubagent,
 }: ConversationTimelineProps) {
   const turns = useMemo(() => {
     const grouped = groupTimelineTurns(messages);
@@ -79,6 +84,8 @@ export const ConversationTimeline = memo(function ConversationTimeline({
           turn={turn}
           isCurrentTurn={streaming && index === turns.length - 1}
           fallbackTimer={index === turns.length - 1 ? timer : null}
+          selectedSubagentId={selectedSubagentId}
+          onOpenSubagent={onOpenSubagent}
         />
       ))}
     </div>
@@ -89,10 +96,14 @@ const ConversationTurn = memo(function ConversationTurn({
   turn,
   isCurrentTurn,
   fallbackTimer,
+  selectedSubagentId,
+  onOpenSubagent,
 }: {
   turn: TimelineTurn;
   isCurrentTurn: boolean;
   fallbackTimer: SessionTimerState | null;
+  selectedSubagentId?: string | null;
+  onOpenSubagent?: (id: string) => void;
 }) {
   const copyTargets = useMemo(
     () => findTurnCopyTargets(turn.messages, isCurrentTurn),
@@ -133,7 +144,14 @@ const ConversationTurn = memo(function ConversationTurn({
           {group.kind === "message" ? (
             <TimelineItem message={group.message} streaming={isCurrentTurn} />
           ) : (
-            <ToolGroup messages={group.messages} />
+            group.messages[0]?.subagents ? (
+              <>
+                <SubagentGroup subagents={group.messages[0].subagents} selectedId={selectedSubagentId} onOpen={onOpenSubagent} />
+                {(group.messages[0].status === "failed" ||
+                  (group.messages[0].status === "completed" && group.messages[0].subagents.every((agent) => agent.messages.length === 0))) &&
+                  <ToolGroup messages={group.messages} />}
+              </>
+            ) : <ToolGroup messages={group.messages} />
           )}
           {copyText && <TurnCopyAction text={copyText} />}
         </Fragment>
@@ -189,6 +207,8 @@ const ConversationTurn = memo(function ConversationTurn({
   return (
     previous.isCurrentTurn === next.isCurrentTurn &&
     previous.fallbackTimer === next.fallbackTimer &&
+    previous.selectedSubagentId === next.selectedSubagentId &&
+    previous.onOpenSubagent === next.onOpenSubagent &&
     previous.turn.id === next.turn.id &&
     previous.turn.user === next.turn.user &&
     previous.turn.messages.length === next.turn.messages.length &&
@@ -643,7 +663,7 @@ function ToolPayloadPanel({ label, payload }: { label: string; payload: ToolDisp
 
 function toolDisplaySummary(payload: ToolDisplayValue | undefined): string | null {
   if (!payload) return null;
-  if (payload.format === "json") {
+  if (payload.format === "json" || payload.text.trimStart().startsWith("{")) {
     try {
       const parsed: unknown = JSON.parse(payload.text);
       if (isPlainRecord(parsed)) {
@@ -671,7 +691,7 @@ function toolDisplaySummary(payload: ToolDisplayValue | undefined): string | nul
     }
   }
   const firstLine = payload.text.split(/\r?\n/, 1)[0]?.trim();
-  return firstLine ? truncateToolSummary(firstLine) : null;
+  return firstLine && !/^[{}\[\]]+$/.test(firstLine) ? truncateToolSummary(firstLine) : null;
 }
 
 function compactToolValue(value: unknown): string | null {
@@ -722,7 +742,7 @@ function groupTimelineMessages(messages: ChatMessage[]): TimelineGroup[] {
     }
     if (message.role === "tool") {
       const previous = groups.at(-1);
-      if (previousWasTool && previous?.kind === "tools") {
+      if (previousWasTool && previous?.kind === "tools" && !message.subagents && !previous.messages[0]?.subagents) {
         previous.messages.push(message);
       } else {
         groups.push({ kind: "tools", id: message.id, messages: [message] });

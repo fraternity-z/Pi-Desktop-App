@@ -55,6 +55,7 @@ export const BRIDGE_OPERATIONS = [
   "session.delete",
   "session.open",
   "session.history",
+  "subagent.transcript",
   "session.review.list",
   "session.review.detail",
   "session.review.rollback",
@@ -147,6 +148,7 @@ export type BridgeRequest =
   | (RequestBase & { op: "session.delete"; sessionIds: string[] })
   | (RequestBase & { op: "session.open"; sessionPath: string })
   | (RequestBase & { op: "session.history"; sessionId: string; cursor: string })
+  | (RequestBase & { op: "subagent.transcript"; sessionId: string; subagentId: string; cursor?: string })
   | (RequestBase & { op: "session.review.list"; sessionId: string; cwd: string; cursor?: string })
   | (RequestBase & { op: "session.review.detail" | "session.review.rollback"; sessionId: string; cwd: string; reviewId: string })
   | (RequestBase & {
@@ -544,6 +546,15 @@ export function parseRequest(line: string): BridgeRequest {
         throw new ProtocolError("INVALID_REQUEST", "历史分页游标无效");
       }
       return { v: PROTOCOL_VERSION, id, op: "session.history", sessionId: requireSessionId(value), cursor };
+    }
+    case "subagent.transcript": {
+      const subagentId = requireString(value, "subagentId", 260);
+      if (/[\x00-\x1f\x7f]/.test(subagentId)) throw new ProtocolError("INVALID_REQUEST", "子代理 id 无效");
+      const cursor = value.cursor === undefined ? undefined : requireString(value, "cursor", 64);
+      if (cursor !== undefined && (!/^\d{1,16}:\d{1,16}:[a-f0-9]{16}$/.test(cursor) ||
+          !cursor.split(":").slice(0, 2).every((part) => Number.isSafeInteger(Number(part))) ||
+          Number(cursor.split(":")[0]) < 1)) throw new ProtocolError("INVALID_REQUEST", "子代理会话分页游标无效");
+      return { v: PROTOCOL_VERSION, id, op: "subagent.transcript", sessionId: requireSessionId(value), subagentId, ...(cursor === undefined ? {} : { cursor }) };
     }
     case "session.review.list": {
       const cursor = value.cursor === undefined ? undefined : requireString(value, "cursor", 36);

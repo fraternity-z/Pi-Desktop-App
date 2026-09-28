@@ -119,6 +119,30 @@ export interface AgentMessageSummary {
   isError?: boolean;
   timestamp?: string;
   review?: SessionReviewSummary;
+  subagents?: SubagentSnapshot[];
+}
+
+export interface SubagentMessage {
+  role: "user" | "assistant" | "thinking" | "tool" | "system";
+  content: string;
+  toolCallId?: string;
+  toolName?: string;
+  toolInput?: ToolDisplayPayload;
+  toolOutput?: ToolDisplayPayload;
+  isError?: boolean;
+}
+
+export interface SubagentSnapshot {
+  id: string;
+  agent: string;
+  task: string;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  messages: SubagentMessage[];
+  truncated: boolean;
+  model?: string;
+  turns?: number;
+  transcriptAvailable?: boolean;
+  transcriptRevision?: number;
 }
 
 export interface SessionConfiguration {
@@ -211,6 +235,7 @@ export type AgentEventName =
   | "message.completed"
   | "message.failed"
   | "tool.started"
+  | "tool.updated"
   | "tool.completed"
   | "tool.failed"
   | "queue.updated"
@@ -229,6 +254,7 @@ const AGENT_EVENT_NAMES = new Set<AgentEventName>([
   "message.completed",
   "message.failed",
   "tool.started",
+  "tool.updated",
   "tool.completed",
   "tool.failed",
   "queue.updated",
@@ -462,7 +488,8 @@ function hasValidEventData(name: AgentEventName, data: unknown): boolean {
     const detailKey = name === "tool.started" ? "input" : "output";
     const keys = Object.keys(data);
     return (
-      keys.every((key) => key === "toolCallId" || key === "toolName" || key === detailKey || (name !== "tool.started" && key === "review")) &&
+      keys.every((key) => key === "toolCallId" || key === "toolName" || key === "subagents" || key === detailKey || (name !== "tool.started" && key === "review")) &&
+      (!("subagents" in data) || isSubagentSnapshots(data.subagents)) &&
       (!(detailKey in data) || isToolDisplayPayload(data[detailKey])) &&
       (!("review" in data) || isSessionReviewSummary(data.review)) &&
       isBoundedText(data.toolCallId, MAX_TOOL_CALL_ID_CHARS) &&
@@ -562,6 +589,33 @@ function isToolDisplayPayload(value: unknown): value is ToolDisplayPayload {
     (value.format === "text" || value.format === "json") &&
     typeof value.truncated === "boolean"
   );
+}
+
+export function isSubagentSnapshots(value: unknown): value is SubagentSnapshot[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 16) return false;
+  const ids = new Set<string>();
+  for (const snapshot of value) {
+    if (!isRecord(snapshot) || !Object.keys(snapshot).every((key) => ["id", "agent", "task", "status", "messages", "truncated", "model", "turns", "transcriptAvailable", "transcriptRevision"].includes(key)) ||
+      !isBoundedText(snapshot.id, 260) || ids.has(snapshot.id) || !isBoundedText(snapshot.agent, 128) ||
+      typeof snapshot.task !== "string" || snapshot.task.length > 4096 ||
+      !["pending", "running", "completed", "failed", "cancelled"].includes(String(snapshot.status)) ||
+      typeof snapshot.truncated !== "boolean" || !Array.isArray(snapshot.messages) || snapshot.messages.length > 100 ||
+      ("model" in snapshot && !isBoundedText(snapshot.model, 256)) ||
+      ("transcriptAvailable" in snapshot && typeof snapshot.transcriptAvailable !== "boolean") ||
+      ("transcriptRevision" in snapshot && (!Number.isSafeInteger(snapshot.transcriptRevision) || Number(snapshot.transcriptRevision) < 1)) ||
+      ("turns" in snapshot && (!Number.isSafeInteger(snapshot.turns) || Number(snapshot.turns) < 0))) return false;
+    ids.add(snapshot.id);
+    for (const message of snapshot.messages) {
+      if (!isRecord(message) || !Object.keys(message).every((key) => ["role", "content", "toolCallId", "toolName", "toolInput", "toolOutput", "isError"].includes(key)) ||
+        !["user", "assistant", "thinking", "tool", "system"].includes(String(message.role)) ||
+        typeof message.content !== "string" || message.content.length > 8192 ||
+        ("toolCallId" in message && !isBoundedText(message.toolCallId, 256)) ||
+        ("toolName" in message && !isBoundedText(message.toolName, 128)) ||
+        ("isError" in message && typeof message.isError !== "boolean") ||
+        ["toolInput", "toolOutput"].some((key) => key in message && (!isToolDisplayPayload(message[key]) || message[key].text.length > 4096))) return false;
+    }
+  }
+  return new TextEncoder().encode(JSON.stringify(value)).length <= 100_000;
 }
 
 function isQueuedMessageList(value: unknown): value is string[] {

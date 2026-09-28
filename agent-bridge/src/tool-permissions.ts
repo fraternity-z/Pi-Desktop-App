@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { PermissionDecision, PermissionMode } from "./protocol.js";
@@ -75,6 +75,7 @@ export class ToolPermissions {
   private generation = 0;
   private readonly grants = new Set<string>();
   private readonly pending = new Map<string, Pending>();
+  private readonly children = new Map<string, { active: boolean }>();
   private readonly overriddenTools = new Set<string>();
   constructor(
     readonly cwd: string,
@@ -88,6 +89,33 @@ export class ToolPermissions {
     pi.on("tool_call", (event, context) => this.authorize(event, context.sessionManager));
     this.registered = true;
   };
+
+  /** Child tools share the parent's policy and approval channel, not its identity. */
+  childExtension(childManager: PermissionSessionManager, prefix: string): PermissionExtensionFactory {
+    const childId = childManager.getSessionId?.();
+    const parentId = this.sessionId;
+    if (!childId || this.children.has(prefix) || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(prefix)) {
+      throw new PermissionError("TOOL_PERMISSIONS_UNSUPPORTED", "子代理工具审批会话身份无效");
+    }
+    const child = { active: true };
+    this.children.set(prefix, child);
+    return (pi) => {
+      if (typeof pi?.on !== "function") throw new PermissionError("TOOL_PERMISSIONS_UNSUPPORTED", "当前 Pi SDK 不支持工具审批扩展");
+      pi.on("tool_call", async (event, context) => {
+        if (!child.active || !this.manager || this.sessionId !== parentId || childManager.getSessionId?.() !== childId || context.sessionManager.getSessionId?.() !== childId ||
+            typeof event.toolCallId !== "string" || !event.toolCallId.trim() || event.toolCallId.length > 4096 || /[\x00-\x1f]/.test(event.toolCallId)) return denied();
+        const toolCallId = `${prefix}:${createHash("sha256").update(event.toolCallId, "utf8").digest("hex").slice(0, 32)}`;
+        return this.authorize({ ...event, toolCallId }, this.manager, () => child.active);
+      });
+    };
+  }
+
+  finishChild(prefix: string): void {
+    const child = this.children.get(prefix);
+    if (!child) return;
+    child.active = false; this.children.delete(prefix);
+    for (const [id, item] of this.pending) if (item.request.toolCallId.startsWith(`${prefix}:`)) this.finish(id, "deny");
+  }
 
   assertRegistered(): void {
     if (!this.registered) throw new PermissionError("TOOL_PERMISSIONS_UNSUPPORTED", "当前 Pi SDK 未注册工具审批钩子，请升级后重试");
@@ -135,7 +163,7 @@ export class ToolPermissions {
     this.generation++; this.suspended = true;
     for (const id of this.pending.keys()) this.finish(id, "deny");
   }
-  close(): void { this.closed = true; this.cancel(); this.grants.clear(); }
+  close(): void { this.closed = true; this.cancel(); this.grants.clear(); for (const prefix of this.children.keys()) this.finishChild(prefix); }
   private expire(): void {
     for (const [id, item] of this.pending) if (Date.parse(item.request.expiresAt) <= Date.now()) this.finish(id, "deny");
   }
@@ -145,9 +173,9 @@ export class ToolPermissions {
     item.resolve(decision === "deny" ? denied() : undefined);
     this.emit(this.sessionId, "permission.resolved", { requestId, decision });
   }
-  private async authorize(event: PermissionToolEvent, manager: PermissionSessionManager): Promise<Block | undefined> {
+  private async authorize(event: PermissionToolEvent, manager: PermissionSessionManager, isActive = () => true): Promise<Block | undefined> {
     const generation = this.generation;
-    if (this.closed || this.suspended || !this.sessionId || manager.getSessionId?.() !== this.sessionId || !validId(event.toolName) || !validId(event.toolCallId)) return denied();
+    if (!isActive() || this.closed || this.suspended || !this.sessionId || manager.getSessionId?.() !== this.sessionId || !validId(event.toolName) || !validId(event.toolCallId)) return denied();
     if (this.currentMode === "auto" || this.grants.has(event.toolName)) return undefined;
     const read = ["read", "grep", "find", "ls"].includes(event.toolName);
     const write = ["write", "edit"].includes(event.toolName);
@@ -156,7 +184,7 @@ export class ToolPermissions {
       const path = event.input.path ?? (["grep", "find", "ls"].includes(event.toolName) ? "." : undefined);
       allowed = await this.checkPath(this.cwd, path, write);
     }
-    if (this.closed || this.suspended || generation !== this.generation) return denied();
+    if (!isActive() || this.closed || this.suspended || generation !== this.generation) return denied();
     if (allowed) return undefined;
     if (this.pending.size >= 64 || [...this.pending.values()].some((item) => item.request.toolCallId === event.toolCallId)) return denied();
     const fallback = event.toolName === "bash" ? "执行终端命令（可能访问项目外文件或网络）；允许本会话将授权此工具的后续调用" : "此工具操作需要审批；允许本会话将授权此工具的后续调用";

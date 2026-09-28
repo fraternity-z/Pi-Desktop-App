@@ -5,6 +5,26 @@ import { createRightPanelFileTarget } from "./rightPanelFiles";
 import { useRightPanelSessionState } from "./useRightPanelSessionState";
 
 describe("工作区侧栏上下文", () => {
+  it("子代理标签去重、关闭并按会话隔离，拒绝旧会话回调", () => {
+    const { result, rerender } = renderHook(({ session }) => useRightPanelSessionState("/repo", session), { initialProps: { session: "a" } });
+    act(() => { result.current.setActiveTab("subagent:tool:0"); result.current.setActiveTab("subagent:tool:0"); });
+    expect(result.current.subagentTabs).toEqual(["subagent:tool:0"]);
+    const old = result.current;
+    rerender({ session: "b" });
+    expect(result.current.subagentTabs).toEqual([]);
+    expect(result.current.activeTab).toBeNull();
+    act(() => old.setActiveTab("subagent:late"));
+    expect(result.current.subagentTabs).toEqual([]);
+    act(() => result.current.setActiveTab("subagent:tool:0"));
+    rerender({ session: "a" });
+    expect(result.current.activeTab).toBe("subagent:tool:0");
+    act(() => result.current.closeSubagentTab("subagent:tool:0"));
+    expect(result.current.subagentTabs).toEqual([]);
+    expect(result.current.activeTab).toBeNull();
+    act(() => result.current.setActiveTab("subagent:tool:0"));
+    expect(result.current.subagentTabs).toEqual(["subagent:tool:0"]);
+  });
+
   it("首次打开只显示工具选择列表", () => {
     const { result } = renderHook(() => useRightPanelSessionState("/repo/a"));
     expect(result.current).toMatchObject({ open: false, activeTab: null, toolTabs: [] });

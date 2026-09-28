@@ -10,6 +10,7 @@ import { RuntimeError, type SessionRuntime } from "./session-runtime.js";
 import { ProviderSettingsError } from "./provider-config.js";
 import { ReviewError } from "./session-review.js";
 import { PermissionError } from "./tool-permissions.js";
+import { SubagentTranscriptError } from "./subagent-transcripts.js";
 
 export class BridgeServer {
   private sequence = 0;
@@ -144,10 +145,12 @@ export class BridgeServer {
           data = await this.runtime.configureSession(request.sessionId, {
             ...(request.permissionMode === undefined ? {} : { permissionMode: request.permissionMode }),
             ...(request.model === undefined ? {} : { model: request.model }),
-            ...(request.thinkingLevel === undefined
-              ? {}
-              : { thinkingLevel: request.thinkingLevel }),
+            ...(request.thinkingLevel === undefined ? {} : { thinkingLevel: request.thinkingLevel }),
           });
+          break;
+        case "subagent.transcript":
+          if (!this.runtime.readSubagentTranscript) throw new RuntimeError("SUBAGENT_TRANSCRIPT_UNAVAILABLE", "当前运行时不支持完整子代理会话");
+          data = this.runtime.readSubagentTranscript(request.sessionId, request.subagentId, request.cursor);
           break;
         case "session.review.list":
           if (!this.runtime.listReviews) throw new RuntimeError("REVIEW_UNAVAILABLE", "当前运行时不支持会话审查");
@@ -207,7 +210,7 @@ export class BridgeServer {
   }
 
   private failureResponse(id: string, error: unknown): BridgeResponse {
-    if (error instanceof ProtocolError || error instanceof RuntimeError || error instanceof ProviderSettingsError || error instanceof ReviewError || error instanceof PermissionError) {
+    if (error instanceof ProtocolError || error instanceof RuntimeError || error instanceof ProviderSettingsError || error instanceof ReviewError || error instanceof PermissionError || error instanceof SubagentTranscriptError) {
       return {
         v: PROTOCOL_VERSION,
         kind: "response",

@@ -4,6 +4,7 @@ import { createHello, type OutboundFrame } from "./protocol.js";
 import { BridgeServer } from "./server.js";
 import { RuntimeError, type RuntimeEvent, type SessionRuntime } from "./session-runtime.js";
 import { PermissionError } from "./tool-permissions.js";
+import { SubagentTranscriptError } from "./subagent-transcripts.js";
 
 interface RuntimeMock {
   runtime: SessionRuntime;
@@ -204,6 +205,30 @@ describe("BridgeServer", () => {
     expect(runtimeMock.runtime.readHistory).toHaveBeenCalledWith("s-1", "1:200:0");
     expect(frames.at(-1)).toMatchObject({ ok: true, data: page });
   });
+  it("按父会话和子代理标识路由完整记录分页，保留明确错误", async () => {
+    const { server, frames, runtimeMock } = setup();
+    const request = { v: 1, id: "transcript", op: "subagent.transcript", sessionId: "parent", subagentId: "tool:0" };
+    await server.handleLine(JSON.stringify(request));
+    expect(frames.at(-1)).toMatchObject({ ok: false, error: { code: "SUBAGENT_TRANSCRIPT_UNAVAILABLE" } });
+    const page = { revision: 2, text: "[]", nextCursor: null };
+    const read = vi.fn(() => page);
+    runtimeMock.runtime.readSubagentTranscript = read;
+    await server.handleLine(JSON.stringify(request));
+    expect(read).toHaveBeenLastCalledWith("parent", "tool:0", undefined);
+    expect(frames.at(-1)).toMatchObject({ id: "transcript", ok: true, data: page });
+    const cursor = "2:64000:0123456789abcdef";
+    await server.handleLine(JSON.stringify({ ...request, cursor }));
+    expect(read).toHaveBeenLastCalledWith("parent", "tool:0", cursor);
+    for (const code of ["SUBAGENT_TRANSCRIPT_CHANGED", "SUBAGENT_TRANSCRIPT_NOT_FOUND", "SUBAGENT_TRANSCRIPT_CURSOR_INVALID", "SUBAGENT_TRANSCRIPT_SAVE_FAILED"]) {
+      read.mockImplementationOnce(() => { throw new SubagentTranscriptError(code, "可操作的错误"); });
+      await server.handleLine(JSON.stringify(request));
+      expect(frames.at(-1)).toMatchObject({ ok: false, error: { code, message: "可操作的错误" } });
+    }
+    read.mockImplementationOnce(() => { throw new Error("private internal detail"); });
+    await server.handleLine(JSON.stringify(request));
+    expect(frames.at(-1)).toMatchObject({ ok: false, error: { code: "INTERNAL_ERROR", message: "Bridge 处理请求失败" } });
+  });
+
   it("发送握手并路由基础请求", async () => {
     const { server, frames, runtimeMock } = setup();
     server.start();

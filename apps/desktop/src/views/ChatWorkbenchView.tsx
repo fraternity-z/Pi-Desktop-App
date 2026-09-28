@@ -10,7 +10,7 @@ import {
   RefreshCw,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from "react";
 
 import { AppSidebar, threadTitle } from "../components/AppSidebar";
 import { WorkspaceFilesPanel } from "../components/WorkspaceFilesPanel";
@@ -29,6 +29,7 @@ import { GitReviewPanel } from "../components/GitReviewPanel";
 import { SessionReviewPanel } from "../components/SessionReviewPanel";
 import { QuickPreview } from "../components/QuickPreview";
 import { RightPanel } from "../components/RightPanel";
+import { SubagentTranscriptPanel } from "../components/SubagentTranscriptPanel";
 import { RuntimeStatusControl } from "../components/RuntimeStatusControl";
 import { SessionLoading } from "../components/SessionLoading";
 import { SettingsSidebar, type SettingsSectionId } from "../components/SettingsSidebar";
@@ -185,13 +186,19 @@ export function ChatWorkbenchView() {
   const ecosystemPreload = useRef<Promise<boolean> | null>(null);
   const [atConversationBottom, setAtConversationBottom] = useState(true);
   const hasSession = session.sessionId !== null;
+  const subagents = useMemo(() => new Map(session.messages.flatMap((message) => (message.subagents ?? []).map((agent) => [agent.id, agent] as const))), [session.messages]);
   const rightPanelEnabled =
-    activeView === "chat" && hasSession && isProjectWorkspace(session.cwd, session.conversationHome);
+    activeView === "chat" && hasSession && (isProjectWorkspace(session.cwd, session.conversationHome) || subagents.size > 0);
   const rightPanelLayout = useRightPanelLayout();
   const panelSessionKey = session.cwd;
-  const panelSession = useRightPanelSessionState(panelSessionKey);
+  const panelSession = useRightPanelSessionState(panelSessionKey, session.sessionId ?? "");
   const rightPanelVisibility = useRightPanelVisibility(rightPanelEnabled, { key: panelSessionKey, open: panelSession.open, setOpen: panelSession.setOpen });
   const { activeTab: rightPanelTab, setActiveTab: setRightPanelTab, fileTab, setFileTab, previewTab, setPreviewTab, selectedFilePath, setSelectedFilePath } = panelSession;
+  const activeSubagent = rightPanelTab?.startsWith("subagent:") ? subagents.get(rightPanelTab.slice(9)) : undefined;
+  const openSubagent = useCallback((id: string) => {
+    setRightPanelTab(`subagent:${id}`);
+    rightPanelVisibility.openPanel();
+  }, [setRightPanelTab, rightPanelVisibility.openPanel]);
   const fileWorkspaceActive = rightPanelTab === "files" || rightPanelTab === "file" || rightPanelTab === "preview";
   const [fileSearchOpen, setFileSearchOpen] = useState(false);
   const [fileReloadKey, setFileReloadKey] = useState(0);
@@ -1154,6 +1161,8 @@ export function ChatWorkbenchView() {
                   <>
                     <ConversationTimeline
                       messages={session.messages}
+                      selectedSubagentId={rightPanelVisibility.open ? activeSubagent?.id : undefined}
+                      onOpenSubagent={openSubagent}
                       streaming={session.phase === "streaming"}
                       timer={session.timer}
                     />
@@ -1268,7 +1277,9 @@ export function ChatWorkbenchView() {
             activeTab={rightPanelTab}
             fileTab={fileTab ? { label: fileTab.name, title: fileTab.path } : null}
             previewTab={previewTab ? { label: previewTab.name, title: previewTab.path } : null}
-            sessionKey={panelSessionKey}
+            sessionKey={`${panelSessionKey}:${session.sessionId ?? ""}`}
+            subagentTabs={panelSession.subagentTabs.flatMap((id) => { const agent = subagents.get(id.slice(9)); return agent ? [{ id, label: agent.agent, title: agent.task }] : []; })}
+            onCloseSubagentTab={panelSession.closeSubagentTab}
             toolTabs={panelSession.toolTabs}
             onCloseToolTab={panelSession.closeToolTab}
             onClose={closeRightPanel}
@@ -1281,6 +1292,7 @@ export function ChatWorkbenchView() {
             onCloseFileTab={closeRightPanelFile}
             onClosePreviewTab={closeRightPanelPreview}
           >
+            {activeSubagent && <SubagentTranscriptPanel key={`${session.sessionId}:${activeSubagent.id}`} sessionId={session.sessionId ?? undefined} subagent={activeSubagent} />}
             <div className="right-panel-file-workspace" hidden={!fileWorkspaceActive}>
               <div className={`workspace-file-layout${rightPanelTab === "files" ? " workspace-file-layout-tree-only" : ""}`}>
               <div className="workspace-file-reader" hidden={rightPanelTab === "files"}>

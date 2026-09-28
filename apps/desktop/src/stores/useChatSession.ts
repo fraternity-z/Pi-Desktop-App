@@ -27,6 +27,8 @@ import {
   type SessionConfiguration,
   type ThinkingLevel,
   type ToolDisplayPayload,
+  type SubagentSnapshot,
+  isSubagentSnapshots,
   isThinkingLevel,
   isPermissionMode,
 } from "../ipc/agent";
@@ -60,6 +62,7 @@ export interface ChatMessage {
   toolInput?: ToolDisplayPayload;
   toolOutput?: ToolDisplayPayload;
   status?: TimelineStatus;
+  subagents?: SubagentSnapshot[];
 }
 
 export interface ToolExecution {
@@ -545,6 +548,9 @@ export function useChatSession(): ChatSessionState {
       .catch((error: unknown) => {
         if (!active) return;
         setEventConnection("error");
+        commitProjections((current) => Object.fromEntries(Object.entries(current).map(([id, projection]) =>
+          [id, { ...projection, messages: settleSubagentMessages(projection.messages, "cancelled") }],
+        )));
         setGlobalError(`AGENT_EVENT_LISTEN_FAILED: ${formatError(error)}`);
       });
     return () => {
@@ -553,7 +559,7 @@ export function useChatSession(): ChatSessionState {
       pendingProjectionRender.current?.();
       pendingProjectionRender.current = null;
     };
-  }, [listenerAttempt, nextItemId, scheduleProjectionRender]);
+  }, [listenerAttempt, nextItemId, scheduleProjectionRender, commitProjections]);
 
   useEffect(
     () => () => {
@@ -1003,7 +1009,7 @@ export function useChatSession(): ChatSessionState {
               error: message,
               queuedMessages: queued ? previousQueue : currentProjection.queuedMessages,
               messages: [
-                ...(finished?.messages ?? currentProjection.messages).map((item) =>
+                ...settleSubagentMessages(finished?.messages ?? currentProjection.messages, "failed").map((item) =>
                   item.role === "tool" && item.status === "running"
                     ? { ...item, status: "failed" as const }
                     : item,
@@ -1075,7 +1081,7 @@ export function useChatSession(): ChatSessionState {
             phase: "ready",
             ...finished,
             queuePaused: queueSize(projection.queuedMessages) > 0,
-            messages: finished.messages.map((item) =>
+            messages: settleSubagentMessages(finished.messages, "cancelled").map((item) =>
               item.role === "tool" && item.status === "running"
                 ? { ...item, status: "cancelled" as const }
                 : item,
@@ -1173,12 +1179,13 @@ function projectionFromSession(
       ...(message.toolName ? { toolName: message.toolName } : {}),
       ...(toolInput ? { toolInput } : {}),
       ...(toolOutput ? { toolOutput } : {}),
+      ...(isSubagentSnapshots(message.subagents) ? { subagents: message.subagents } : {}),
       ...(message.role === "tool"
         ? { status: message.isError ? ("failed" as const) : ("completed" as const) }
         : {}),
     };
   });
-  messages = restoreHistoryTimers(messages);
+  messages = restoreHistoryTimers(session.streaming ? messages : settleSubagentMessages(messages, "cancelled"));
   const lastUser = [...messages].reverse().find((message) => message.role === "user");
   const restoredStartedAt =
     replaced?.runStartedAt ??
@@ -1332,7 +1339,7 @@ function applyAgentEvent(
       ...projection,
       phase: "ready",
       ...finished,
-      messages: finished.messages.map((item) =>
+      messages: settleSubagentMessages(finished.messages, "cancelled").map((item) =>
         item.role === "tool" && item.status === "running"
           ? { ...item, status: "completed" as const }
           : item,
@@ -1431,7 +1438,7 @@ function applyAgentEvent(
     const tool = readToolEvent(event.data, event.name);
     if (!tool) return projection;
     const status: TimelineStatus =
-      event.name === "tool.started"
+      event.name === "tool.started" || event.name === "tool.updated"
         ? "running"
         : event.name === "tool.failed"
           ? "failed"
@@ -1461,7 +1468,7 @@ function applyAgentEvent(
     return {
       ...projection,
       messages: [
-        ...projection.messages,
+        ...settleSubagentMessages(projection.messages, isRecord(event.data) && event.data.reason === "aborted" ? "cancelled" : "failed"),
         { id: nextId(), role: "system", content: message, status: "failed" },
       ],
     };
@@ -1488,6 +1495,7 @@ function upsertTimelineTool(
     toolName: string;
     toolInput?: ToolDisplayPayload;
     toolOutput?: ToolDisplayPayload;
+    subagents?: SubagentSnapshot[];
   },
   status: TimelineStatus,
   nextId: () => string,
@@ -1506,6 +1514,7 @@ function upsertTimelineTool(
         toolName: tool.toolName,
         ...(tool.toolInput ? { toolInput: tool.toolInput } : {}),
         ...(tool.toolOutput ? { toolOutput: tool.toolOutput } : {}),
+        ...(tool.subagents ? { subagents: settleSubagents(tool.subagents, status) } : {}),
         status,
       },
     ];
@@ -1517,10 +1526,24 @@ function upsertTimelineTool(
           toolName: tool.toolName,
           ...(tool.toolInput ? { toolInput: tool.toolInput } : {}),
           ...(tool.toolOutput ? { toolOutput: tool.toolOutput } : {}),
+          ...((tool.subagents ?? item.subagents) ? { subagents: settleSubagents((tool.subagents ?? item.subagents)!, status) } : {}),
           status,
         }
       : item,
   );
+}
+
+function settleSubagents(subagents: SubagentSnapshot[], status: TimelineStatus): SubagentSnapshot[] {
+  if (status === "running" || status === "pending") return subagents;
+  // Missing final child evidence must not imply success. Preserve explicit outcomes.
+  const terminal = status === "failed" ? "failed" : "cancelled";
+  return subagents.map((agent) => agent.status === "pending" || agent.status === "running"
+    ? { ...agent, status: terminal } : agent);
+}
+
+function settleSubagentMessages(messages: ChatMessage[], status: TimelineStatus): ChatMessage[] {
+  return messages.map((message) => message.subagents?.some((agent) => agent.status === "running" || agent.status === "pending")
+    ? { ...message, subagents: settleSubagents(message.subagents, status) } : message);
 }
 
 function findLastOptimisticUser(messages: ChatMessage[], content: string): number {
@@ -1823,6 +1846,7 @@ function readToolEvent(
   toolName: string;
   toolInput?: ToolDisplayPayload;
   toolOutput?: ToolDisplayPayload;
+  subagents?: SubagentSnapshot[];
 } | null {
   if (!isRecord(data) || typeof data.toolCallId !== "string" || typeof data.toolName !== "string") {
     return null;
@@ -1836,6 +1860,7 @@ function readToolEvent(
     toolName: data.toolName,
     ...(display && detailKey === "input" ? { toolInput: display } : {}),
     ...(display && detailKey === "output" ? { toolOutput: display } : {}),
+    ...(isSubagentSnapshots(data.subagents) ? { subagents: data.subagents } : {}),
   };
 }
 

@@ -18,6 +18,100 @@ function fixture(mode: PermissionMode = "accept-edits", checkPath = vi.fn(async 
 }
 afterEach(() => vi.useRealTimers());
 
+const childPrefix = "12345678-1234-1234-1234-123456789abc";
+function childHook(permissions: ToolPermissions, prefix = childPrefix, id = "child-1") {
+  const manager: PermissionSessionManager = { getSessionId: () => id };
+  let hook!: Parameters<PermissionExtensionApi["on"]>[1];
+  permissions.childExtension(manager, prefix)({ on: (_name, handler) => { hook = handler; } });
+  const call = (toolName = "bash", toolCallId = "same-call") => hook({ toolName, toolCallId, input: { path: "sample.txt" } }, { sessionManager: manager });
+  return { manager, hook, call };
+}
+
+describe("child tool permission hooks", () => {
+  it("routes ask-mode approvals and session grants through the parent", async () => {
+    const f = fixture("ask"); const child = childHook(f.permissions);
+    const pending = child.call("write");
+    const request = f.permissions.list()[0]!;
+    expect(request.toolCallId).toMatch(new RegExp(`^${childPrefix}:[a-f0-9]{32}$`));
+    expect(f.emit).toHaveBeenCalledWith("s-1", "permission.requested", request);
+    f.permissions.reply(request.requestId, "allow-session");
+    await expect(pending).resolves.toBeUndefined();
+    await expect(child.call("write", "next")).resolves.toBeUndefined();
+    await expect(f.call("write")).resolves.toBeUndefined();
+    expect(f.permissions.mode).toBe("ask");
+    f.permissions.close();
+  });
+
+  it("isolates equal and long raw IDs between children and parent", async () => {
+    const f = fixture(); const a = childHook(f.permissions);
+    const b = childHook(f.permissions, "87654321-4321-4321-4321-cba987654321", "child-2");
+    const pending = [f.call("bash", "same-call"), a.call(), b.call(), a.call("bash", "long".repeat(100))];
+    const ids = f.permissions.list().map((item) => item.toolCallId);
+    expect(ids).toHaveLength(4); expect(new Set(ids).size).toBe(4);
+    expect(ids.every((id) => id.length <= 128)).toBe(true);
+    await expect(a.call()).resolves.toMatchObject({ block: true });
+    f.permissions.close(); await Promise.all(pending);
+  });
+
+  it("rejects child identity mismatch and malformed IDs even in auto mode", async () => {
+    const f = fixture("auto"); const child = childHook(f.permissions);
+    await expect(child.hook({ toolName: "bash", toolCallId: "call", input: {} }, { sessionManager: f.manager })).resolves.toMatchObject({ block: true });
+    for (const id of ["", "bad\0id", "x".repeat(4097)]) await expect(child.call("bash", id)).resolves.toMatchObject({ block: true });
+    child.manager.getSessionId = () => "changed-child";
+    await expect(child.call()).resolves.toMatchObject({ block: true });
+    expect(f.permissions.list()).toEqual([]);
+    expect(() => f.permissions.childExtension({}, childPrefix)).toThrowError(expect.objectContaining({ code: "TOOL_PERMISSIONS_UNSUPPORTED" }));
+    expect(() => f.permissions.childExtension(f.manager, "bad-prefix")).toThrow();
+    f.permissions.close();
+  });
+
+  it("honors parent cancellation during path checks and parent closure", async () => {
+    let complete!: (value: boolean) => void;
+    const f = fixture("ask", vi.fn(() => new Promise<boolean>((resolve) => { complete = resolve; })));
+    const child = childHook(f.permissions);
+    const checking = child.call("read"); f.permissions.cancel(); complete(true);
+    await expect(checking).resolves.toMatchObject({ block: true });
+    await expect(child.call()).resolves.toMatchObject({ block: true });
+    f.permissions.resume(); const pending = child.call();
+    expect(f.permissions.list()).toHaveLength(1); f.permissions.cancel();
+    await expect(pending).resolves.toMatchObject({ block: true });
+    f.permissions.resume(); f.permissions.close();
+    await expect(child.call()).resolves.toMatchObject({ block: true });
+  });
+
+  it("does not register or initialize the parent through child registration", () => {
+    const permissions = new ToolPermissions(process.cwd(), vi.fn());
+    childHook(permissions);
+    expect(() => permissions.assertRegistered()).toThrow();
+    permissions.close();
+  });
+
+  it("disposes only child approvals and leaves parent and peer requests usable", async () => {
+    const f = fixture(); const a = childHook(f.permissions);
+    const b = childHook(f.permissions, "87654321-4321-4321-4321-cba987654321", "child-2");
+    const root = f.call("bash", "root"); const child = a.call(); const peer = b.call();
+    const stale = f.permissions.list().find((item) => item.toolCallId.startsWith(childPrefix))!;
+    f.permissions.finishChild(childPrefix); f.permissions.finishChild(childPrefix);
+    await expect(child).resolves.toMatchObject({ block: true });
+    await expect(a.call()).resolves.toMatchObject({ block: true });
+    expect(() => f.permissions.reply(stale.requestId, "allow-once")).toThrow();
+    expect(f.permissions.list()).toHaveLength(2);
+    for (const request of f.permissions.list()) f.permissions.reply(request.requestId, "allow-once");
+    await expect(root).resolves.toBeUndefined(); await expect(peer).resolves.toBeUndefined();
+    f.permissions.close();
+  });
+
+  it("fences a disposed child's delayed path check before it can enqueue approval", async () => {
+    let complete!: (value: boolean) => void;
+    const f = fixture("ask", vi.fn(() => new Promise<boolean>((resolve) => { complete = resolve; })));
+    const child = childHook(f.permissions); const pending = child.call("read");
+    f.permissions.finishChild(childPrefix); complete(false);
+    await expect(pending).resolves.toMatchObject({ block: true });
+    expect(f.permissions.list()).toEqual([]); expect(f.emit).not.toHaveBeenCalled();
+    f.permissions.close();
+  });
+});
+
 describe("tool permission policy", () => {
   it.each(["read", "grep", "find", "ls"])("ask permits local built-in %s", async (name) => {
     const f = fixture("ask");

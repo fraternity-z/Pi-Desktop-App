@@ -27,6 +27,7 @@ import {
   setAgentPackageEnabled,
   type AgentEvent,
   type AgentSession,
+  type SubagentSnapshot,
   updateAgentPackage,
 } from "../ipc/agent";
 import { selectAttachmentFiles, selectProjectDirectory } from "../ipc/project";
@@ -1382,6 +1383,59 @@ describe("ChatWorkbenchView", () => {
         "C:\\Users\\me\\Documents\\Pix\\conversations",
       ),
     );
+  });
+
+  it.each(["C:/work", "C:/Users/me/Documents/Pix/conversations"])("%s 的子代理卡片打开只读侧栏并跟随实时结果", async (cwd) => {
+    vi.mocked(createAgentSession).mockResolvedValue({ ...defaultSession, cwd });
+    render(<ChatWorkbenchView />);
+    await screen.findByRole("status", { name: "状态正常" });
+    await addProject(cwd);
+    fireEvent.change(await screen.findByLabelText("发送给 Pi 的消息"), { target: { value: "委派检查" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(promptAgent).toHaveBeenCalled());
+    const child: SubagentSnapshot = { id: "delegate:0", agent: "reviewer", task: "检查侧栏布局", status: "running", model: "test-model", messages: [], truncated: false };
+    act(() => emitAgentEvent?.(agentEvent("tool.started", { toolCallId: "delegate", toolName: "subagent", subagents: [child] }, 1)));
+    fireEvent.click(await screen.findByRole("button", { name: /查看 reviewer 子代理会话/ }));
+    const panel = await screen.findByRole("complementary", { name: "工作区侧边栏" });
+    expect(within(panel).getByRole("tab", { name: "reviewer" })).toHaveAttribute("aria-selected", "true");
+    expect(within(panel).queryByRole("textbox")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /查看 reviewer 子代理会话/ }));
+    expect(within(panel).getAllByRole("tab", { name: "reviewer" })).toHaveLength(1);
+    act(() => emitAgentEvent?.(agentEvent("tool.updated", { toolCallId: "delegate", toolName: "subagent", subagents: [{ ...child, messages: [{ role: "assistant", content: "侧栏验证进度" }] }] }, 2)));
+    expect(await within(panel).findByText("侧栏验证进度")).toBeInTheDocument();
+    act(() => emitAgentEvent?.(agentEvent("tool.completed", { toolCallId: "delegate", toolName: "subagent", subagents: [{ ...child, status: "completed", turns: 2, messages: [{ role: "assistant", content: "侧栏验证通过" }] }] }, 3)));
+    expect(await within(panel).findByText("侧栏验证通过")).toBeInTheDocument();
+    expect(within(panel).getByText("已完成")).toBeInTheDocument();
+    fireEvent.click(within(panel).getByRole("button", { name: "关闭子代理标签页" }));
+    expect(within(panel).queryByRole("tab", { name: "reviewer" })).not.toBeInTheDocument();
+    expect(within(panel).queryByText("侧栏验证通过")).not.toBeInTheDocument();
+  });
+
+  it("同工作区恢复历史时隔离子代理标签与相同调用 ID 的内容", async () => {
+    vi.mocked(listAgentSessions).mockResolvedValue(["first", "second"].map((id) => ({
+      id, path: `C:/sessions/${id}.jsonl`, cwd: "C:/alpha", name: `${id} task`,
+      created: "2026-09-27T08:00:00.000Z", modified: "2026-09-27T09:00:00.000Z", messageCount: 1, firstMessage: id,
+    })));
+    vi.mocked(openAgentSession).mockImplementation(async (path) => {
+      const id = path.includes("first") ? "first" : "second";
+      return { ...defaultSession, sessionId: id, cwd: "C:/alpha", sessionPath: path, messages: [{
+        role: "tool", content: "", toolCallId: "delegate", toolName: "subagent",
+        subagents: [{ id: "delegate:0", agent: "reviewer", task: `${id} 的任务`, status: "completed", messages: [{ role: "assistant", content: `${id} 的独立结果` }], truncated: false }],
+      }] };
+    });
+    render(<ChatWorkbenchView />);
+    fireEvent.click(await screen.findByTitle("first task"));
+    fireEvent.click(await screen.findByRole("button", { name: /查看 reviewer 子代理会话/ }));
+    expect(await screen.findByText("first 的独立结果")).toBeVisible();
+    fireEvent.click(screen.getByTitle("second task"));
+    await screen.findByText("second 的任务");
+    expect(screen.queryByText("first 的独立结果")).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "reviewer" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /查看 reviewer 子代理会话/ }));
+    expect(await screen.findByText("second 的独立结果")).toBeVisible();
+    fireEvent.click(screen.getByTitle("first task"));
+    expect(await screen.findByText("first 的独立结果")).toBeVisible();
+    expect(screen.queryByText("second 的独立结果")).not.toBeInTheDocument();
   });
 
   it("仅在项目会话中打开、展开并关闭右侧面板", async () => {

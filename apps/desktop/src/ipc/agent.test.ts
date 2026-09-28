@@ -35,6 +35,21 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 
 describe("agent IPC", () => {
+  it("strictly validates bounded nonrecursive subagent snapshots across tool phases", () => {
+    const snapshot = { id: "t:0", agent: "explorer", task: "inspect", status: "running", messages: [{ role: "assistant", content: "hi" }], truncated: false, transcriptAvailable: true, transcriptRevision: 5 };
+    const event = { v: 1, kind: "event", seq: 1, sessionId: "s", name: "tool.updated", data: { toolCallId: "t", toolName: "subagent", subagents: [snapshot] } };
+    for (const name of ["tool.started", "tool.updated", "tool.completed", "tool.failed"]) expect(parseAgentEvent({ ...event, name })).not.toBeNull();
+    for (const subagents of [[], [snapshot, snapshot], Array(17).fill(snapshot), [{ ...snapshot, status: "unknown" }], [{ ...snapshot, secret: "x" }],
+      [{ ...snapshot, messages: [{ role: "assistant", content: "x", subagents: [] }] }], [{ ...snapshot, task: "x".repeat(4097) }],
+      [{ ...snapshot, messages: Array(101).fill({ role: "assistant", content: "x" }) }], [{ ...snapshot, turns: -1 }], [{ ...snapshot, model: null }],
+      [{ ...snapshot, transcriptAvailable: "true" }], [{ ...snapshot, transcriptRevision: 0 }],
+      [{ ...snapshot, transcriptRevision: Number.MAX_SAFE_INTEGER + 1 }], [{ ...snapshot, transcriptRevision: 1.5 }],
+      [{ ...snapshot, messages: [{ role: "tool", content: "", toolOutput: { text: "x".repeat(4097), format: "text", truncated: false } }] }],
+      [{ ...snapshot, messages: Array(100).fill({ role: "assistant", content: "x".repeat(8192) }) }]]) {
+      expect(parseAgentEvent({ ...event, data: { ...event.data, subagents } })).toBeNull();
+    }
+  });
+
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
     vi.mocked(listen).mockReset();

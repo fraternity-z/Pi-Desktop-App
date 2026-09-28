@@ -189,6 +189,7 @@ function validSnapshot(value: unknown): value is Snapshot {
 export class SessionReview {
   private readonly records = new Map<string, ReviewRecord>();
   private readonly pending = new Map<string, Pending>();
+  private readonly children = new Map<string, { active: boolean }>();
   private pi?: ReviewExtensionApi;
   private sessionId = "";
   private truncated = false;
@@ -202,45 +203,86 @@ export class SessionReview {
     pi.on("tool_call", async (event, context) => {
       if (!["write", "edit"].includes(event.toolName)) return;
       this.sessionId = context.sessionManager.getSessionId();
-      if (this.busy) return { block: true, reason: "文件正在回滚，请稍后重试" };
-      if (this.pending.size >= 64) return { block: true, reason: "文件审查并发数量超出上限" };
-      const pending: Pending = { path: "", overlap: false };
-      this.pending.set(event.toolCallId, pending);
-      try {
-        pending.path = localPath(this.cwd, event.input.path);
-        for (const other of this.pending.values()) if (other !== pending && other.path.toLowerCase() === pending.path.toLowerCase()) other.overlap = pending.overlap = true;
-        pending.before = await snapshot(this.cwd, pending.path);
-      } catch (error) { pending.status = snapshotStatus(error); }
+      return this.handleToolCall(event);
     });
-    pi.on("tool_result", async (event) => {
-      if (!["write", "edit"].includes(event.toolName)) return;
-      const pending = this.pending.get(event.toolCallId);
-      this.pending.delete(event.toolCallId);
-      let after: Snapshot | undefined;
-      let status: ReviewStatus = event.isError ? "failed" : pending?.status ?? "ready";
-      if (!pending) status = "unavailable";
-      if (pending?.overlap) status = "conflict";
-      if (status === "ready") {
-        try {
-          // A later extension may legally mutate the tool input. Never associate
-          // that tool result with a snapshot of the originally requested path.
-          if (localPath(this.cwd, event.input.path) !== pending?.path) status = "unavailable";
-          else after = await snapshot(this.cwd, pending.path);
-        } catch (error) { status = snapshotStatus(error); }
-      }
-      const before = pending?.before;
-      const snapshots = before && after && status === "ready" ? { before, after } : undefined;
-      if (snapshots && snapshots.before.exists === snapshots.after.exists && snapshots.before.hash === snapshots.after.hash) status = "unchanged";
-      const counts = snapshots ? reviewDiff(snapshots.before.text, snapshots.after.text, pending!.path) : { additions: 0, deletions: 0 };
-      const summary: SessionReviewSummary = { id: randomUUID(), toolCallId: event.toolCallId, path: pending?.path ?? "",
-        kind: snapshots ? !snapshots.before.exists ? "added" : !snapshots.after.exists ? "deleted" : "modified" : "unknown", status,
-        additions: counts.additions, deletions: counts.deletions, createdAt: new Date().toISOString() };
-      const entry: ReviewRecord = { schema: 1, cwd: this.cwd, summary, ...snapshots };
-      try { this.persist(entry); } catch { summary.status = "unavailable"; this.remember({ schema: 1, cwd: this.cwd, summary }); }
-      this.changed(this.sessionId, summary);
-      return { details: { ...(record(event.details) ? event.details : {}), piDesktopReview: summary } };
-    });
+    pi.on("tool_result", (event) => this.handleToolResult(event));
   };
+
+  /** Observe child writes using the parent persistence API and shared conflict map. */
+  childExtension(childManager: ReviewContext["sessionManager"], prefix: string): ReviewExtensionFactory {
+    const childId = childManager.getSessionId();
+    const parentId = this.sessionId;
+    if (!childId || !parentId || this.children.has(prefix) || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(prefix)) {
+      throw new ReviewError("REVIEW_UNAVAILABLE", "子代理文件审查会话身份无效");
+    }
+    const child = { active: true };
+    this.children.set(prefix, child);
+    return (pi) => {
+      for (const name of ["tool_call", "tool_result"] as const) pi.on(name, (event, context) => {
+        const isActive = () => child.active && this.sessionId === parentId && childManager.getSessionId() === childId && context.sessionManager.getSessionId() === childId;
+        if (!isActive() ||
+            typeof event.toolCallId !== "string" || !event.toolCallId.trim() || event.toolCallId.length > 4096 || /[\x00-\x1f]/.test(event.toolCallId)) {
+          return name === "tool_call" ? { block: true, reason: "子代理文件审查会话身份不匹配" } : undefined;
+        }
+        const toolCallId = `${prefix}:${digest(event.toolCallId).slice(0, 32)}`;
+        return name === "tool_call" ? this.handleToolCall({ ...event, toolCallId }, isActive) : this.handleToolResult({ ...event, toolCallId }, isActive);
+      });
+    };
+  }
+
+  finishChild(prefix: string): void {
+    const child = this.children.get(prefix);
+    if (child) child.active = false;
+    this.children.delete(prefix);
+    for (const id of this.pending.keys()) if (id.startsWith(`${prefix}:`)) this.pending.delete(id);
+  }
+
+  private async handleToolCall(event: ToolEvent, isActive = () => true): Promise<{ block: true; reason: string } | undefined> {
+    if (!["write", "edit"].includes(event.toolName)) return;
+    if (this.busy) return { block: true, reason: "文件正在回滚，请稍后重试" };
+    if (this.pending.size >= 64) return { block: true, reason: "文件审查并发数量超出上限" };
+    const pending: Pending = { path: "", overlap: false };
+    this.pending.set(event.toolCallId, pending);
+    try {
+      pending.path = localPath(this.cwd, event.input.path);
+      for (const other of this.pending.values()) if (other !== pending && other.path.toLowerCase() === pending.path.toLowerCase()) other.overlap = pending.overlap = true;
+      pending.before = await snapshot(this.cwd, pending.path);
+    } catch (error) { pending.status = snapshotStatus(error); }
+    if (!isActive()) {
+      if (this.pending.get(event.toolCallId) === pending) this.pending.delete(event.toolCallId);
+      return { block: true, reason: "子代理文件审查已关闭" };
+    }
+  }
+
+  private async handleToolResult(event: ToolEvent, isActive = () => true): Promise<{ details: Record<string, unknown> } | undefined> {
+    if (!["write", "edit"].includes(event.toolName)) return;
+    const pending = this.pending.get(event.toolCallId);
+    this.pending.delete(event.toolCallId);
+    let after: Snapshot | undefined;
+    let status: ReviewStatus = event.isError ? "failed" : pending?.status ?? "ready";
+    if (!pending) status = "unavailable";
+    if (pending?.overlap) status = "conflict";
+    if (status === "ready") {
+      try {
+        // A later extension may legally mutate the tool input. Never associate
+        // that tool result with a snapshot of the originally requested path.
+        if (localPath(this.cwd, event.input.path) !== pending?.path) status = "unavailable";
+        else after = await snapshot(this.cwd, pending.path);
+      } catch (error) { status = snapshotStatus(error); }
+    }
+    if (!isActive()) return;
+    const before = pending?.before;
+    const snapshots = before && after && status === "ready" ? { before, after } : undefined;
+    if (snapshots && snapshots.before.exists === snapshots.after.exists && snapshots.before.hash === snapshots.after.hash) status = "unchanged";
+    const counts = snapshots ? reviewDiff(snapshots.before.text, snapshots.after.text, pending!.path) : { additions: 0, deletions: 0 };
+    const summary: SessionReviewSummary = { id: randomUUID(), toolCallId: event.toolCallId, path: pending?.path ?? "",
+      kind: snapshots ? !snapshots.before.exists ? "added" : !snapshots.after.exists ? "deleted" : "modified" : "unknown", status,
+      additions: counts.additions, deletions: counts.deletions, createdAt: new Date().toISOString() };
+    const entry: ReviewRecord = { schema: 1, cwd: this.cwd, summary, ...snapshots };
+    try { this.persist(entry); } catch { summary.status = "unavailable"; this.remember({ schema: 1, cwd: this.cwd, summary }); }
+    this.changed(this.sessionId, summary);
+    return { details: { ...(record(event.details) ? event.details : {}), piDesktopReview: summary } };
+  }
 
   private remember(entry: ReviewRecord): void {
     this.records.set(entry.summary.id, entry);
@@ -253,6 +295,7 @@ export class SessionReview {
   }
   /** Restore native custom entries even when the SDK caller has no UI bindings. */
   initialize(sessionManager: ReviewContext["sessionManager"]): void {
+    for (const prefix of this.children.keys()) this.finishChild(prefix);
     this.sessionId = sessionManager.getSessionId();
     this.records.clear(); this.pending.clear(); this.truncated = false;
     for (const entry of sessionManager.getBranch()) {

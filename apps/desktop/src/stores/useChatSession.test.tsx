@@ -195,6 +195,21 @@ describe("useChatSession", () => {
     expect(listAgentModels).toHaveBeenCalledTimes(calls);
   });
 
+  it("投影子代理更新并保留终态事件省略的详情", async () => {
+    const { result } = renderHook(() => useChatSession());
+    await waitFor(() => expect(result.current.eventConnection).toBe("ready"));
+    await act(() => result.current.createSession("C:\work"));
+    await act(() => result.current.sendPrompt("delegate"));
+    const child = { id: "sub:0", agent: "reviewer", task: "检查页面", status: "running", messages: [], truncated: false };
+    act(() => emit?.(event("tool.started", { toolCallId: "sub", toolName: "subagent", subagents: [child] })));
+    await waitFor(() => expect(result.current.messages.find((item) => item.toolCallId === "sub")?.subagents?.[0]?.status).toBe("running"));
+    act(() => emit?.(event("tool.updated", { toolCallId: "sub", toolName: "subagent", subagents: [{ ...child, status: "completed", messages: [{ role: "assistant", content: "已完成" }] }] })));
+    await waitFor(() => expect(result.current.messages.find((item) => item.toolCallId === "sub")?.subagents?.[0]?.status).toBe("completed"));
+    act(() => emit?.(event("tool.completed", { toolCallId: "sub", toolName: "subagent" })));
+    await waitFor(() => expect(result.current.messages.find((item) => item.toolCallId === "sub")?.status).toBe("completed"));
+    expect(result.current.messages.find((item) => item.toolCallId === "sub")?.subagents?.[0]?.messages[0]?.content).toBe("已完成");
+  });
+
   it("创建项目草稿时先登记工作区，并在首次发送时实体化", async () => {
     const { result } = renderHook(() => useChatSession());
     await waitFor(() => expect(result.current.eventConnection).toBe("ready"));

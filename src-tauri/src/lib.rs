@@ -213,6 +213,7 @@ pub fn run() {
             commands::runtime::agent_list_sessions,
             commands::runtime::agent_delete_sessions,
             commands::runtime::agent_open_session,
+            commands::runtime::agent_subagent_transcript,
             commands::session_review::agent_review_list,
             commands::session_review::agent_review_detail,
             commands::session_review::agent_review_rollback,
